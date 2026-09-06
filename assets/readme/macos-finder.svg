@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="macOS Finder">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#55d8ff"/><stop offset="1" stop-color="#1675e8"/></linearGradient></defs>
+  <rect width="32" height="32" rx="7" fill="url(#g)"/>
+  <path d="M16 3c7.18 0 13 5.82 13 13 0 7.18-5.82 13-13 13S3 23.18 3 16 8.82 3 16 3Z" fill="#f4f7fb" opacity=".94"/>
+  <path d="M16 3c-2.7 3.7-4.2 8.05-4.2 13s1.5 9.3 4.2 13c-7.18 0-13-5.82-13-13S8.82 3 16 3Z" fill="#35c8f2"/>
+  <circle cx="11.2" cy="14" r="1.35" fill="#172b4d"/><circle cx="20.8" cy="14" r="1.35" fill="#172b4d"/>
+  <path d="M9.5 19c3.6 3.2 9.4 3.2 13 0" fill="none" stroke="#172b4d" stroke-width="1.5" stroke-linecap="round"/>
+</svg>
