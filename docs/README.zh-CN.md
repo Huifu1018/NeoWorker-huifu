@@ -41,9 +41,9 @@
 
 <p align="center">
   <strong>下载最新桌面版本 · v0.1.8</strong><br><br>
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg">🍎 <strong>macOS（Apple 芯片）</strong></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg"><img src="https://cdn.simpleicons.org/finder" alt="macOS" width="20" height="20" valign="middle"> <strong>macOS（Apple 芯片）</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe">⊞ <strong>Windows（x64）</strong></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe"><img src="https://cdn.simpleicons.org/windows" alt="Windows" width="20" height="20" valign="middle"> <strong>Windows（x64）</strong></a>
   <br><br>
   <sub>其他平台包和更新说明：<a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8">GitHub Release v0.1.8</a></sub>
 </p>
