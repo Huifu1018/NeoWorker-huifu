@@ -2,6 +2,17 @@
   <a href="../README.md">English</a> | <strong>简体中文</strong>
 </p>
 
+## 下载 NeoWorker v0.1.8
+
+从官方 GitHub Release 直接下载最新桌面安装包：
+
+| 平台 | 下载 |
+| --- | --- |
+| **macOS（Apple 芯片）** | [下载 DMG 安装包](https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg) |
+| **Windows（x64）** | [下载 Windows 安装程序](https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe) |
+
+其他平台包和更新说明请查看 [v0.1.8 Release 页面](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8)。
+
 <p align="center">
   <img src="../screenshots/readme/neoworker-logo.svg" alt="NeoWorker — AI · Work · Ready" width="560">
 </p>
