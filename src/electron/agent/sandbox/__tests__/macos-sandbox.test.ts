@@ -192,4 +192,60 @@ describe("MacOSSandbox", () => {
     proc.emit("close", 0, null);
     await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
   });
+
+  it("keeps generation staging writable while protecting private NeoWorker state", async () => {
+    const proc = new EventEmitter() as ChildProcess;
+    proc.stdout = new EventEmitter() as ChildProcess["stdout"];
+    proc.stderr = new EventEmitter() as ChildProcess["stderr"];
+    proc.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
+    spawnMock.mockImplementationOnce(() => proc);
+    const workspacePath = "/tmp/neoworker workspace";
+    const sandbox = new MacOSSandbox(makeWorkspace({ path: workspacePath }));
+
+    const resultPromise = sandbox.execute(
+      "python3 .neoworker/tmp/gen_charts.py",
+      [],
+      { cwd: workspacePath, timeout: 1000 },
+    );
+
+    const [, args] = spawnMock.mock.calls[0];
+    const profile = fs.readFileSync(args[1], "utf-8");
+    expect(profile).not.toContain(
+      `(deny file-write* (subpath "${workspacePath}/.neoworker"))`,
+    );
+    expect(profile).toContain(
+      `(deny file-write* (subpath "${workspacePath}/.neoworker/uploads"))`,
+    );
+    expect(profile).toContain(
+      `(deny file-write* (subpath "${workspacePath}/.neoworker/projects"))`,
+    );
+
+    proc.emit("close", 0, null);
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+  });
+
+  it("allows harmless shell sinks and TLS trust configuration reads", async () => {
+    const proc = new EventEmitter() as ChildProcess;
+    proc.stdout = new EventEmitter() as ChildProcess["stdout"];
+    proc.stderr = new EventEmitter() as ChildProcess["stderr"];
+    proc.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
+    spawnMock.mockImplementationOnce(() => proc);
+    const sandbox = new MacOSSandbox(makeWorkspace({ path: "/tmp/neoworker workspace" }));
+
+    const resultPromise = sandbox.execute("curl --silent https://registry.npmjs.org/", [], {
+      cwd: "/tmp/neoworker workspace",
+      timeout: 1000,
+      allowNetwork: true,
+    });
+
+    const [, args] = spawnMock.mock.calls[0];
+    const profile = fs.readFileSync(args[1], "utf-8");
+    expect(profile).toContain('(allow file-write* (literal "/dev/null"))');
+    expect(profile).toContain('(subpath "/private/etc/ssl")');
+    expect(profile).toContain('(subpath "/etc/ssl")');
+    expect(profile).toContain("(allow network*)");
+
+    proc.emit("close", 0, null);
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+  });
 });

@@ -369,6 +369,8 @@ export class SandboxRunner {
   (subpath "/Library/Frameworks")
   (subpath "/Applications/Xcode.app")
   (subpath "/private/var/db")
+  (subpath "/private/etc/ssl")
+  (subpath "/etc/ssl")
   (literal "/dev/null")
   (literal "/dev/urandom")
   (literal "/dev/random")
@@ -400,6 +402,8 @@ export class SandboxRunner {
   (subpath "/private/var/folders")
 )
 `;
+    // Standard shell commands use /dev/null as a harmless output sink.
+    profile += `(allow file-write* (literal "/dev/null"))\n`;
 
     // Allow network if permitted
     if (permissions.network) {

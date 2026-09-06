@@ -1719,11 +1719,67 @@ describe("isTaskActivelyWorking", () => {
     expect(isTaskActivelyWorking(task, events, false, 2_500)).toBe(false);
   });
 
+  it("starts a new turn when a follow-up user message is newer than completion", () => {
+    const task = makeTask({
+      status: "completed",
+      completedAt: 1_000,
+      updatedAt: 1_000,
+    });
+    const events = [
+      makeEvent("initial-done", 1_000, "task_completed"),
+      makeEvent("follow-up", 2_000, "user_message", { message: "Continue" }),
+    ];
+
+    expect(isTaskActivelyWorking(task, events, false, 2_500)).toBe(true);
+  });
+
+  it("keeps a completed task idle when its latest user message predates completion", () => {
+    const task = makeTask({
+      status: "completed",
+      completedAt: 2_000,
+      updatedAt: 2_000,
+    });
+    const events = [
+      makeEvent("initial-user", 1_000, "user_message", { message: "Done" }),
+      makeEvent("initial-done", 2_000, "task_completed"),
+    ];
+
+    expect(isTaskActivelyWorking(task, events, false, 2_500)).toBe(false);
+  });
+
   it("marks executing tasks idle when the latest relevant event is a failed follow-up", () => {
     const task = makeTask();
     const events = [makeEvent("follow-up-failed", 2_000, "follow_up_failed")];
 
     expect(isTaskActivelyWorking(task, events, false, 2_500)).toBe(false);
+  });
+
+  it("keeps a terminal task idle when its updatedAt closes a failed follow-up", () => {
+    const task = makeTask({
+      status: "completed",
+      completedAt: 1_000,
+      updatedAt: 3_000,
+    });
+    const events = [
+      makeEvent("follow-up", 2_000, "user_message", { message: "Retry" }),
+    ];
+
+    expect(isTaskActivelyWorking(task, events, false, 3_500)).toBe(false);
+  });
+
+  it("keeps a stale executing projection idle when a terminal marker is present", () => {
+    const task = makeTask({
+      status: "executing",
+      completedAt: 3_000,
+      terminalStatus: "ok",
+    });
+    const events = [
+      makeEvent("retry", 2_000, "progress_update", {
+        message: "A source is responding slowly; switching or retrying...",
+      }),
+    ];
+
+    expect(isTaskActivelyWorking(task, events, false, 4_000)).toBe(false);
   });
 
   it("does not treat generic error events as terminal while the task is still executing", () => {
@@ -2029,6 +2085,42 @@ describe("isTaskActivelyWorking", () => {
     ).toBe("");
   });
 
+  it("clears a retry heartbeat after an artifact follow-up fails", () => {
+    expect(
+      deriveProgressHeartbeat(
+        [
+          makeEvent("retry", 100, "timeline_step_updated", {
+            legacyType: "progress_update",
+            message: "A source is responding slowly; switching or retrying...",
+          }),
+          makeEvent("failed", 200, "timeline_step_updated", {
+            legacyType: "follow_up_failed",
+            parentTaskStatus: "completed",
+          }),
+        ],
+        "task-1",
+      ),
+    ).toBe("");
+  });
+
+  it("treats a terminal task_status event as the end of the heartbeat", () => {
+    expect(
+      deriveProgressHeartbeat(
+        [
+          makeEvent("retry", 100, "timeline_step_updated", {
+            legacyType: "progress_update",
+            message: "A source is responding slowly; switching or retrying...",
+          }),
+          makeEvent("status", 200, "timeline_step_updated", {
+            legacyType: "task_status",
+            status: "completed",
+          }),
+        ],
+        "task-1",
+      ),
+    ).toBe("");
+  });
+
   it("falls back to recent user-facing progress updates when no reasoning stream is active", () => {
     const state = deriveAgentReasoningPanelState({
       events: [
@@ -2196,6 +2288,64 @@ describe("isTaskActivelyWorking", () => {
     expect(
       result.visibleFeedRows.some((row) => row.key === "assistant-1"),
     ).toBe(true);
+  });
+
+  it("keeps every conversation turn visible while live execution rows are bounded", () => {
+    const conversationRows = [1, 2, 3].flatMap((turn) => {
+      const user = makeEvent(`user-${turn}`, turn * 1_000, "user_message", {
+        message: `问题 ${turn}`,
+      });
+      const assistant = makeEvent(
+        `assistant-${turn}`,
+        turn * 1_000 + 100,
+        "assistant_message",
+        { message: `回答 ${turn}` },
+      );
+      return [user, assistant].map((event, eventIndex) => ({
+        kind: "timeline",
+        key: event.id,
+        estimatedHeight: 100,
+        timelineIndex: turn * 10 + eventIndex,
+        visiblePerfEventId: event.id,
+        revision: event.id,
+        item: { kind: "event", event },
+      }));
+    });
+    const executionRows = Array.from({ length: 14 }, (_, index) => ({
+      kind: "timeline",
+      key: `progress-${index}`,
+      estimatedHeight: 100,
+      timelineIndex: 100 + index,
+      visiblePerfEventId: `progress-${index}`,
+      revision: `progress-${index}`,
+      item: {
+        kind: "event",
+        event: makeEvent(`progress-${index}`, 10_000 + index, "timeline_step_updated", {
+          legacyType: "progress_update",
+          message: `Progress ${index}`,
+        }),
+      },
+    }));
+
+    const result = selectVisibleTaskFeedRows(
+      [...conversationRows, ...executionRows] as Any[],
+      "live",
+    );
+
+    expect(result.visibleFeedRows.map((row) => row.key)).toEqual(
+      expect.arrayContaining([
+        "user-1",
+        "assistant-1",
+        "user-2",
+        "assistant-2",
+        "user-3",
+        "assistant-3",
+      ]),
+    );
+    expect(result.visibleFeedRows.length).toBeLessThanOrEqual(12);
+    expect(result.hiddenLiveFeedRowCount).toBe(
+      conversationRows.length + executionRows.length - result.visibleFeedRows.length,
+    );
   });
 
   it("keeps the full transcript visible in inspect mode", () => {

@@ -13,6 +13,7 @@ import {
 } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { AwaitingUserInputError, TaskExecutor } from "../executor";
 import {
   LLMRequestTimeoutError,
@@ -1826,15 +1827,21 @@ relationship_memory:
 
   it("does not require direct answer for artifact-only tasks without question intent", () => {
     executor = createExecutorWithStubs([textResponse("done")], {});
+    const reportPath = path.join(
+      "/tmp",
+      `neoworker-artifact-only-${randomUUID()}.pdf`,
+    );
+    fs.writeFileSync(reportPath, "%PDF-1.4\\n%%EOF\\n", "utf8");
     (executor as Any).task.title = "Generate PDF report";
     (executor as Any).task.prompt =
       "Create a PDF report from the attached data.";
     (executor as Any).fileOperationTracker.getCreatedFiles.mockReturnValue([
-      "report.pdf",
+      reportPath,
     ]);
-    (executor as Any).lastNonVerificationOutput = "Created: report.pdf";
+    (executor as Any).lastNonVerificationOutput = `Created: ${path.basename(reportPath)}`;
 
     const guardError = (executor as Any).getFinalResponseGuardError();
+    fs.rmSync(reportPath, { force: true });
     expect(guardError).toBeNull();
   });
 

@@ -200,6 +200,7 @@ import {
   WorkspaceCreateSchema,
   TaskCreateSchema,
   TaskRenameSchema,
+  TaskModelUpdateSchema,
   TaskWorkspaceUpdateSchema,
   TaskProjectUpdateSchema,
   TaskMessageSchema,
@@ -1034,6 +1035,7 @@ rateLimiter.configure(IPC_CHANNELS.TASK_STEP_FEEDBACK, RATE_LIMIT_CONFIGS.limite
 rateLimiter.configure(IPC_CHANNELS.TASK_WRAP_UP, RATE_LIMIT_CONFIGS.limited);
 rateLimiter.configure(IPC_CHANNELS.TASK_CONTINUE, RATE_LIMIT_CONFIGS.limited);
 rateLimiter.configure(IPC_CHANNELS.TASK_FORK_SESSION, RATE_LIMIT_CONFIGS.limited);
+rateLimiter.configure(IPC_CHANNELS.TASK_UPDATE_MODEL, RATE_LIMIT_CONFIGS.limited);
 rateLimiter.configure(IPC_CHANNELS.TASK_UPDATE_WORKSPACE, RATE_LIMIT_CONFIGS.limited);
 rateLimiter.configure(IPC_CHANNELS.TASK_UPDATE_PROJECT, RATE_LIMIT_CONFIGS.limited);
 rateLimiter.configure(IPC_CHANNELS.TASK_PIN, RATE_LIMIT_CONFIGS.limited);
@@ -5410,6 +5412,32 @@ export async function setupIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.TASK_RENAME, async (_, data) => {
     const validated = validateInput(TaskRenameSchema, data, "task rename");
     taskRepo.update(validated.id, { title: validated.title });
+  });
+
+  ipcMain.handle(IPC_CHANNELS.TASK_UPDATE_MODEL, async (_, data) => {
+    checkRateLimit(IPC_CHANNELS.TASK_UPDATE_MODEL);
+    const validated = validateInput(
+      TaskModelUpdateSchema,
+      data,
+      "task model update",
+    );
+    const task = taskRepo.findById(validated.taskId);
+    if (!task) throw new Error(`Task not found: ${validated.taskId}`);
+
+    agentDaemon.updateTask(validated.taskId, {
+      agentConfig: {
+        ...task.agentConfig,
+        providerType: validated.providerType,
+        modelKey: validated.modelKey,
+        // An explicit session model must win over profile-based routing.
+        llmProfile: undefined,
+        llmProfileForced: false,
+      },
+    });
+
+    const updatedTask = taskRepo.findById(validated.taskId);
+    if (!updatedTask) throw new Error(`Task not found: ${validated.taskId}`);
+    return updatedTask;
   });
 
   ipcMain.handle(IPC_CHANNELS.TASK_UPDATE_WORKSPACE, async (_, data) => {

@@ -2912,6 +2912,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke(IPC_CHANNELS.TASK_KILL_COMMAND, { taskId, force }),
   renameTask: (id: string, title: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.TASK_RENAME, { id, title }),
+  updateTaskModel: (
+    taskId: string,
+    selection: { providerType: LLMProviderType; modelKey: string },
+  ) =>
+    ipcRenderer.invoke(IPC_CHANNELS.TASK_UPDATE_MODEL, {
+      taskId,
+      ...selection,
+    }),
   updateTaskWorkspace: (taskId: string, workspaceId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.TASK_UPDATE_WORKSPACE, {
       taskId,
@@ -6224,6 +6232,7 @@ export interface FileViewerResult {
       previewMode: "sandboxed_iframe";
       title?: string;
       htmlContent?: string;
+      previewUrl?: string;
       sourcePath: string;
       baseDir: string;
       projectRoot?: string;
@@ -6854,6 +6863,10 @@ export interface ElectronAPI {
   sendStdin: (taskId: string, input: string) => Promise<boolean>;
   killCommand: (taskId: string, force?: boolean) => Promise<boolean>;
   renameTask: (id: string, title: string) => Promise<void>;
+  updateTaskModel: (
+    taskId: string,
+    selection: { providerType: LLMProviderType; modelKey: string },
+  ) => Promise<Task>;
   updateTaskWorkspace: (taskId: string, workspaceId: string) => Promise<Any>;
   updateTaskProject: (taskId: string, projectId: string) => Promise<Any>;
   archiveTask: (id: string) => Promise<Any>;

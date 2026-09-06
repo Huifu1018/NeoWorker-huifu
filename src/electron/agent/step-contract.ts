@@ -180,6 +180,29 @@ export function extractArtifactPathCandidates(text: string): string[] {
     backtickMatch = backtickPattern.exec(source);
   }
 
+  // Shell commands and recovery instructions commonly quote output paths.
+  // The bare-path regex intentionally stays ASCII-oriented so it does not
+  // mistake ordinary prose for a filename, but that also used to drop valid
+  // CJK paths such as ".neoworker/绩效分析报告.html". Inspect quoted tokens
+  // separately and only accept tokens that are path-like (a separator or no
+  // whitespace), preserving the command-snippet guard above.
+  const quotedPattern = /(["'])([^"'\n\r]+)\1/g;
+  let quotedMatch = quotedPattern.exec(source);
+  while (quotedMatch) {
+    const value = String(quotedMatch[2] || "").trim();
+    const hasPathSeparator = value.includes("/") || value.includes("\\");
+    const hasCanonicalExtension = CANONICAL_ARTIFACT_EXTENSION_REGEX.test(value);
+    if (
+      value &&
+      hasCanonicalExtension &&
+      (hasPathSeparator || !/\s/.test(value)) &&
+      !isLikelyCommandSnippet(value)
+    ) {
+      candidates.add(value);
+    }
+    quotedMatch = quotedPattern.exec(source);
+  }
+
   const barePattern = new RegExp(CANONICAL_ARTIFACT_PATH_REGEX.source, "gi");
   let bareMatch = barePattern.exec(source);
   while (bareMatch) {

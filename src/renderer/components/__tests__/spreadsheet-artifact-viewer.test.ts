@@ -37,7 +37,8 @@ describe("SpreadsheetArtifactViewer", () => {
       }),
     );
 
-    expect(markup).toContain("Open spreadsheet in full screen");
+    expect(markup).toContain('title="全屏打开表格"');
+    expect(markup).toContain('aria-label="全屏打开表格"');
     expect(markup).not.toContain(">Full screen</button>");
     expect(markup).not.toContain("New tab");
   });
@@ -54,7 +55,8 @@ describe("SpreadsheetArtifactViewer", () => {
       }),
     );
 
-    expect(markup).toContain("Exit full screen");
+    expect(markup).toContain('title="退出全屏"');
+    expect(markup).toContain('aria-label="退出全屏"');
     expect(markup).not.toContain(">Exit full screen</button>");
     expect(markup).not.toContain("New tab");
   });

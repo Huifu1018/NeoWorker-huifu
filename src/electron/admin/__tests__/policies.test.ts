@@ -163,6 +163,16 @@ describe("validatePolicies", () => {
 });
 
 describe("loadPoliciesStrict", () => {
+  it("keeps shell network enabled in the permissive no-policy default", async () => {
+    mockFs.existsSync.mockReturnValue(false);
+    const { loadPolicies: freshLoadPolicies } = await import("../policies");
+
+    expect(freshLoadPolicies().runtime.network).toMatchObject({
+      defaultAction: "allow",
+      allowShellNetwork: true,
+    });
+  });
+
   it("does not fall back to permissive defaults when an existing policy file is invalid", async () => {
     mockFs.existsSync.mockReturnValue(true);
     mockFs.readFileSync.mockReturnValue("{");

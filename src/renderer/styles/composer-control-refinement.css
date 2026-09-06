@@ -21,6 +21,36 @@
   height: 14px;
 }
 
+/* The session control rail intentionally gives utility controls a muted
+ * color. The send affordance is the exception: when it is actionable, its
+ * blue surface must keep the arrow white, including after a task ends and the
+ * composer switches back from the stop/queue controls. Empty or native
+ * disabled states continue to use the shared muted color. */
+.session-composer.input-container
+  .lets-go-btn.lets-go-btn-sm:not(:disabled):not(.composer-send-empty) {
+  color: #ffffff;
+}
+
+.session-composer.input-container
+  .lets-go-btn.lets-go-btn-sm:not(:disabled):not(.composer-send-empty)
+  > svg {
+  stroke: currentColor;
+}
+
+/* Contenteditable can publish its draft one frame before React removes the
+ * empty-state class. Match the same live DOM signal used by the home composer
+ * so a visibly sendable session draft also paints white. */
+.session-composer.input-container:has(.prompt-composer-input[data-has-draft="true"])
+  .lets-go-btn.lets-go-btn-sm.composer-send-empty:not(:disabled) {
+  color: #ffffff;
+}
+
+.session-composer.input-container:has(.prompt-composer-input[data-has-draft="true"])
+  .lets-go-btn.lets-go-btn-sm.composer-send-empty:not(:disabled)
+  > svg {
+  stroke: currentColor;
+}
+
 @media (max-width: 560px) {
   .welcome-input-container.cli-input-container .permission-access-btn,
   .session-composer.input-container .permission-access-btn {

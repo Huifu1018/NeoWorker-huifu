@@ -34,9 +34,37 @@ const DEFAULT_OPTIONS: Required<SandboxOptions> = {
   onProcess: () => undefined,
 };
 
+// Runtime configuration needed by standard CLI clients. Keep this allow-list
+// narrow: commands can read the system trust configuration, but they still
+// cannot write arbitrary files outside the workspace/temp directories.
+const MACOS_RUNTIME_READ_PATHS = [
+  "/private/etc/ssl",
+  "/etc/ssl",
+];
+
 const PROTECTED_WORKSPACE_WRITE_RELATIVE_PATHS = [
   ".git",
-  ".neoworker",
+  // The managed NeoWorker root is intentionally not protected as a whole.
+  // Generation workflows stage scripts/fragments under `.neoworker/tmp` and
+  // publish reports under `.neoworker/automated-outputs`; denying the parent
+  // directory made a script appear to run while silently failing on its first
+  // output write. Protect only the private subtrees that shell code must not
+  // mutate.
+  ".neoworker/uploads",
+  ".neoworker/projects",
+  ".neoworker/memory",
+  ".neoworker/policy",
+  ".neoworker/agents",
+  ".neoworker/chronicle",
+  ".neoworker/scheduled-runs",
+  ".neoworker/browser-profiles",
+  ".neoworker/extensions",
+  ".neoworker/AGENTS",
+  ".neoworker/BOOTSTRAP",
+  ".neoworker/IDENTITY",
+  ".neoworker/SOUL",
+  ".neoworker/TOOLS",
+  ".neoworker/USER",
   ".env",
   ".env.local",
   ".env.production",
@@ -432,6 +460,8 @@ export class MacOSSandbox implements ISandbox {
   (subpath "/Library/Frameworks")
   (subpath "/Applications/Xcode.app")
   (subpath "/private/var/db")
+  (subpath "/private/etc/ssl")
+  (subpath "/etc/ssl")
   (literal "/dev/null")
   (literal "/dev/urandom")
   (literal "/dev/random")
@@ -454,6 +484,7 @@ export class MacOSSandbox implements ISandbox {
       "/Library/Frameworks",
       "/Applications/Xcode.app",
       "/private/var/db",
+      ...MACOS_RUNTIME_READ_PATHS,
       "/dev/null",
       "/dev/urandom",
       "/dev/random",
@@ -494,6 +525,10 @@ export class MacOSSandbox implements ISandbox {
   (subpath "/private/var/folders")
 )
 `;
+    // POSIX tools routinely redirect discarded output to /dev/null. It is a
+    // device sink, not workspace state, and denying the write makes otherwise
+    // harmless commands fail under "Full access" with EPERM.
+    profile += `(allow file-write* (literal "/dev/null"))\n`;
     profile = this.appendWriteSubpathRules(profile, tempAliases);
 
     // Allow network if permitted

@@ -4678,6 +4678,24 @@ export class AgentDaemon extends EventEmitter {
       existing.status === "failed" ||
       existing.status === "cancelled"
     ) {
+      // A failed follow-up can leave its cached executor alive even though the
+      // parent task was restored to a terminal state. If the renderer still
+      // shows Stop during that reconciliation window, stop the stale executor
+      // and release its queue slot instead of silently ignoring the request.
+      this.pendingContinuationTaskIds.delete(taskId);
+      this.deferredUserFollowUps.delete(taskId);
+      const retryTimer = this.deferredUserFollowUpRetryTimers.get(taskId);
+      if (retryTimer) clearTimeout(retryTimer);
+      this.deferredUserFollowUpRetryTimers.delete(taskId);
+      const cached = this.activeTasks.get(taskId);
+      if (cached) {
+        if (cached.executor.isRunning) {
+          await cached.executor.cancel("user");
+        }
+        cached.status = "completed";
+        cached.lastAccessed = Date.now();
+        this.finishQueueSlot(taskId);
+      }
       return;
     }
     this.pendingContinuationTaskIds.delete(taskId);

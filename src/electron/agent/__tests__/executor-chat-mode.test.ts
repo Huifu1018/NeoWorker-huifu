@@ -590,6 +590,72 @@ describe("TaskExecutor chat mode", () => {
     ]);
   });
 
+  it("blocks browser dependency installation for HTML verification tasks", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "Standalone HTML report",
+      prompt: "Create a complete standalone HTML report and verify it.",
+    };
+    executor.lastUserMessage = "继续完成这个 HTML 文件";
+    executor.currentStepId = null;
+    executor.plan = null;
+
+    expect(
+      executor.shouldBlockBrowserDependencyInstallation(
+        "npx playwright install chromium-headless-shell",
+      ),
+    ).toBe(true);
+    expect(
+      executor.shouldBlockBrowserDependencyInstallation(
+        "npm install lodash",
+      ),
+    ).toBe(false);
+  });
+
+  it("allows an explicitly requested browser dependency installation", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "Browser setup",
+      prompt: "Install Playwright and configure browser tests.",
+    };
+    executor.lastUserMessage = "安装 Playwright 浏览器依赖";
+    executor.currentStepId = null;
+    executor.plan = null;
+
+    expect(
+      executor.shouldBlockBrowserDependencyInstallation(
+        "npx playwright install chromium",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps explicitly granted shell tools available during browser verification", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      id: "task-browser-shell-access",
+      title: "HTML report",
+      prompt: "Create a standalone HTML report.",
+      agentConfig: { shellAccess: true },
+    };
+    executor.workspace = { permissions: { shell: false } };
+    executor.lastUserMessage = "请在浏览器中检查页面渲染是否正常";
+    executor.lastAssistantOutput = "";
+    executor.currentStepId = null;
+    executor.plan = null;
+    const tools = [
+      { name: "browser_navigate" },
+      { name: "browser_snapshot" },
+      { name: "run_command" },
+      { name: "run_applescript" },
+    ];
+
+    const filtered = (
+      TaskExecutor as Any
+    ).prototype.filterToolsForBuiltInBrowserVerification.call(executor, tools);
+
+    expect(filtered).toEqual(tools);
+  });
+
   it("preserves an explicitly requested Chrome CLI verification route", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

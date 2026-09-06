@@ -170,7 +170,10 @@ const DEFAULT_POLICIES: AdminPolicies = {
       defaultAction: "allow",
       allowedDomains: [],
       blockedDomains: [],
-      allowShellNetwork: false,
+      // Keep the no-policy/default workspace behavior consistent with the
+      // documented permissive defaults. Administrators can still set this to
+      // false explicitly to disable shell egress globally.
+      allowShellNetwork: true,
     },
     autoReview: {
       enabled: true,
@@ -265,7 +268,10 @@ function normalizePolicies(parsed: any): AdminPolicies {
         defaultAction: parsed.runtime?.network?.defaultAction === "deny" ? "deny" : "allow",
         allowedDomains: normalizeStringList(parsed.runtime?.network?.allowedDomains),
         blockedDomains: normalizeStringList(parsed.runtime?.network?.blockedDomains),
-        allowShellNetwork: parsed.runtime?.network?.allowShellNetwork === true,
+        allowShellNetwork:
+          typeof parsed.runtime?.network?.allowShellNetwork === "boolean"
+            ? parsed.runtime.network.allowShellNetwork
+            : DEFAULT_POLICIES.runtime.network.allowShellNetwork,
       },
       autoReview: {
         enabled: parsed.runtime?.autoReview?.enabled !== false,

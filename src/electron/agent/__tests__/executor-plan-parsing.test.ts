@@ -1187,6 +1187,8 @@ Attached files (relative to workspace):
     expect(guidance).toContain("WEB PAGE PREVIEW GUIDANCE");
     expect(guidance).toContain("visible in-app browser");
     expect(guidance).toContain("browser_screenshot");
+    expect(guidance).toContain("Never install Playwright");
+    expect(guidance).toContain("validate the final HTML by reading it back");
   });
 
   it("uses the simple image path for app avatar image prompts", async () => {

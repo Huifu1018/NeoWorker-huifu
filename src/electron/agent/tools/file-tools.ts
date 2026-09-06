@@ -13,7 +13,11 @@ import {
 import mammoth from "mammoth";
 import { extractPptxContentFromFile } from "../../utils/pptx-extractor";
 import { extractPdfText } from "../../utils/pdf-text";
-import { repairHiddenHtmlContent } from "../../utils/html-content-visibility";
+import {
+  getHtmlContentPreviewProblem,
+  isHtmlBootstrapPlaceholder,
+  repairHiddenHtmlContent,
+} from "../../utils/html-content-visibility";
 import {
   detectWorkspacePathAlias,
   shouldRewriteWorkspaceAliasPath,
@@ -1290,6 +1294,17 @@ export class FileTools {
       const reportedPath =
         getWorkspaceRelativePosixPath(this.workspace.path, fullPath) || requestedPath;
 
+      // A model can write an HTML shell before it has appended the real body.
+      // Keep that event provisional so the renderer does not offer a blank
+      // artifact as if it were a finished result.
+      const htmlProblem =
+        requestedExtension === ".html" || requestedExtension === ".htm"
+          ? getHtmlContentPreviewProblem(finalContent)
+          : null;
+      const provisionalHtml =
+        (requestedExtension === ".html" || requestedExtension === ".htm") &&
+        (Boolean(htmlProblem) || isHtmlBootstrapPlaceholder(finalContent));
+
       // Log artifact
       this.daemon.logEvent(this.taskId, "file_created", {
         path: reportedPath,
@@ -1300,6 +1315,14 @@ export class FileTools {
         language: ext,
         visibilityRepairApplied: visibilityRepair.repaired,
         visibilityRepairReasons: visibilityRepair.reasons,
+        ...(provisionalHtml
+          ? {
+              provisional: true,
+              artifactStatus: "incomplete",
+              artifactWarning:
+                htmlProblem || "HTML 正在生成中，尚未完成拼装。",
+            }
+          : {}),
       });
 
       return {

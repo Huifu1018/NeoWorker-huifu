@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { WebPagePreview } from "../../shared/web-page-preview";
+import { getHtmlContentPreviewProblem } from "../../shared/html-content-visibility";
 import { createWebPreviewUrl } from "../web-preview/web-preview-protocol";
 
 const REACT_BUILD_DIRS = ["dist", "build", "out"];
@@ -78,6 +79,7 @@ async function buildPreviewFromHtmlFile(args: {
     fs.realpath(args.workspaceRoot),
   ]);
   const rawHtmlContent = await fs.readFile(realHtmlPath, "utf-8");
+  const previewProblem = getHtmlContentPreviewProblem(rawHtmlContent);
 
   return {
     format: "html",
@@ -94,7 +96,8 @@ async function buildPreviewFromHtmlFile(args: {
     baseDir: path.dirname(args.htmlPath),
     projectRoot: args.projectRoot,
     framework: args.framework ?? "html",
-    canPreview: true,
+    canPreview: !previewProblem,
+    previewMessage: previewProblem || undefined,
   };
 }
 

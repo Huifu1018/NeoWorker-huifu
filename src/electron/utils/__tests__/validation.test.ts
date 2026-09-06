@@ -3,6 +3,7 @@ import {
   validateInput,
   WorkspaceCreateSchema,
   TaskCreateSchema,
+  TaskModelUpdateSchema,
   TaskWorkspaceUpdateSchema,
   TaskProjectUpdateSchema,
   TaskMessageSchema,
@@ -48,6 +49,32 @@ describe("validateInput", () => {
     } catch (e: Any) {
       expect(e.message).toContain("age");
     }
+  });
+});
+
+describe("TaskModelUpdateSchema", () => {
+  it("accepts a valid task-scoped model selection and trims the model key", () => {
+    const result = TaskModelUpdateSchema.parse({
+      taskId: "7f66793e-b719-4b02-a21a-e30b301ef02d",
+      providerType: "openai",
+      modelKey: "  gpt-5.4  ",
+    });
+
+    expect(result).toEqual({
+      taskId: "7f66793e-b719-4b02-a21a-e30b301ef02d",
+      providerType: "openai",
+      modelKey: "gpt-5.4",
+    });
+  });
+
+  it("rejects invalid providers and blank model keys", () => {
+    expect(
+      TaskModelUpdateSchema.safeParse({
+        taskId: "7f66793e-b719-4b02-a21a-e30b301ef02d",
+        providerType: "not-a-provider",
+        modelKey: "",
+      }).success,
+    ).toBe(false);
   });
 });
 

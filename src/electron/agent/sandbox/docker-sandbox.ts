@@ -59,7 +59,26 @@ const DEFAULT_OPTIONS: Required<SandboxOptions> = {
 
 const PROTECTED_WORKSPACE_WRITE_RELATIVE_PATHS = [
   ".git",
-  ".neoworker",
+  // Keep private NeoWorker state read-only, but leave the managed root itself
+  // writable. HTML/document generation commonly runs a staged script from
+  // `.neoworker/tmp` which must be able to write fragments and chart data.
+  // Mounting the entire `.neoworker` directory read-only caused those scripts
+  // to fail after all planning/read steps had already succeeded.
+  ".neoworker/uploads",
+  ".neoworker/projects",
+  ".neoworker/memory",
+  ".neoworker/policy",
+  ".neoworker/agents",
+  ".neoworker/chronicle",
+  ".neoworker/scheduled-runs",
+  ".neoworker/browser-profiles",
+  ".neoworker/extensions",
+  ".neoworker/AGENTS",
+  ".neoworker/BOOTSTRAP",
+  ".neoworker/IDENTITY",
+  ".neoworker/SOUL",
+  ".neoworker/TOOLS",
+  ".neoworker/USER",
   ".env",
   ".env.local",
   ".env.production",

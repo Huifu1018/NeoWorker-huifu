@@ -150,7 +150,8 @@ See [Automation Studio](../automation-studio.md#secrets-connector-policy-and-dat
 Uses native `sandbox-exec` with generated profiles:
 - Deny-by-default policy
 - Explicit allows for workspace and system paths
-- Network isolation (localhost only by default)
+- Network egress follows the workspace network permission and can be disabled
+  globally by the runtime policy
 - Mach service restrictions
 
 ### Docker (Cross-platform)

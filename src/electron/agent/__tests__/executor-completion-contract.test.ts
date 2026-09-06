@@ -10,6 +10,7 @@ import {
   extractExplicitOutputExtensions,
   getExplicitArtifactToolNames,
   getFinalOutcomeGuardError,
+  getFollowUpIterationLimit,
   hasArtifactEvidence,
   responseHasExecutionReportEvidenceSignal,
 } from "../executor-completion-utils";
@@ -415,6 +416,62 @@ describe("TaskExecutor completion contract integration", () => {
     expect(executor.appendMissingArtifactRecoveryStepsIfNeeded()).toBe(false);
   });
 
+  it("adds HTML integrity recovery when a non-empty bootstrap file is the only evidence", () => {
+    const workspacePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-html-recovery-"),
+    );
+    const outputPath = path.join(workspacePath, "report.html");
+    fs.writeFileSync(
+      outputPath,
+      '<!doctype html><html><head><title>Draft</title></head><body><p>Bootstrap artifact stub.</p></body></html>',
+      "utf8",
+    );
+
+    const executor = createExecuteHarness({
+      title: "生成 HTML 数据分析报告",
+      prompt: "生成 HTML 数据分析报告，包含完整表格和图表",
+      lastOutput: "",
+      createdFiles: ["report.html"],
+    }) as Any;
+    executor.workspace.path = workspacePath;
+    executor.plan = {
+      description: "Execution plan",
+      steps: [
+        {
+          id: "1",
+          description: "Create report.html",
+          kind: "primary",
+          status: "completed",
+        },
+        {
+          id: "2",
+          description: "Verify report.html in a browser",
+          kind: "verification",
+          status: "failed",
+          error: "Verification failed: browser checklist missing required evidence",
+        },
+      ],
+    };
+    executor.emitEvent = vi.fn();
+
+    expect(executor.appendMissingArtifactRecoveryStepsIfNeeded()).toBe(true);
+    expect(executor.plan.steps).toContainEqual(
+      expect.objectContaining({
+        kind: "recovery",
+        status: "pending",
+        description: expect.stringContaining("HTML write-recovery"),
+      }),
+    );
+    expect(executor.plan.steps).toContainEqual(
+      expect.objectContaining({
+        kind: "recovery",
+        description: expect.stringContaining(".neoworker/tmp/frag"),
+      }),
+    );
+    expect(executor.appendMissingArtifactRecoveryStepsIfNeeded()).toBe(false);
+    fs.rmSync(workspacePath, { recursive: true, force: true });
+  });
+
   it("recognizes terse Chinese and English HTML artifact requests", () => {
     expect(extractExplicitOutputExtensions("", "生成一个html")).toEqual([".html"]);
     expect(extractExplicitOutputExtensions("", "生成一个网页")).toEqual([".html"]);
@@ -700,6 +757,11 @@ describe("TaskExecutor completion contract integration", () => {
       (executor as Any).buildFollowUpTurnGuidancePrompt("生成一个html"),
     ).toContain("convert_markdown_to_html");
     expect(
+      (executor as Any).buildFollowUpTurnGuidancePrompt(
+        "请在浏览器中检查这个html",
+      ),
+    ).toContain("Do not install Playwright");
+    expect(
       (executor as Any).buildFollowUpArtifactRetryInstruction(contract),
     ).toContain("convert_markdown_to_html");
   });
@@ -718,6 +780,21 @@ describe("TaskExecutor completion contract integration", () => {
 
     expect(contract.requiresArtifactEvidence).toBe(true);
     expect(contract.requiredArtifactExtensions).toContain(".html");
+  });
+
+  it("inherits the original artifact contract for a generic regenerate follow-up", () => {
+    const executor = createExecuteHarness({
+      title: "Excel 数据分析报告",
+      prompt: "读取附件 Excel，生成完整 HTML 分析报告，包含图表、数据和结论。",
+      lastOutput: "之前的 HTML 没有生成出来。",
+    });
+
+    const contract = (executor as Any).buildFollowUpCompletionContract("重新生成");
+
+    expect(contract.requiresArtifactEvidence).toBe(true);
+    expect(contract.requiredArtifactExtensions).toContain(".html");
+    expect(contract.allowExistingArtifactEvidence).toBe(false);
+    expect(getFollowUpIterationLimit(contract, 8)).toBe(8);
   });
 
   it("keeps an Excel continuation scoped to Excel when attachment text mentions PPT", () => {

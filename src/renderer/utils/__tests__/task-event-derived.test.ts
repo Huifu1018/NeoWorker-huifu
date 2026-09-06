@@ -718,6 +718,43 @@ describe("deriveSharedTaskEventUiState action blocks", () => {
     ).toEqual(["user-1", "complete-1", "user-2", "complete-2"]);
   });
 
+  it("retains older user-facing turns in a large live projection", () => {
+    const rawEvents = [
+      makeEvent("user-old", 100, "user_message", { message: "旧问题" }),
+      makeEvent("assistant-old", 200, "assistant_message", {
+        message: "旧回答",
+      }),
+      ...Array.from({ length: 180 }, (_, index) =>
+        makeEvent(`step-${index}`, 300 + index, "timeline_step_updated", {
+          legacyType: "progress_update",
+          message: `执行步骤 ${index}`,
+        }),
+      ),
+      makeEvent("user-latest", 1_000, "user_message", {
+        message: "新问题",
+      }),
+      makeEvent("assistant-latest", 1_100, "assistant_message", {
+        message: "新回答",
+      }),
+    ];
+
+    const shared = deriveSharedTaskEventUiState({
+      rawEvents,
+      task: { id: "task-1", status: "executing" } as Any,
+      workspace: null,
+      projectionMode: "live",
+      liveWindowSize: 32,
+      verboseSteps: false,
+    });
+
+    expect(shared.normalizedEvents.map((event) => event.id)).toEqual(
+      expect.arrayContaining(["user-old", "assistant-old", "user-latest", "assistant-latest"]),
+    );
+    expect(shared.baseTimelineItems.map((item) =>
+      item.kind === "event" ? item.event.id : "",
+    )).toEqual(expect.arrayContaining(["user-old", "assistant-old", "user-latest", "assistant-latest"]));
+  });
+
   it("collapses turn-level assistant progress narration into the final reply", () => {
     const shared = deriveSharedTaskEventUiState({
       rawEvents: [

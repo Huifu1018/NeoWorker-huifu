@@ -1549,6 +1549,19 @@ a,
   margin-right: 0;
 }
 
+/* The title-bar panel toggle controls the complete right-hand surface. The
+ * artifact/browser/side-chat preview lives inside the selected workspace row,
+ * so it needs an explicit collapsed rule too; otherwise clicking the toggle
+ * only hides ProjectContextPanel and leaves the preview sidebar visible. */
+.app-layout.right-collapsed
+  .selected-workspace-view.has-spreadsheet-sidebar
+  .spreadsheet-sidebar-resize-handle,
+.app-layout.right-collapsed
+  .selected-workspace-view.has-spreadsheet-sidebar
+  .spreadsheet-resizable-sidebar {
+  display: none;
+}
+
 .app-layout:not(.left-collapsed) > .sidebar {
   border-right: 0;
 }

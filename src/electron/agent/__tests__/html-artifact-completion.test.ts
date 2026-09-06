@@ -33,6 +33,16 @@ describe("validateStandaloneHtmlArtifact", () => {
     );
   });
 
+  it("rejects the @NEXT@ body marker left by interrupted chunk assembly", () => {
+    const result = validateStandaloneHtmlArtifact(
+      `<!doctype html><html><head><style>body{color:#111}</style></head><body><!--@NEXT@--></body></html>`,
+      "生成一个数据分析 HTML 页面",
+    );
+
+    expect(result.valid).toBe(false);
+    expect(result.reasons).toContain("contains unresolved staging placeholders");
+  });
+
   it("rejects a script tag whose body is only a staging marker", () => {
     const result = validateStandaloneHtmlArtifact(
       `<!doctype html><html><body><canvas></canvas>
@@ -79,6 +89,11 @@ describe("validateStandaloneHtmlArtifact", () => {
         "The chart canvas is blank and click interaction throws TypeError",
       ),
     ).toBe(false);
+    expect(
+      isHtmlBrowserVerificationInfrastructureFailure(
+        "browserType.launch: Executable doesn't exist at chromium_headless_shell",
+      ),
+    ).toBe(true);
   });
 
   it("enforces an explicitly requested minimum section count", () => {

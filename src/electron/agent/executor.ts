@@ -144,6 +144,10 @@ import {
   selectOfficeCliOfficialProfile,
 } from "./skills/officecli-official-skills";
 import { OfficeCliArtifactBuilder } from "./skills/officecli-artifact-builder";
+import {
+  recoverHtmlArtifactFromFragments,
+  type HtmlFragmentRecoveryResult,
+} from "./html-artifact-recovery";
 import { SandboxRunner } from "./sandbox/runner";
 import {
   LLMProvider,
@@ -303,6 +307,22 @@ const VALID_LLM_PROVIDER_TYPES = new Set<string>(
   LLM_PROVIDER_TYPES as readonly string[],
 );
 const logger = createLogger("TaskExecutor");
+
+/**
+ * An edit whose replacement is already present is an idempotent no-op, not a
+ * runtime/tool failure.  Treating it as a hard failure poisons the step's
+ * failure counters and can abort an otherwise successful HTML assembly after
+ * the model repeats an edit while converging on the final document.
+ */
+function isBenignNoChangeToolResult(toolName: string, result: Any): boolean {
+  if (canonicalizeToolNameUtil(toolName) !== "edit_file") return false;
+  if (!result || typeof result !== "object") return false;
+  if (result.no_change === true) return true;
+  return /old_string and new_string are identical/i.test(
+    String(result.error || ""),
+  );
+}
+
 import {
   evaluateDomainCompletion,
   getLoopGuardrailConfig,
@@ -1197,6 +1217,21 @@ export class TaskExecutor {
   private isProgressOnlyFollowUpText(text: string): boolean {
     const normalized = String(text || "").trim();
     if (!normalized) return false;
+    if (/^(?:规划模式\s*(?:[（(]planning mode[）)])?\s*已确认[，,。]?\s*跳过本步骤的工具调用|planning mode acknowledged[,.]?\s*skipping tool calls)[。.!]?$/i.test(normalized)) return true;
+    // Fetching evidence is not delivering an answer. Match whole status
+    // sentences, not substrings, so an actual answer following the status
+    // (including a concise answer or an explicit blocker) remains valid.
+    const sentences = normalized
+      .replace(/[（(][^（）()\n]*[）)]/g, "")
+      .split(/[。！？!?\n]|\.(?:\s|$)/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean);
+    const acquisitionOnly = sentences.length > 0 && sentences.every((sentence) =>
+      /^(?:(?:我|我们)\s*)?(?:已(?:经)?\s*)?(?:拿到|获取|读取|读到|找到|查到|收集)(?:了)?\s*(?:完整的?|全部的?|相关的?|权威的?|所需的?)*\s*(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:了)?$/.test(sentence) ||
+      /^(?:(?:今天|明天|后天)\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2})?\s*的)?(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:已经|已)(?:读到|读取|获取|找到|查到|收集)(?:完成|成功|了)?$/.test(sentence) ||
+      /^(?:(?:i|we)\s+(?:have\s+)?|i've\s+|we've\s+)?(?:found|fetched|read|collected|retrieved|loaded)\s+(?:the\s+)?(?:(?:requested|relevant|official|weather|forecast)\s+)*(?:data|information|results|forecast|page|file|content)(?:\s+successfully)?$/i.test(sentence),
+    );
+    if (acquisitionOnly) return true;
     return /(?:^|[。.!?！\n]\s*)(?:(?:now|next|then|after that|i(?:'ll| will)|we(?:'ll| will))\b|(?:现在|接下来|下一步|随后|然后|再试|继续))(?![^。.!?！\n]{0,12}(?:you can|你可以))[^。.!?！\n]*(?:check|verify|inspect|render|try|run|launch|open|read|检查|验证|校验|渲染|尝试|运行|启动|打开|读取)[^。.!?！\n]*[。.!?！]?\s*$/i.test(
       normalized,
     );
@@ -1205,8 +1240,78 @@ export class TaskExecutor {
   private followUpNeedsToolFreeFinalResponse(
     hadToolCalls: boolean,
     hasTextAfterLatestToolResults: boolean,
+    latestText = "",
   ): boolean {
-    return hadToolCalls && !hasTextAfterLatestToolResults;
+    return (hadToolCalls && !hasTextAfterLatestToolResults) || this.isProgressOnlyFollowUpText(latestText);
+  }
+
+  /** One bounded answer-only recovery, using this turn's tool results. */
+  private async completeFollowUpAnswer(opts: {
+    messages: LLMMessage[];
+    outputLanguageDirective: string;
+    requiresSimplifiedChinese: boolean;
+    contract: CompletionContract;
+    evidenceStartedAt: number;
+    createdFilesBefore: Set<string>;
+  }): Promise<LLMMessage[]> {
+    const instruction = this.sanitizeFallbackInstruction(
+      `${opts.outputLanguageDirective}\n` +
+      "Tool execution has ended. Answer the latest user request now using the available tool results. " +
+      "This is an answer to the latest user, not an acknowledgement of planning mode. Previous turns are context only. " +
+      "Give the actual findings, not just a statement that you read or found them. " +
+      "If the requested facts are absent or unverified, state the exact blocker; never invent them. " +
+      "Do not announce another action, retry, check, or tool call. " +
+      "For verification requests, give the requested verdict (including exactly OK when required) only if the evidence supports it.",
+    );
+    const turn = await this.runTextTurnKernel({
+      messages: [...opts.messages, { role: "user", content: [{ type: "text", text: instruction }] }],
+      systemPrompt: this.systemPrompt,
+      initialMaxTokens: POST_TOOL_FINALIZATION_INITIAL_MAX_TOKENS,
+      continuationMaxTokens: POST_TOOL_FINALIZATION_CONTINUATION_MAX_TOKENS,
+      mode: "follow_up",
+      operationLabel: "Follow-up tool-free final response",
+      allowContinuation: true,
+      emptyFallback: "",
+    });
+    const processing = this.processAssistantResponseText({
+      responseContent: [{ type: "text", text: turn.assistantText || "" }],
+      finalResponse: true,
+      requiresSimplifiedChinese: opts.requiresSimplifiedChinese,
+    });
+    let finalText = processing.assistantText.trim();
+    let messages = turn.messages;
+    if (!finalText || this.isProgressOnlyFollowUpText(finalText)) {
+      // No artifact contract means the guard is a no-op, NOT proof that an
+      // output exists. Never claim a generated file for an unanswered query.
+      if (
+        !opts.contract.requiresArtifactEvidence ||
+        opts.contract.requiredArtifactExtensions.length === 0 ||
+        this.getFollowUpArtifactGuardError(opts.contract, opts.evidenceStartedAt, opts.createdFilesBefore)
+      ) {
+        throw new Error("Follow-up tool execution ended without a conclusive final response.");
+      }
+      const outputLabel = opts.contract.requiredArtifactExtensions
+        .map((extension) => extension.replace(/^\./, "")).join(" / ").toUpperCase();
+      finalText = opts.requiresSimplifiedChinese
+        ? `本轮已完成：已生成并通过完整性校验的 ${outputLabel} 文件。`
+        : `Completed: the ${outputLabel} output was generated and passed integrity checks.`;
+      this.emitEvent("assistant_message", {
+        message: finalText,
+        synthesizedFromArtifactEvidence: true,
+        requiredArtifactExtensions: opts.contract.requiredArtifactExtensions,
+        turnId: this.activeConversationTurnId || undefined,
+      });
+      messages = [...messages, { role: "assistant", content: [{ type: "text", text: finalText }] }];
+    } else {
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage?.role === "assistant") {
+        lastMessage.content = [{ type: "text", text: finalText }];
+      }
+    }
+    this.lastAssistantText = finalText;
+    this.lastAssistantOutput = finalText;
+    this.lastNonVerificationOutput = finalText;
+    return messages;
   }
 
   private isLowSignalPauseMessage(text: string | null | undefined): boolean {
@@ -1618,7 +1723,7 @@ export class TaskExecutor {
     const runtimeProjection = this.applyRuntimeTaskProjectionToTask();
     const completedAt = Date.now();
     const clearError = opts?.clearError !== false;
-    const clearTerminalFailure = opts?.clearTerminalFailure === true;
+    const clearTerminalFailure = opts?.clearTerminalFailure !== false;
     const summary = this.buildFollowUpResultSummary();
     const trimmedSummary = typeof summary === "string" ? summary.trim() : "";
 
@@ -1628,8 +1733,9 @@ export class TaskExecutor {
       this.task.error = undefined;
     }
     if (clearTerminalFailure) {
-      this.task.terminalStatus = undefined;
+      this.task.terminalStatus = "ok";
       this.task.failureClass = undefined;
+      this.failureClass = undefined;
     }
     if (trimmedSummary) {
       this.task.resultSummary = trimmedSummary;
@@ -1642,8 +1748,10 @@ export class TaskExecutor {
       folders: [],
     };
     this.persistBestKnownOutcome(trimmedSummary, "ok", undefined, undefined, {
-      outputSummary: outputSummary.outputCount > 0 ? outputSummary : undefined,
-      replaceExisting: outputSummary.outputCount > 0,
+      outputSummary,
+      // A short text-only reply is still the authoritative result for this
+      // turn. Do not merge the previous HTML failure/outputs into it by length.
+      replaceExisting: true,
     });
     const goalAgentConfig = this.applyGoalTerminalState(trimmedSummary, "ok");
 
@@ -1652,7 +1760,7 @@ export class TaskExecutor {
       completedAt,
       ...(clearError ? { error: null } : {}),
       ...(clearTerminalFailure
-        ? { terminalStatus: undefined, failureClass: undefined }
+        ? { terminalStatus: "ok", failureClass: undefined }
         : {}),
       ...(trimmedSummary ? { resultSummary: trimmedSummary } : {}),
       ...(this.bestKnownOutcome
@@ -1675,6 +1783,14 @@ export class TaskExecutor {
   }
 
   private buildFollowUpResultSummary(): string {
+    // A direct answer such as "42" is valid. The task-summary length floor
+    // must not replace a concise current answer with an older verbose result.
+    for (const candidate of [this.getLatestAssistantConversationText(), this.lastAssistantText]) {
+      const text = String(candidate || "").trim();
+      if (text && !TaskExecutor.RESULT_SUMMARY_PLACEHOLDERS.has(text.toLowerCase()) && !this.isProgressOnlyFollowUpText(text)) {
+        return text.length > 4000 ? `${text.slice(0, 4000)}...` : text;
+      }
+    }
     const bestKnownSummary = String(
       this.bestKnownOutcome?.resultSummary || "",
     ).trim();
@@ -2013,7 +2129,7 @@ export class TaskExecutor {
     // mutate an incomplete HTML file and still be marked completed merely
     // because the latest message did not repeat the word "HTML".
     const continuesArtifactWork =
-      /\b(?:continue|finish|complete|fix|repair|resume|retry)\b|(?:继续|补全|补齐|完善|完成|修复|重试|不完整|没生成完|没有生成完)/i.test(
+      /\b(?:continue|finish|complete|fix|repair|resume|retry|regenerate|rebuild|redo|rerun)\b|(?:继续|补全|补齐|完善|完成|修复|重试|重新生成|重新制作|重做|再生成|重跑|不完整|没生成完|没有生成完)/i.test(
         String(message || ""),
       );
     if (!continuesArtifactWork) return followUpContract;
@@ -2191,9 +2307,17 @@ export class TaskExecutor {
             "",
         ).trim(),
       );
+    // A completed write can be recorded in the mutation ledger even when the
+    // file-operation tracker did not receive a matching artifact event (for
+    // example, a model timeout after the final write). Treat those ledger
+    // paths as evidence too; downstream usability checks still verify that
+    // the file exists and has the expected structure.
+    const ledgerFiles = Object.keys(this.ensureArtifactMutationLedger());
     return Array.from(
       new Set(
-        [...createdFiles, ...eventFiles].filter((file) => file.length > 0),
+        [...createdFiles, ...eventFiles, ...ledgerFiles].filter(
+          (file) => file.length > 0,
+        ),
       ),
     );
   }
@@ -2337,6 +2461,68 @@ export class TaskExecutor {
     });
   }
 
+  /**
+   * Recover a staged HTML report without asking the model to rerun a fragile
+   * Python/Node assembly script. Models frequently leave numbered fragments in
+   * `.neoworker/tmp` and then lose the final shell call to a sandbox denial or
+   * a transient interpreter failure. The deterministic assembler is invoked
+   * only after the normal integrity guard found an incomplete HTML candidate.
+   */
+  private tryRecoverHtmlArtifactFromStagedFragments(
+    contract: CompletionContract,
+    candidatePaths: string[],
+  ): HtmlFragmentRecoveryResult | null {
+    if (!contract.requiredArtifactExtensions.includes(".html")) return null;
+    const prompt = `${this.getCanonicalTaskIntentQuery()}\n${
+      this.lastUserMessage || ""
+    }`;
+    const requiredSourceAnchors = extractHtmlSourceCoverageAnchors(
+      [this.task.prompt, this.task.rawPrompt, this.task.userPrompt]
+        .filter(Boolean)
+        .join("\n"),
+    );
+    const htmlCandidates = Array.from(
+      new Set(
+        candidatePaths.filter((candidate) => {
+          const normalized = String(candidate || "")
+            .replace(/\\/g, "/")
+            .toLowerCase();
+          // Never overwrite a staging fragment when the tracker only observed
+          // `part1.html`, `part2.html`, ... and did not yet see the final path.
+          return (
+            /\.html?$/i.test(normalized) &&
+            !/(?:^|\/)\.neoworker\/(?:tmp|fragments|parts)(?:\/|$)/i.test(
+              normalized,
+            )
+          );
+        }),
+      ),
+    ).reverse();
+    const recoveryTargets =
+      htmlCandidates.length > 0
+        ? htmlCandidates
+        : [this.buildTaskArtifactFilename(".html")];
+    for (const candidate of recoveryTargets) {
+      const recovery = recoverHtmlArtifactFromFragments({
+        workspacePath: this.workspace.path,
+        targetPath: candidate,
+        prompt,
+        requiredSourceAnchors,
+      });
+      if (recovery.success) {
+        this.emitEvent("log", {
+          metric: "html_fragment_recovery_succeeded",
+          targetPath: candidate,
+          sourceDirectory: recovery.sourceDirectory,
+          fragmentCount: recovery.fragmentCount,
+          bytes: recovery.bytes,
+        });
+        return recovery;
+      }
+    }
+    return null;
+  }
+
   private getHtmlArtifactIntegrityError(
     contract: CompletionContract,
     candidatePaths: string[],
@@ -2455,7 +2641,7 @@ export class TaskExecutor {
     const htmlInstruction = contract.requiredArtifactExtensions.includes(
       ".html",
     )
-      ? " When existing Markdown contains the source, use convert_markdown_to_html so the full document does not pass through model-generated JSON. Otherwise the first write_file call must already be a syntactically complete standalone document with closing </body></html> tags and one completed <section> per source attachment. If content must be appended, keep one unique <!-- NEOWORKER_APPEND_POINT --> immediately before </body> and replace only that sentinel with the next bounded chunk plus the same sentinel. Never write an open HTML fragment, never rely on a closing tag that is not present, and verify every source filename/date is represented before completing."
+      ? " When existing Markdown contains the source, use convert_markdown_to_html so the full document does not pass through model-generated JSON. Otherwise the first write_file call must already be a syntactically complete standalone document with closing </body></html> tags and one completed <section> per source attachment. If content must be appended, keep one unique <!-- NEOWORKER_APPEND_POINT --> immediately before </body> and replace only that sentinel with the next bounded chunk plus the same sentinel. If you create .neoworker/tmp fragments or an assemble.py helper, execute the assembly now and read the final HTML back before replying; never stop after writing only a skeleton or staging files. Never write an open HTML fragment, never rely on a closing tag that is not present, and verify every source filename/date is represented before completing."
       : "";
     const pdfInstruction = contract.requiredArtifactExtensions.includes(".pdf")
       ? ' Use create_document with format="pdf" to create the real PDF before performing any unrelated validation. Reuse the conversation\'s existing source material; do not spend this turn rechecking an older Excel, Word, or PPT artifact.'
@@ -13413,6 +13599,19 @@ ${transcript}
     return `Create the missing required output artifact \`${filename}\`, verify that it is non-empty and usable, and do not report completion before the file exists.`;
   }
 
+  private buildHtmlArtifactIntegrityRecoveryStepDescription(
+    targetPath: string,
+    integrityError: string,
+  ): string {
+    const target = targetPath || this.buildTaskArtifactFilename(".html");
+    return (
+      `HTML write-recovery (required): the current final file \`${target}\` is incomplete (${integrityError}). ` +
+      "Read the existing target and any .neoworker/tmp/frag fragments, then execute the assembly or rewrite the same target now. " +
+      "Produce one complete standalone HTML document with populated data, all requested sections, and closing </body></html> tags; remove bootstrap stubs, empty tables, unresolved placeholders, and open fragments. " +
+      "Use write_file or convert_markdown_to_html, then read the final file back and verify it before completing."
+    );
+  }
+
   /**
    * Completion contracts are authoritative even when a planning model omits a
    * requested format or a specialized artifact tool returns only the first of
@@ -13421,6 +13620,18 @@ ${transcript}
    */
   private appendMissingArtifactRecoveryStepsIfNeeded(): boolean {
     if (!this.plan || this.cancelled || this.softDeadlineTriggered) return false;
+    // A provider/model timeout is a terminal execution failure for this turn,
+    // not proof that the requested artifact was omitted. Do not append a
+    // generic recovery step after a timed-out mutation: that would re-run the
+    // failed step, duplicate work, and mask the real timeout in the UI.
+    const hasTimedOutStep = this.plan.steps.some(
+      (step) =>
+        step.status === "failed" &&
+        /\btimed?\s*out\b|\btimeout\b|\bsoft[-\s]?deadline\b|超时|软时限/i.test(
+          String(step.error || ""),
+        ),
+    );
+    if (hasTimedOutStep) return false;
     const contract =
       this.activeFollowUpCompletionContract || this.buildCompletionContract();
     if (
@@ -13434,7 +13645,11 @@ ${transcript}
       contract,
       evidenceFiles,
     );
-    if (missingExtensions.length === 0) return false;
+    const htmlIntegrityError =
+      contract.requiredArtifactExtensions.includes(".html")
+        ? this.getHtmlArtifactIntegrityError(contract, evidenceFiles)
+        : null;
+    if (missingExtensions.length === 0 && !htmlIntegrityError) return false;
 
     // A few isolated tests and migration paths hydrate an executor from its
     // prototype instead of calling the constructor. Keep the recovery guard
@@ -13445,19 +13660,48 @@ ${transcript}
 
     const recoveryScope =
       this.activeConversationTurnId || `task:${this.task.id}:initial`;
+    const invalidHtmlPaths = htmlIntegrityError
+      ? evidenceFiles
+          .filter((candidate) => path.extname(String(candidate || "")).toLowerCase() === ".html")
+          .slice(-3)
+          .join(",")
+      : "";
     const signature = `${recoveryScope}:${[...missingExtensions]
       .map((extension) => String(extension).toLowerCase())
       .sort()
-      .join(",")}`;
+      .join(",")}:html-integrity:${invalidHtmlPaths}:${htmlIntegrityError || ""}`;
     if (this.artifactCompletionRecoverySignatures.has(signature)) return false;
     this.artifactCompletionRecoverySignatures.add(signature);
 
+    const htmlEvidenceTarget = evidenceFiles
+      .filter(
+        (candidate) =>
+          path.extname(String(candidate || "")).toLowerCase() === ".html",
+      )
+      .slice(-1)[0];
     const recoverySteps = missingExtensions.map((extension) => ({
       id: this.nextPlanStepId(this.plan!.steps),
-      description: this.buildArtifactRecoveryStepDescription(extension),
+      description:
+        extension === ".html" && htmlIntegrityError
+          ? this.buildHtmlArtifactIntegrityRecoveryStepDescription(
+              htmlEvidenceTarget || this.buildTaskArtifactFilename(".html"),
+              htmlIntegrityError,
+            )
+          : this.buildArtifactRecoveryStepDescription(extension),
       kind: "recovery" as const,
       status: "pending" as const,
     }));
+    if (htmlIntegrityError && missingExtensions.includes(".html") === false) {
+      recoverySteps.push({
+        id: this.nextPlanStepId(this.plan!.steps),
+        description: this.buildHtmlArtifactIntegrityRecoveryStepDescription(
+          htmlEvidenceTarget || this.buildTaskArtifactFilename(".html"),
+          htmlIntegrityError,
+        ),
+        kind: "recovery" as const,
+        status: "pending" as const,
+      });
+    }
     // Allocate stable unique IDs when more than one format is missing.
     let nextId = Number.parseInt(this.nextPlanStepId(this.plan.steps), 10);
     for (const recoveryStep of recoverySteps) {
@@ -13468,6 +13712,7 @@ ${transcript}
     this.emitEvent("plan_revised", {
       reason: "missing_required_artifact_recovery",
       missingArtifactExtensions: missingExtensions,
+      htmlIntegrityError: htmlIntegrityError || undefined,
       newStepsCount: recoverySteps.length,
       totalSteps: this.plan.steps.length,
       plan: this.plan,
@@ -15170,7 +15415,7 @@ ${transcript}
       steps: [
         {
           id: "1",
-          description: `Create the final standalone HTML experience \`${filename}\` with all requested content, styling, and working interaction or animation. Ensure the delivered file contains no staging placeholders and produce exactly one usable .html file.`,
+          description: `Create the final standalone HTML experience \`${filename}\` with all requested content, styling, and working interaction or animation. Ensure the delivered file contains no staging placeholders; if you use .neoworker/tmp fragments or an assemble.py helper, execute the assembly and read back the final file before completing. Produce exactly one usable .html file.`,
           kind: "primary",
           status: "pending",
         },
@@ -18654,6 +18899,8 @@ ${transcript}
       "- For React/Vite/Next.js projects, start the existing dev server with the repo's script or use qa_run with server_command when automated QA is more appropriate; use an available localhost port.",
       "- For standalone HTML, open the file or local preview URL in the browser instead of inventing a complex server.",
       "- Use browser_navigate, browser_snapshot, browser_screenshot, and browser_emulate for desktop/mobile checks, screenshots, layout overlap, interaction, console, and network issues.",
+      "- Never install Playwright, Chromium, Chrome, browser drivers, or other browser binaries/dependencies during a user task just to perform visual QA.",
+      "- If the built-in browser tools are unavailable, validate the final HTML by reading it back and checking its required content, structure, scripts, and closing tags; record the visual-QA limitation honestly, but do not invalidate an otherwise complete artifact.",
       "- Fix issues found in the rendered page, then re-check before finalizing. Skip browser checks only for pure design-token/component refactors where rendered-page evidence would not change the outcome.",
     ].join("\n");
   }
@@ -18792,6 +19039,7 @@ ${transcript}
           "- This follow-up requests HTML. If the source already exists in Markdown or text files, call convert_markdown_to_html with source paths and one output filename; do not copy the full report into write_file arguments.",
           "- If there is no reusable source file, the first write_file call must create a complete standalone HTML document, including closing </body></html> tags and one completed <section> per source attachment. Put a unique <!-- NEOWORKER_APPEND_POINT --> immediately before </body>; append bounded chunks only by replacing that sentinel and restoring it.",
           "- Before completing, verify that every source attachment/date has its own completed section. A title, date range, navigation item, or partial first section does not count as complete source coverage.",
+          "- If you created .neoworker/tmp fragments or an assemble.py helper, execute the assembly and read the final HTML back before replying. Do not end after writing a skeleton or saying that assembly will happen next.",
         ]
       : [];
     const browserVerificationGuidance =
@@ -18799,6 +19047,7 @@ ${transcript}
         ? [
             "- This follow-up is browser verification. Use NeoWorker's built-in browser_navigate/browser_snapshot/browser_get_content/browser_screenshot tools for rendered-page evidence.",
             "- Do not launch Chrome through run_command, Playwright CLI, shell commands, or AppleScript. Those routes are not the browser session available inside NeoWorker and may be sandbox-blocked.",
+            "- Do not install Playwright, Chromium, Chrome, browser drivers, or any browser dependency. If the built-in browser is unavailable, use structural read-back validation and finish with an honest note instead of installing software or failing a valid artifact.",
             "- After the last browser tool result, provide a real final verdict. Do not end on a progress sentence that announces another check.",
           ]
         : [];
@@ -19508,10 +19757,54 @@ ${transcript}
     return hasBrowserTarget && hasVerificationIntent;
   }
 
+  private shouldBlockBrowserDependencyInstallation(command: string): boolean {
+    const normalizedCommand = String(command || "").trim();
+    if (!normalizedCommand) return false;
+
+    const taskContext = [
+      this.task?.title || "",
+      this.task?.prompt || "",
+      this.lastUserMessage || "",
+      this.currentStepId && Array.isArray(this.plan?.steps)
+        ? this.plan.steps.find((step) => step.id === this.currentStepId)?.description || ""
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (!this.isWebPagePreviewWorkflowTask(taskContext)) return false;
+
+    // A user who explicitly asks to install a browser dependency owns that
+    // decision; otherwise an HTML task must not consume disk/time installing
+    // an unrelated browser binary merely to perform optional visual QA.
+    if (
+      /(?:install|安装)\s+(?:playwright|puppeteer|chrom(?:e|ium)|browser\s+driver|浏览器(?:驱动|依赖))/i.test(
+        taskContext,
+      )
+    ) {
+      return false;
+    }
+
+    return /(?:\b(?:playwright|puppeteer)\b[^\n;&|]*\binstall\b|\b(?:npm|npx|pnpm|yarn|bun)\b[^\n;&|]*(?:install|add)\b[^\n;&|]*\b(?:playwright|puppeteer|chrom(?:e|ium)|browser\s*driver)\b|\b(?:brew|apt(?:-get)?|yum|dnf|pacman)\b[^\n;&|]*(?:install|--cask)\b[^\n;&|]*\b(?:google-chrome|chrom(?:e|ium)|playwright|browser)\b)/i.test(
+      normalizedCommand,
+    );
+  }
+
   private filterToolsForBuiltInBrowserVerification<T extends { name?: string }>(
     tools: T[],
   ): T[] {
     if (!this.shouldPreferBuiltInBrowserVerification()) return tools;
+
+    // Browser verification should prefer the built-in browser tools, but it
+    // must not turn an explicitly granted shell capability into a missing
+    // tool.  Follow-up tasks commonly arrive here with a completed task
+    // status while their per-task access snapshot already grants shell access
+    // (for example after selecting "Full access" in the composer).
+    const shellAccessGranted =
+      this.task?.agentConfig?.shellAccess === true ||
+      (this.task?.agentConfig?.shellAccess !== false &&
+        this.workspace?.permissions?.shell === true);
+    if (shellAccessGranted) return tools;
+
     const hasBuiltInBrowser = tools.some(
       (tool) =>
         canonicalizeToolNameUtil(String(tool.name || "")) ===
@@ -21261,6 +21554,7 @@ You are continuing a previous conversation. The context from the previous conver
       lower.includes("limitation statement") ||
       lower.includes("without attempting any tool action") ||
       lower.includes("no successful file/canvas mutation") ||
+      lower.includes("html artifact is incomplete") ||
       lower.includes("required artifact mutation") ||
       lower.includes(
         "execution-oriented task finished without attempting run_command/run_applescript",
@@ -21288,6 +21582,7 @@ You are continuing a previous conversation. The context from the previous conver
       lower.includes("artifact_write_checkpoint_failed") ||
       lower.includes("expected a written artifact") ||
       lower.includes("artifact reference/presence") ||
+      lower.includes("html artifact is incomplete") ||
       lower.includes("write contract")
     );
   }
@@ -21791,6 +22086,26 @@ You are continuing a previous conversation. The context from the previous conver
       stepContract.artifactKind === "canvas"
         ? "Create/open canvas session and push minimal valid HTML first, then iterate."
         : `Write a minimal valid ${extension || "artifact"} stub to ${contractTarget}, then expand.`;
+
+    if (extension === ".html") {
+      return {
+        templateId: "write_recovery:html_integrity",
+        steps: [
+          {
+            description:
+              `HTML write-recovery (required): repair the incomplete final document for "${step.description}" at "${contractTarget}". ` +
+              "Read the existing target and any .neoworker/tmp/frag fragments, execute the assembly or rewrite the same target now, and preserve all source data. " +
+              "The result must be one complete standalone HTML document with populated tables/charts, every requested section, no bootstrap stub or unresolved placeholder, and closing </body></html> tags. Use write_file or convert_markdown_to_html, then read the final file back before completing.",
+            kind: "recovery",
+          },
+          {
+            description:
+              "After the HTML rewrite succeeds, read the final file back and verify its structure, source coverage, and populated data before allowing browser verification to continue.",
+            kind: "recovery",
+          },
+        ],
+      };
+    }
 
     if (stepContract.artifactKind === "canvas") {
       return {
@@ -34178,6 +34493,8 @@ Return ONLY a JSON object:
       let foundBrowserNavigationEvidence = false;
       let foundBrowserInspectionEvidence = false;
       let browserInspectionEvidenceText = "";
+      let browserInfrastructureFailureObserved = false;
+      let browserInfrastructureFailureReason = "";
       let currentStepTargetVerificationObserved = false;
       const stepLoopBudget = defaultStepLoopBudget();
       // Verification should confirm existing evidence, not become a second
@@ -34185,11 +34502,16 @@ Return ONLY a JSON object:
       // final report while preventing long shell-probing loops.
       const maxIterations = this.isVerificationStepForCompletion(step)
         ? Math.min(4, stepLoopBudget.maxIterations)
-        : stepLoopBudget.maxIterations;
+        : stepContract.mode === "mutation_required"
+          ? Math.max(16, stepLoopBudget.maxIterations)
+          : Math.min(8, stepLoopBudget.maxIterations);
       const maxEmptyResponses = 3;
       const maxMaxTokensRecoveries = stepLoopBudget.maxMaxTokenRecoveries;
       const maxContextCapacityRecoveries = stepLoopBudget.maxContextRecoveries;
-      const maxMalformedToolArgumentsRecoveries = 2;
+      // A malformed tool response is usually deterministic for the current
+      // prompt. One bounded correction is enough; a second replay can keep a
+      // large artifact step alive for several minutes without making progress.
+      const maxMalformedToolArgumentsRecoveries = 1;
       let maxTokensRecoveryCount = 0;
       let contextCapacityRecoveryCount = 0;
       let malformedToolArgumentsRecoveryCount = 0;
@@ -36864,7 +37186,26 @@ Return ONLY a JSON object:
                             foundNewImage = true;
                           }
 
-                          if (result && result.success === false) {
+                          const benignNoChange = isBenignNoChangeToolResult(
+                            content.name,
+                            result,
+                          );
+                          if (benignNoChange) {
+                            this.emitEvent("tool_warning", {
+                              ...this.attachToolCorrelationMetadata(
+                                {
+                                  tool: content.name,
+                                  warning:
+                                    "edit_file requested no change because the target already contains the replacement.",
+                                  noChange: true,
+                                  nonBlocking: true,
+                                },
+                                effectiveCorrelation,
+                              ),
+                            });
+                          }
+
+                          if (result && result.success === false && !benignNoChange) {
                             this.releaseBatchCreatedPathReservation(
                               batchCreatedPaths,
                               content.name,
@@ -37455,6 +37796,39 @@ Return ONLY a JSON object:
                 );
                 continue;
               }
+            }
+
+            if (
+              content.name === "run_command" &&
+              this.shouldBlockBrowserDependencyInstallation(
+                String(content.input?.command || ""),
+              )
+            ) {
+              const blockedMessage =
+                "Browser dependency installation is blocked for this HTML task. " +
+                "Do not install Playwright/Chromium/Chrome or browser drivers. " +
+                "Use NeoWorker's built-in browser tools when available; otherwise read the final HTML back and validate its structure/content before finishing.";
+              logger.info(
+                `${this.logTag} Blocked browser dependency installation during web artifact task`,
+              );
+              this.emitEvent("tool_blocked", {
+                tool: content.name,
+                reason: "browser_dependency_installation",
+                message: blockedMessage,
+              });
+              toolResults.push({
+                type: "tool_result",
+                tool_use_id: content.id,
+                content: JSON.stringify({
+                  error: blockedMessage,
+                  blocked: true,
+                  reason: "browser_dependency_installation",
+                }),
+                is_error: true,
+              });
+              hadToolError = true;
+              toolErrors.add(content.name);
+              continue;
             }
 
             // Validate tool availability before attempting any inference
@@ -38249,14 +38623,48 @@ Return ONLY a JSON object:
                 }
               }
 
+              // An edit that is already at the requested state is an
+              // idempotent no-op. Keep the error result visible to the model,
+              // but do not count it as a tool failure (otherwise a final
+              // repeated edit can make the whole write/recovery step fail).
+              const benignNoChange = isBenignNoChangeToolResult(
+                content.name,
+                result,
+              );
+              if (benignNoChange) {
+                this.emitEvent("tool_warning", {
+                  ...this.attachToolCorrelationMetadata(
+                    {
+                      tool: content.name,
+                      warning:
+                        "edit_file requested no change because the target already contains the replacement.",
+                      noChange: true,
+                      nonBlocking: true,
+                    },
+                    toolCorrelation,
+                  ),
+                });
+              }
+
               // Check if the result indicates an error (some tools return error in result)
-              if (result && result.success === false) {
+              if (result && result.success === false && !benignNoChange) {
                 this.releaseBatchCreatedPathReservation(
                   batchCreatedPaths,
                   content.name,
                   content.input,
                 );
                 const reason = this.getToolFailureReason(result, "unknown error");
+                if (
+                  content.name.startsWith("browser_") &&
+                  isHtmlBrowserVerificationInfrastructureFailure(
+                    String(result.error || reason || ""),
+                  )
+                ) {
+                  browserInfrastructureFailureObserved = true;
+                  browserInfrastructureFailureReason ||= String(
+                    result.error || reason || "Browser automation unavailable",
+                  );
+                }
                 const advisoryFailure = isAdvisoryToolFailureResultUtil(result);
                 if (advisoryFailure) {
                   if (
@@ -38407,6 +38815,13 @@ Return ONLY a JSON object:
               );
 
               const failureMessage = error?.message || "Tool execution failed";
+              if (
+                content.name.startsWith("browser_") &&
+                isHtmlBrowserVerificationInfrastructureFailure(failureMessage)
+              ) {
+                browserInfrastructureFailureObserved = true;
+                browserInfrastructureFailureReason ||= failureMessage;
+              }
               if (isExecutionToolCall) {
                 this.executionToolLastError = failureMessage;
               }
@@ -39203,7 +39618,10 @@ Return ONLY a JSON object:
         mode: "step",
         messages,
         maxIterations,
-        maxLlmCalls: stepLoopBudget.maxLlmCalls,
+        maxLlmCalls:
+          stepContract.mode === "mutation_required"
+            ? Math.max(16, stepLoopBudget.maxLlmCalls)
+            : stepLoopBudget.maxLlmCalls,
         maxEmptyResponses,
         maxRecoveredResponses: stepLoopBudget.maxRecoveredResponses,
         maxRepeatedIterations: stepLoopBudget.maxRepeatedIterations,
@@ -39398,11 +39816,13 @@ Return ONLY a JSON object:
       ) {
         stepFailed = true;
         if (!lastFailureReason) {
-          lastFailureReason = browserChecklistResult
-            ? `Verification failed: browser checklist missing required evidence - ${browserChecklistResult.pendingRequired.join(
-                "; ",
-              )}`
-            : "Verification failed: expected browser-session evidence (navigate + inspect) was not detected.";
+          lastFailureReason = browserInfrastructureFailureObserved
+            ? `Browser automation unavailable during HTML verification: ${browserInfrastructureFailureReason || "the browser session could not provide inspection evidence."}`
+            : browserChecklistResult
+              ? `Verification failed: browser checklist missing required evidence - ${browserChecklistResult.pendingRequired.join(
+                  "; ",
+                )}`
+              : "Verification failed: expected browser-session evidence (navigate + inspect) was not detected.";
         }
       }
       if (
@@ -39565,6 +39985,142 @@ Return ONLY a JSON object:
               artifactContractMode === "artifact_presence_required"
                 ? "Step expected an artifact reference/presence but none was detected."
                 : "Step expected a written artifact but no successful file mutation was detected.";
+          }
+        }
+      }
+
+      // Do not let a non-empty bootstrap file satisfy an HTML write step. A
+      // chunked generation can successfully write several fragments while the
+      // final target remains the 128-byte placeholder; without this checkpoint
+      // execution proceeds to browser verification and the preview appears to
+      // hang on "正在生成网页内容...". Fail the writing step early so the
+      // normal recovery planner can assemble/rewrite the final document before
+      // any verification step runs.
+      if (
+        !stepFailed &&
+        !isVerifyStep &&
+        requiredArtifactExtensions.includes(".html") &&
+        (stepContract.requiresMutation || stepRequiresArtifactEvidence)
+      ) {
+          const htmlCandidates = Array.from(
+            new Set(
+              [
+                ...artifactVerificationTargets,
+                ...stepContract.targetPaths,
+                ...this.getAllArtifactEvidencePaths(),
+                // The model may omit the target path entirely after creating
+                // only preparation files. Still run the HTML guard against
+                // the deterministic task filename so the step cannot be
+                // reported complete without a final document.
+                this.buildTaskArtifactFilename(".html"),
+              ].filter(
+              (candidate): candidate is string =>
+                typeof candidate === "string" &&
+                path.extname(candidate).toLowerCase() === ".html",
+            ),
+          ),
+        );
+        const hasReadableHtmlCandidate = htmlCandidates.some((candidate) => {
+          const resolved = this.resolveArtifactPathForInspection(candidate);
+          if (!resolved) return false;
+          try {
+            return fs.statSync(resolved).isFile();
+          } catch {
+            return false;
+          }
+        });
+        // Try staged-fragment recovery even when the final target has not
+        // materialized yet. A failed assembly script can leave only `partN`
+        // files behind; waiting for a readable target would otherwise skip the
+        // deterministic recovery path entirely.
+        if (hasReadableHtmlCandidate || htmlCandidates.length > 0) {
+          const htmlContract =
+            this.activeFollowUpCompletionContract ||
+            this.buildCompletionContract();
+          let htmlIntegrityError = this.getHtmlArtifactIntegrityError(
+            htmlContract,
+            htmlCandidates,
+          );
+          if (htmlIntegrityError) {
+            const recovery = this.tryRecoverHtmlArtifactFromStagedFragments(
+              htmlContract,
+              htmlCandidates,
+            );
+            if (recovery?.success && recovery.path) {
+              // Treat the deterministic recovery as a successful write so the
+              // rest of the contract (required tool/mutation evidence and the
+              // browser verifier) observes the repaired artifact in this same
+              // step. The original failed shell call is retained in the event
+              // log, but it must not poison an otherwise recovered generation.
+              this.recordFileOperation(
+                "write_file",
+                { path: recovery.path },
+                { success: true, path: recovery.path },
+              );
+              const recoveredRelativePath = this.toWorkspaceRelativeArtifactPath(
+                recovery.path,
+              );
+              this.emitEvent("file_modified", {
+                path: recoveredRelativePath,
+                size: recovery.bytes,
+                source: "html_fragment_recovery",
+              });
+              this.emitEvent("artifact_created", {
+                path: recoveredRelativePath,
+                mimeType: "text/html",
+                label: path.basename(recovery.path),
+                source: "html_fragment_recovery",
+              });
+              this.daemon.registerArtifact?.(
+                this.task.id,
+                recovery.path,
+                "text/html",
+              );
+              stepSucceededWithFileMutation = true;
+              hadToolError = false;
+              hadToolSuccessAfterError = true;
+              hadRunCommandFailure = false;
+              hadToolSuccessAfterRunCommandFailure = true;
+              hadAnyToolSuccess = true;
+              successfulToolNames.add("write_file");
+              const recoveryEvidence = this.buildObservedMutationEvidence({
+                canonicalToolName: "write_file",
+                reportedPath: recovery.path,
+                thresholdMs: Math.max(0, stepStartedAt - 1000),
+                observedEventType: "file_modified",
+                observedEventTimestamp: Date.now(),
+              });
+              if (recoveryEvidence) {
+                mutationEvidence.push(recoveryEvidence);
+                this.recordArtifactMutationLedgerEntry(recovery.path, {
+                  stepId: step.id,
+                  tool: "write_file",
+                  evidence: recoveryEvidence,
+                });
+              }
+              stepFailed = false;
+              lastFailureReason = "";
+              htmlIntegrityError = null;
+              this.emitEvent("log", {
+                message:
+                  "HTML artifact was repaired from staged fragments without rerunning the failed assembly script.",
+                stepId: step.id,
+                targetPath: recovery.path,
+                sourceDirectory: recovery.sourceDirectory,
+                fragmentCount: recovery.fragmentCount,
+                bytes: recovery.bytes,
+              });
+            } else {
+              stepFailed = true;
+              lastFailureReason = htmlIntegrityError;
+              this.emitEvent("log", {
+                message:
+                  "HTML write step rejected an incomplete final document; recovery is required before browser verification.",
+                stepId: step.id,
+                htmlCandidates: htmlCandidates.slice(-5),
+                integrityError: htmlIntegrityError,
+              });
+            }
           }
         }
       }
@@ -41269,6 +41825,10 @@ Return ONLY a JSON object:
     const raw = String(error?.message || "Unknown error");
     const lower = raw.toLowerCase();
 
+    if (lower.includes("without a conclusive final response")) {
+      return "本轮工具执行后，模型仍未给出实际答案，因此没有标记为成功。本轮已结束，查询记录和上下文已保留，可以继续追问或重试。";
+    }
+
     if (lower.includes("toolresult") && lower.includes("tooluse")) {
       return "模型工具调用记录不一致，本轮已安全结束，当前上下文已保留。请重新发送这条消息。";
     }
@@ -42699,7 +43259,9 @@ Return ONLY a JSON object:
     // routinely stopped immediately after the first failed bounded edit.
     const maxIterations = getFollowUpIterationLimit(
       followUpCompletionContract,
-      followUpLoopBudget.maxIterations,
+      followUpCompletionContract.requiresArtifactEvidence
+        ? Math.max(16, followUpLoopBudget.maxIterations)
+        : followUpLoopBudget.maxIterations,
     );
     const maxEmptyResponses = 3;
     const maxMaxTokensRecoveries = followUpLoopBudget.maxMaxTokenRecoveries;
@@ -42708,7 +43270,9 @@ Return ONLY a JSON object:
     let maxTokensRecoveryCount = 0;
     let contextCapacityRecoveryCount = 0;
     let outputLanguageRecoveryCount = 0;
-    const maxMalformedToolArgumentsRecoveries = 2;
+    // Keep malformed tool recovery bounded so a broken provider response does
+    // not turn a follow-up into an open-ended retry loop.
+    const maxMalformedToolArgumentsRecoveries = 1;
     let malformedToolArgumentsRecoveryCount = 0;
     let toolRecoveryHintInjected = false;
     // Loop detection: track recent tool calls to detect degenerate loops
@@ -44854,6 +45418,17 @@ Return ONLY a JSON object:
             wantsToEnd = false;
           }
 
+          // A status-only end_turn should enter the bounded answer-only
+          // recovery below, not burn the remaining tool loop repeating it.
+          if (
+            wantsToEnd &&
+            hadToolCalls &&
+            !responseHasToolUse &&
+            this.isProgressOnlyFollowUpText(assistantText)
+          ) {
+            continueLoop = false;
+          }
+
           // Only end the loop if the agent wants to AND has provided a response
           if (
             wantsToEnd &&
@@ -44951,54 +45526,20 @@ Return ONLY a JSON object:
         this.followUpNeedsToolFreeFinalResponse(
           hadToolCalls,
           hasTextAfterLatestToolResults,
+          this.getLatestAssistantText(messages),
         )
       ) {
         logger.info(
           `${this.logTag} Follow-up ended after tool results without a final verdict; running a tool-free finalization turn`,
         );
-        const finalizationInstruction = this.sanitizeFallbackInstruction(
-          `${followUpOutputLanguageDirective}\n` +
-            "Tool execution has ended. Provide the final answer now using the available tool results. " +
-            "State the actual result or exact blocker; do not announce another action, retry, check, or tool call. " +
-            "For verification requests, give the requested verdict (including exactly OK when required) only if the evidence supports it.",
-        );
-        const finalTurn = await this.runTextTurnKernel({
-          messages: [
-            ...messages,
-            {
-              role: "user",
-              content: [{ type: "text", text: finalizationInstruction }],
-            },
-          ],
-          systemPrompt: this.systemPrompt,
-          initialMaxTokens: POST_TOOL_FINALIZATION_INITIAL_MAX_TOKENS,
-          continuationMaxTokens: POST_TOOL_FINALIZATION_CONTINUATION_MAX_TOKENS,
-          mode: "follow_up",
-          operationLabel: "Follow-up tool-free final response",
-          allowContinuation: true,
-          emptyFallback: "",
-        });
-        const finalProcessing = this.processAssistantResponseText({
-          responseContent: [
-            { type: "text", text: finalTurn.assistantText || "" },
-          ],
-          finalResponse: true,
+        messages = await this.completeFollowUpAnswer({
+          messages,
+          outputLanguageDirective: followUpOutputLanguageDirective,
           requiresSimplifiedChinese: followUpRequiresSimplifiedChinese,
+          contract: followUpCompletionContract,
+          evidenceStartedAt: followUpArtifactEvidenceStartedAt,
+          createdFilesBefore: followUpCreatedFilesBefore,
         });
-        const finalText = finalProcessing.assistantText.trim();
-        if (!finalText || this.isProgressOnlyFollowUpText(finalText)) {
-          throw new Error(
-            "Follow-up tool execution ended without a conclusive final response.",
-          );
-        }
-        messages = finalTurn.messages;
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage?.role === "assistant") {
-          lastMessage.content = [{ type: "text", text: finalText }];
-        }
-        this.lastAssistantText = finalText;
-        this.lastAssistantOutput = finalText;
-        this.lastNonVerificationOutput = finalText;
         hasProvidedTextResponse = true;
         hasTextAfterLatestToolResults = true;
       }

@@ -20,6 +20,8 @@ type RunCommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+  /** A concise machine-readable failure reason for the agent to recover from. */
+  error?: string;
   truncated?: boolean;
   terminationReason?: CommandTerminationReason;
 };
@@ -653,6 +655,7 @@ export class ShellTools {
     stdout: string;
     stderr: string;
     exitCode: number | null;
+    error?: string;
     truncated?: boolean;
     terminationReason?: CommandTerminationReason;
   } | null> {
@@ -738,6 +741,13 @@ export class ShellTools {
 
       const stdout = this.sanitizeCommandOutput(result.stdout);
       let stderr = this.sanitizeCommandOutput(result.stderr);
+      // MacOSSandbox/Docker can terminate before the child has a chance to
+      // write stderr (for example, a sandbox denial or signal). Preserve the
+      // runner's error in the tool payload so the model can diagnose and
+      // recover instead of seeing an opaque `termination: error` with blanks.
+      if (!stderr.trim() && result.error) {
+        stderr = this.sanitizeCommandOutput(result.error);
+      }
       if (result.exitCode !== 0 && !stdout.trim() && !stderr.trim() && !result.error) {
         stderr = buildEmptyCommandFailureMessage({
           exitCode: result.exitCode,
@@ -811,6 +821,7 @@ export class ShellTools {
         stdout,
         stderr,
         exitCode: result.exitCode,
+        error: errorMessage,
         truncated:
           result.stdout.includes("[Output truncated]") ||
           result.stderr.includes("[Output truncated]"),
@@ -1216,6 +1227,10 @@ export class ShellTools {
             stderr: this.sanitizeCommandOutput(persistentResult.stderr),
             exitCode: persistentResult.exitCode,
             truncated: persistentResult.truncated,
+            error:
+              persistentResult.success
+                ? undefined
+                : persistentResult.stderr || "Persistent shell command failed",
             terminationReason: persistentResult.terminationReason,
           });
         }
@@ -1456,6 +1471,7 @@ export class ShellTools {
           stderr: this.sanitizeCommandOutput(truncatedStderr),
           exitCode: code,
           truncated: stdout.length > MAX_OUTPUT_SIZE || stderr.length > MAX_OUTPUT_SIZE,
+          error: errorMessage,
           terminationReason,
         }));
       });
@@ -1489,6 +1505,7 @@ export class ShellTools {
           stdout: this.sanitizeCommandOutput(this.truncateOutput(stdout)),
           stderr: this.sanitizeCommandOutput(error.message),
           exitCode: null,
+          error: error.message,
           terminationReason,
         }));
       });

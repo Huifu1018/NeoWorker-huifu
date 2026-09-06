@@ -107,6 +107,14 @@ export function getTaskFeedRowEvent(row: TaskFeedRow): TaskEvent | null {
   return row.item.event as TaskEvent;
 }
 
+function isConversationTranscriptRow(row: TaskFeedRow): boolean {
+  const event = getTaskFeedRowEvent(row);
+  if (!event) return false;
+  const type = getEffectiveTaskEventType(event);
+  if (type === "user_message" || type === "assistant_message") return true;
+  return type === "task_completed" && getCompletionSummaryText(event).trim().length > 0;
+}
+
 export function getTaskFeedRowVisiblePerfEventId(
   row: TaskFeedRow,
 ): string | null {
@@ -159,25 +167,32 @@ export function deriveProgressHeartbeat(
   for (let index = scopedEvents.length - 1; index >= 0; index -= 1) {
     const event = scopedEvents[index];
     const effectiveType = getEffectiveTaskEventType(event);
-    if (
-      effectiveType === "task_completed" ||
-      effectiveType === "task_failed" ||
-      effectiveType === "task_cancelled" ||
-      effectiveType === "follow_up_completed"
-    ) {
-      // A follow-up can reuse a task that already has a terminal event. In
-      // that case the newer user message starts a fresh live window.
-      return latestUserMessageIndex > index
-        ? localizeProgressText(PROGRESS_HEARTBEAT_TEXT.planning)
-        : "";
-    }
-
     const payload =
       event.payload &&
       typeof event.payload === "object" &&
       !Array.isArray(event.payload)
         ? (event.payload as Record<string, unknown>)
         : {};
+    const payloadStatus =
+      typeof payload.status === "string" ? payload.status : "";
+    const isTerminalEvent =
+      effectiveType === "task_completed" ||
+      effectiveType === "task_failed" ||
+      effectiveType === "task_cancelled" ||
+      effectiveType === "task_interrupted" ||
+      effectiveType === "follow_up_completed" ||
+      effectiveType === "follow_up_failed" ||
+      (effectiveType === "task_status" &&
+        ["completed", "failed", "cancelled", "paused", "blocked", "interrupted"].includes(
+          payloadStatus,
+        ));
+    if (isTerminalEvent) {
+      // A follow-up can reuse a task that already has a terminal event. In
+      // that case the newer user message starts a fresh live window.
+      return latestUserMessageIndex > index
+        ? localizeProgressText(PROGRESS_HEARTBEAT_TEXT.planning)
+        : "";
+    }
     const step =
       payload.step && typeof payload.step === "object" && !Array.isArray(payload.step)
         ? (payload.step as Record<string, unknown>)
@@ -689,6 +704,15 @@ export function selectVisibleTaskFeedRows(
   }
 
   const keepIndexes = new Set<number>();
+  // Conversation rows are durable user-facing content, not live execution
+  // noise. Preserve every turn even when the internal step feed is bounded.
+  const conversationIndexes = new Set<number>();
+  for (let index = 0; index < feedRows.length; index += 1) {
+    if (isConversationTranscriptRow(feedRows[index])) {
+      conversationIndexes.add(index);
+      keepIndexes.add(index);
+    }
+  }
   const keepLastMatch = (predicate: (row: TaskFeedRow) => boolean) => {
     for (let index = feedRows.length - 1; index >= 0; index -= 1) {
       if (predicate(feedRows[index])) {
@@ -726,9 +750,18 @@ export function selectVisibleTaskFeedRows(
   keepLastMatch((row) => isUrgentLiveTranscriptRow(row));
 
   const visibleIndexes = [...keepIndexes].sort((a, b) => a - b);
+  const nonConversationIndexes = visibleIndexes.filter(
+    (index) => !conversationIndexes.has(index),
+  );
+  const nonConversationBudget = Math.max(
+    0,
+    LIVE_TRANSCRIPT_MAX_VISIBLE_ROWS - conversationIndexes.size,
+  );
   const cappedIndexes =
-    visibleIndexes.length > LIVE_TRANSCRIPT_MAX_VISIBLE_ROWS
-      ? visibleIndexes.slice(-LIVE_TRANSCRIPT_MAX_VISIBLE_ROWS)
+    nonConversationIndexes.length > nonConversationBudget
+      ? [...conversationIndexes, ...nonConversationIndexes.slice(-nonConversationBudget)].sort(
+          (a, b) => a - b,
+        )
       : visibleIndexes;
   const cappedKeepIndexes = new Set(cappedIndexes);
   const visibleFeedRows = feedRows.filter((_, index) =>

@@ -1062,6 +1062,16 @@ export class TaskRepository {
         SUBSTR(COALESCE(semantic_summary, ''), 1, 512) AS semantic_summary,
         CASE
           WHEN agent_config IS NOT NULL AND json_valid(agent_config)
+          THEN json_extract(agent_config, '$.providerType')
+          ELSE NULL
+        END AS agent_config_provider_type,
+        CASE
+          WHEN agent_config IS NOT NULL AND json_valid(agent_config)
+          THEN json_extract(agent_config, '$.modelKey')
+          ELSE NULL
+        END AS agent_config_model_key,
+        CASE
+          WHEN agent_config IS NOT NULL AND json_valid(agent_config)
           THEN json_extract(agent_config, '$.videoGenerationMode')
           ELSE NULL
         END AS agent_config_video_generation_mode,
@@ -1755,6 +1765,13 @@ export class TaskRepository {
     setBooleanAgentConfig("multiLlmMode", row.agent_config_multi_llm_mode);
     setBooleanAgentConfig("autonomousMode", row.agent_config_autonomous_mode);
 
+    if (typeof row.agent_config_provider_type === "string") {
+      agentConfig.providerType =
+        row.agent_config_provider_type as SidebarAgentConfig["providerType"];
+    }
+    if (typeof row.agent_config_model_key === "string") {
+      agentConfig.modelKey = row.agent_config_model_key;
+    }
     if (typeof row.agent_config_task_domain === "string") {
       agentConfig.taskDomain =
         row.agent_config_task_domain as SidebarAgentConfig["taskDomain"];

@@ -19,7 +19,10 @@ import type {
   LLMProviderType,
   LLMReasoningEffort,
 } from "../../shared/types";
-import { repairHiddenHtmlContent } from "../../shared/html-content-visibility";
+import {
+  getHtmlContentPreviewProblem,
+  repairHiddenHtmlContent,
+} from "../../shared/html-content-visibility";
 import { getWebPageFormatLabel } from "../../shared/web-page-formats";
 import { getWheelZoomDelta, useDocumentZoom } from "../hooks/useDocumentZoom";
 import { useVoiceInput } from "../hooks/useVoiceInput";
@@ -71,6 +74,7 @@ type WebArtifactViewerProps = {
   onOpenSettings?: (tab?: WebSettingsTab) => void;
   turnContext?: SpreadsheetTurnContext | null;
   refreshKey?: string | number | null;
+  taskStatus?: string;
 };
 
 type ViewerData = NonNullable<FileViewerResult["data"]>;
@@ -131,6 +135,7 @@ export function WebArtifactViewer({
   onOpenSettings,
   turnContext,
   refreshKey,
+  taskStatus,
 }: WebArtifactViewerProps) {
   useLanguage();
   const t = translate;
@@ -156,6 +161,10 @@ export function WebArtifactViewer({
   );
   const isBootstrapPlaceholder = useMemo(
     () => isBootstrapHtmlPlaceholder(htmlContent),
+    [htmlContent],
+  );
+  const htmlProblem = useMemo(
+    () => getHtmlContentPreviewProblem(htmlContent),
     [htmlContent],
   );
   const formatLabel =
@@ -430,10 +439,22 @@ export function WebArtifactViewer({
         </div>
       );
     }
+    if (htmlProblem) {
+      return <div className="web-artifact-state">{htmlProblem}</div>;
+    }
     if (!htmlContent)
       return (
         <div className="web-artifact-state">
           {t("webArtifact.noPreview", "No web preview available.")}
+        </div>
+      );
+    if (isBootstrapPlaceholder && taskStatus === "failed")
+      return (
+        <div className="web-artifact-state web-artifact-error" role="alert">
+          {t(
+            "webArtifact.incompleteFailed",
+            "HTML 文档生成失败，最终文件不完整，请重试。",
+          )}
         </div>
       );
     if (isBootstrapPlaceholder)

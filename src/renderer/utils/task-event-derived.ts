@@ -280,6 +280,21 @@ function selectLiveProjectionRawEvents(
   if (events.length <= liveWindowSize) return events;
 
   const keepIds = getLivePlanStateEventIds(events);
+  // Keep the whole user-facing conversation in the live projection. The
+  // execution feed may be windowed for responsiveness, but dropping older
+  // user/assistant turns makes a multi-query session look as if its history
+  // disappeared (the session panel still has those records). Internal
+  // assistant narration is execution detail and remains windowed.
+  for (const event of events) {
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (
+      effectiveType === "user_message" ||
+      (effectiveType === "assistant_message" && event.payload?.internal !== true) ||
+      (effectiveType === "task_completed" && getCompletionSummaryText(event).trim().length > 0)
+    ) {
+      if (event.id) keepIds.add(event.id);
+    }
+  }
   const anchorSeen = new Set<string>();
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];

@@ -80,6 +80,8 @@ export class EditTools {
     success: boolean;
     file_path: string;
     replacements: number;
+    /** True when the requested replacement was already applied (idempotent no-op). */
+    no_change?: boolean;
     error?: string;
   }> {
     const { file_path, old_string, new_string, replace_all = false } = input;
@@ -219,6 +221,9 @@ export class EditTools {
         success: false,
         file_path,
         replacements: 0,
+        no_change: /old_string and new_string are identical/i.test(
+          String(error?.message || ""),
+        ),
         error: error.message,
       };
     }

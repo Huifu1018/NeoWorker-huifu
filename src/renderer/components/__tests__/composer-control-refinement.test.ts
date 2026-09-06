@@ -31,4 +31,16 @@ describe("composer control refinement", () => {
       /\.permission-access-btn > svg[\s\S]*?width:\s*14px;[\s\S]*?height:\s*14px;/,
     );
   });
+
+  it("keeps the session send arrow white whenever the blue button is actionable", () => {
+    expect(styles).toMatch(
+      /\.session-composer\.input-container\s+\.lets-go-btn\.lets-go-btn-sm:not\(:disabled\):not\(\.composer-send-empty\)\s*\{[\s\S]*?color:\s*#ffffff;/,
+    );
+    expect(styles).toMatch(
+      /\.session-composer\.input-container\s+\.lets-go-btn\.lets-go-btn-sm:not\(:disabled\):not\(\.composer-send-empty\)\s*>\s*svg\s*\{[\s\S]*?stroke:\s*currentColor;/,
+    );
+    expect(styles).toMatch(
+      /\.session-composer\.input-container:has\(\.prompt-composer-input\[data-has-draft="true"\]\)[\s\S]*?\.lets-go-btn\.lets-go-btn-sm\.composer-send-empty:not\(:disabled\)\s*\{[\s\S]*?color:\s*#ffffff;/,
+    );
+  });
 });

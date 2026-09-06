@@ -33,10 +33,19 @@ export function useTaskDuration(
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
+    // Reset immediately whenever a new turn starts. Without this, the first
+    // render of a follow-up can reuse the previous turn's clock value and the
+    // interval may not visibly advance until some unrelated refresh occurs.
+    // There is no reason to write state for an inactive/completed task. Apart
+    // from avoiding needless renders, this is important for the welcome view:
+    // callers may use a transient Date.now() fallback when no task is
+    // selected, and setting state here would turn that changing fallback into
+    // an update loop.
     if (!isActive || completedAt) return;
+    setNow(Date.now());
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
-  }, [isActive, completedAt]);
+  }, [createdAt, isActive, completedAt]);
 
   const endTime = completedAt || (isActive ? now : Date.now());
   return formatDuration(endTime - createdAt);

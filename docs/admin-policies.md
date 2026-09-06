@@ -88,7 +88,7 @@ or deny the action; it cannot grant an action or override another denial. See
       "defaultAction": "allow",
       "allowedDomains": [],
       "blockedDomains": [],
-      "allowShellNetwork": false
+      "allowShellNetwork": true
     },
     "autoReview": {
       "enabled": true
@@ -122,6 +122,11 @@ or deny the action; it cannot grant an action or override another denial. See
   }
 }
 ```
+
+When no policy file exists, the defaults are permissive: shell egress follows
+the workspace's network permission. Set `runtime.network.allowShellNetwork` to
+`false` explicitly when an organization needs to disable network access from
+Shell commands.
 
 ### Field Reference
 

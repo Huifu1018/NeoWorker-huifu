@@ -445,6 +445,12 @@ export const TaskRenameSchema = z.object({
   title: z.string().min(1).max(MAX_TITLE_LENGTH),
 });
 
+export const TaskModelUpdateSchema = z.object({
+  taskId: z.string().uuid(),
+  providerType: z.enum(LLM_PROVIDER_TYPES),
+  modelKey: z.string().trim().min(1).max(200),
+});
+
 export const TaskWorkspaceUpdateSchema = z.object({
   taskId: z.string().uuid(),
   workspaceId: WorkspaceIdSchema,

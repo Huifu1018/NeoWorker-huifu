@@ -510,13 +510,16 @@ function findLatestUserMessageTimestamp(
   events: TaskEvent[],
   taskId?: string,
 ): number | null {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
+  let latest: number | null = null;
+  for (const event of events) {
     if (taskId && event.taskId !== taskId) continue;
-    if (getEffectiveTaskEventType(event) === "user_message")
-      return event.timestamp;
+    if (getEffectiveTaskEventType(event) !== "user_message") continue;
+    if (typeof event.timestamp !== "number" || !Number.isFinite(event.timestamp)) {
+      continue;
+    }
+    latest = Math.max(latest ?? event.timestamp, event.timestamp);
   }
-  return null;
+  return latest;
 }
 
 function buildSpreadsheetTurnContext(args: {
@@ -934,6 +937,7 @@ function readStoredLeftSidebarCollapsed(): boolean {
 type SelectedTaskWorkspaceViewProps = {
   task: Task | undefined;
   selectedTaskId: string | null;
+  optimisticFollowUpStartedAt: number | null;
   workspace: Workspace | null;
   projectId: string | null;
   events: TaskEvent[];
@@ -1102,6 +1106,7 @@ const SelectedTaskWorkspaceView = memo(
   function SelectedTaskWorkspaceView({
     task,
     selectedTaskId,
+    optimisticFollowUpStartedAt,
     workspace,
     projectId,
     events,
@@ -1869,6 +1874,7 @@ const SelectedTaskWorkspaceView = memo(
             onOpenSettings={onOpenSettings}
             turnContext={spreadsheetTurnContext}
             refreshKey={artifactRefreshKey}
+            taskStatus={task?.status}
           />
         );
       }
@@ -1922,6 +1928,7 @@ const SelectedTaskWorkspaceView = memo(
             <MainContent
               task={task}
               selectedTaskId={selectedTaskId}
+              optimisticFollowUpStartedAt={optimisticFollowUpStartedAt}
               workspace={workspace}
               projectId={projectId}
               events={
@@ -2150,6 +2157,7 @@ const SelectedTaskWorkspaceView = memo(
                         onFullscreen={showSpreadsheetFullscreen}
                         onExitFullscreen={showSpreadsheetSidebar}
                         refreshKey={artifactRefreshKey}
+                        taskStatus={task?.status}
                       />
                     ) : spreadsheetArtifact ? (
                       <SpreadsheetArtifactViewer
@@ -2199,6 +2207,7 @@ const SelectedTaskWorkspaceView = memo(
   (prev, next) =>
     getAppTaskSignature(prev.task) === getAppTaskSignature(next.task) &&
     prev.selectedTaskId === next.selectedTaskId &&
+    prev.optimisticFollowUpStartedAt === next.optimisticFollowUpStartedAt &&
     prev.workspace?.path === next.workspace?.path &&
     prev.events === next.events &&
     prev.replayControls === next.replayControls &&
@@ -2564,6 +2573,12 @@ export function App() {
   >(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [childEvents, setChildEvents] = useState<TaskEvent[]>([]);
+  // A terminal task can receive a follow-up before the daemon's first
+  // task_resumed/user_message event reaches the renderer. Keep this marker per
+  // task so the selected session's duration starts immediately and does not
+  // affect other sessions.
+  const [optimisticFollowUpStartedAtByTaskId, setOptimisticFollowUpStartedAtByTaskId] =
+    useState<Record<string, number>>({});
 
   // Child tasks dispatched from the selected parent task (for DispatchedAgentsPanel)
   const childTasks = useMemo(() => {
@@ -2580,6 +2595,25 @@ export function App() {
         : undefined),
     [remoteTaskView, tasks, selectedTaskId],
   );
+  useEffect(() => {
+    if (!selectedTaskId || !selectedTask) return;
+    const startedAt = optimisticFollowUpStartedAtByTaskId[selectedTaskId];
+    const completedAt = selectedTask.completedAt;
+    if (
+      startedAt === undefined ||
+      !isTerminalTaskStatus(selectedTask.status) ||
+      typeof completedAt !== "number" ||
+      completedAt < startedAt
+    ) {
+      return;
+    }
+    setOptimisticFollowUpStartedAtByTaskId((previous) => {
+      if (previous[selectedTaskId] !== startedAt) return previous;
+      const next = { ...previous };
+      delete next[selectedTaskId];
+      return next;
+    });
+  }, [selectedTask, selectedTaskId, optimisticFollowUpStartedAtByTaskId]);
   const sessionTasks = useMemo(() => {
     if (!selectedTask) return [];
     const relatedIds = new Set<string>([selectedTask.id]);
@@ -2724,7 +2758,11 @@ export function App() {
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState<
     LLMReasoningEffort | undefined
   >(undefined);
-  const [sessionModelOverride, setSessionModelOverride] = useState<string>("");
+  const [defaultModelSelection, setDefaultModelSelection] = useState<{
+    providerType: LLMProviderType;
+    modelKey: string;
+    reasoningEffort?: LLMReasoningEffort;
+  } | null>(null);
   const [availableModels, setAvailableModels] = useState<LLMModelInfo[]>([]);
   const [availableProviders, setAvailableProviders] = useState<
     LLMProviderInfo[]
@@ -3347,12 +3385,13 @@ export function App() {
         currentProviderConfigured &&
         Boolean(config.currentModel?.trim()) &&
         config.models.some((model) => model.key === config.currentModel);
-      setSelectedModel(hasConfiguredModel ? config.currentModel : "");
-      setSelectedProvider(config.currentProvider);
-      setSelectedReasoningEffort(
-        hasConfiguredModel ? config.currentReasoningEffort : undefined,
-      );
-      setSessionModelOverride("");
+      setDefaultModelSelection({
+        providerType: config.currentProvider,
+        modelKey: hasConfiguredModel ? config.currentModel : "",
+        ...(hasConfiguredModel && config.currentReasoningEffort
+          ? { reasoningEffort: config.currentReasoningEffort }
+          : {}),
+      });
       setAvailableModels(hasConfiguredModel ? config.models : []);
       setAvailableProviders(config.providers);
     } catch (error) {
@@ -3364,6 +3403,55 @@ export function App() {
   useEffect(() => {
     loadLLMConfig();
   }, []);
+
+  useEffect(() => {
+    const taskModelKey = selectedTask?.agentConfig?.modelKey?.trim() || "";
+    const providerType =
+      selectedTask?.agentConfig?.providerType ||
+      defaultModelSelection?.providerType ||
+      "anthropic";
+    const modelKey = taskModelKey || defaultModelSelection?.modelKey || "";
+    const usesDefaultSelection = !taskModelKey;
+
+    setSelectedProvider(providerType);
+    setSelectedModel(modelKey);
+    setSelectedReasoningEffort(
+      usesDefaultSelection &&
+        defaultModelSelection?.providerType === providerType &&
+        defaultModelSelection?.modelKey === modelKey
+        ? defaultModelSelection.reasoningEffort
+        : undefined,
+    );
+
+    const providerConfigured = availableProviders.some(
+      (provider) => provider.type === providerType && provider.configured,
+    );
+    if (!providerConfigured || !window.electronAPI?.getProviderModels) {
+      setAvailableModels((current) => (current.length === 0 ? current : []));
+      return;
+    }
+
+    let cancelled = false;
+    void window.electronAPI
+      .getProviderModels(providerType)
+      .then((models) => {
+        if (!cancelled) setAvailableModels(models);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("Failed to load models for selected session:", error);
+        setAvailableModels((current) => (current.length === 0 ? current : []));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    availableProviders,
+    defaultModelSelection,
+    selectedTask?.agentConfig?.modelKey,
+    selectedTask?.agentConfig?.providerType,
+    selectedTask?.id,
+  ]);
 
   useEffect(() => {
     const handler = () => {
@@ -4053,6 +4141,36 @@ export function App() {
           type: effectiveType,
         } as TaskEvent;
         noteRendererTaskEventReceived(event, rendererPerfLoggingEnabled);
+        const eventTimestampForOptimisticFollowUp =
+          typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
+            ? event.timestamp
+            : Date.now();
+        const eventEndsOptimisticFollowUp =
+          effectiveType === "task_completed" ||
+          effectiveType === "task_cancelled" ||
+          effectiveType === "task_paused" ||
+          effectiveType === "approval_requested" ||
+          effectiveType === "input_request_created" ||
+          effectiveType === "follow_up_failed" ||
+          effectiveType === "task_interrupted" ||
+          (effectiveType === "task_status" &&
+            ["completed", "failed", "cancelled", "paused", "blocked", "interrupted"].includes(
+              String(event.payload?.status),
+            ));
+        if (eventEndsOptimisticFollowUp) {
+          setOptimisticFollowUpStartedAtByTaskId((previous) => {
+            const startedAt = previous[event.taskId];
+            if (
+              startedAt === undefined ||
+              eventTimestampForOptimisticFollowUp < startedAt
+            ) {
+              return previous;
+            }
+            const next = { ...previous };
+            delete next[event.taskId];
+            return next;
+          });
+        }
         const sideChatTaskId = sideChatRef.current?.task?.id;
         const sideChatParentTaskId = sideChatRef.current?.parentTaskId;
         const isSideChatTaskEvent = sideChatTaskId === event.taskId;
@@ -4692,6 +4810,10 @@ export function App() {
           const reason = String(
             event.payload?.userMessage || event.payload?.error || "",
           ).trim();
+          const terminalEventTimestamp =
+            typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
+              ? event.timestamp
+              : Date.now();
           const restoredStatus =
             event.payload?.parentTaskStatus === "failed"
               ? ("failed" as const)
@@ -4702,6 +4824,7 @@ export function App() {
                   ...currentTask,
                   status: restoredStatus,
                   completedAt: currentTask.completedAt || Date.now(),
+                  updatedAt: Math.max(currentTask.updatedAt || 0, terminalEventTimestamp),
                   ...(restoredStatus === "completed"
                     ? { error: undefined }
                     : {}),
@@ -4987,7 +5110,24 @@ export function App() {
     let cancelled = false;
     const latestAttentionEvent =
       latestAttentionEventByTaskIdRef.current.get(requestedTaskId);
-    setEvents(latestAttentionEvent ? [latestAttentionEvent] : []);
+    const cachedTimeline = taskTimelineCacheRef.current.get(requestedTaskId);
+    if (cachedTimeline) {
+      // Rehydrate immediately from the last page so switching sessions never
+      // blanks the conversation while SQLite/history IPC is in flight.
+      setEvents(cachedTimeline.events);
+      setSelectedTaskTimelineHistory({
+        cursor: cachedTimeline.cursor,
+        hasMoreHistory: cachedTimeline.hasMoreHistory,
+        isLoadingMore: false,
+        error: null,
+      });
+      taskTimelinePageStateRef.current.set(requestedTaskId, {
+        cursor: cachedTimeline.cursor,
+        hasMoreHistory: cachedTimeline.hasMoreHistory,
+      });
+    } else {
+      setEvents(latestAttentionEvent ? [latestAttentionEvent] : []);
+    }
 
     const loadHistoricalEvents = async () => {
       try {
@@ -5075,7 +5215,12 @@ export function App() {
       } catch (error) {
         if (cancelled) return;
         console.error("Failed to load historical events:", error);
-        setEvents([]);
+        // Keep the cached page (or the latest attention event) visible when a
+        // transient history request fails. Clearing it made session dialogue
+        // appear to vanish until a manual refresh.
+        if (!cachedTimeline) {
+          setEvents(latestAttentionEvent ? [latestAttentionEvent] : []);
+        }
       }
     };
 
@@ -5954,13 +6099,15 @@ export function App() {
       options?.integrationMentions && options.integrationMentions.length > 0
         ? options.integrationMentions
         : undefined;
-    const trimmedSessionModelOverride = sessionModelOverride.trim();
-    const hasSelectedModelInCurrentProvider = availableModels.some(
-      (m) => m.key === trimmedSessionModelOverride,
+    const trimmedSessionModelOverride = selectedModel.trim();
+    const selectedProviderConfigured = availableProviders.some(
+      (provider) =>
+        provider.type === selectedProvider && provider.configured,
     );
-    const effectiveSessionModelOverride = hasSelectedModelInCurrentProvider
-      ? trimmedSessionModelOverride
-      : "";
+    const effectiveSessionModelOverride =
+      selectedProviderConfigured && trimmedSessionModelOverride
+        ? trimmedSessionModelOverride
+        : "";
     const effectiveLlmProfile = effectiveSessionModelOverride
       ? undefined
       : llmProfile;
@@ -6612,8 +6759,22 @@ export function App() {
   ) => {
     if (!selectedTaskId) return;
 
+    let startsOptimisticFollowUp = false;
     try {
       const sentAt = Date.now();
+      const selectedTaskBeforeSend =
+        remoteTaskView?.task?.id === selectedTaskId
+          ? remoteTaskView.task
+          : tasksRef.current.find((task) => task.id === selectedTaskId);
+      startsOptimisticFollowUp = isTerminalTaskStatus(
+        selectedTaskBeforeSend?.status,
+      );
+      if (startsOptimisticFollowUp) {
+        setOptimisticFollowUpStartedAtByTaskId((previous) => ({
+          ...previous,
+          [selectedTaskId]: sentAt,
+        }));
+      }
       if (remoteTaskView) {
         setRemoteTaskView((prev) =>
           prev && prev.task.id === selectedTaskId
@@ -6628,9 +6789,7 @@ export function App() {
         );
       }
 
-      const selectedTask = tasksRef.current.find(
-        (task) => task.id === selectedTaskId,
-      );
+      const selectedTask = selectedTaskBeforeSend;
       const latestAttentionEvent =
         latestAttentionEventByTaskIdRef.current.get(selectedTaskId);
       const latestAttentionReason =
@@ -6716,6 +6875,14 @@ export function App() {
         title: t("common.error", "Error"),
         message: errorMessage,
       });
+      if (startsOptimisticFollowUp) {
+        setOptimisticFollowUpStartedAtByTaskId((previous) => {
+          if (previous[selectedTaskId] === undefined) return previous;
+          const next = { ...previous };
+          delete next[selectedTaskId];
+          return next;
+        });
+      }
       throw error instanceof Error ? error : new Error(errorMessage);
     }
   };
@@ -6740,6 +6907,16 @@ export function App() {
 
   const handleCancelTask = async () => {
     if (!selectedTaskId) return;
+
+    // Stop is an explicit local user action. Clear the optimistic follow-up
+    // marker immediately instead of waiting for a terminal IPC event; a stale
+    // executor may accept the cancellation without emitting another event.
+    setOptimisticFollowUpStartedAtByTaskId((previous) => {
+      if (previous[selectedTaskId] === undefined) return previous;
+      const next = { ...previous };
+      delete next[selectedTaskId];
+      return next;
+    });
 
     if (remoteTaskView) {
       setRemoteTaskView((prev) =>
@@ -6928,24 +7105,44 @@ export function App() {
     const modelKey = selection.modelKey.trim();
     if (!modelKey) return;
     const providerType = selection.providerType || selectedProvider;
+    const previousSelection = {
+      modelKey: selectedModel,
+      providerType: selectedProvider,
+      reasoningEffort: selectedReasoningEffort,
+    };
+    const taskIdAtChange = selectedTaskId;
     setSelectedModel(modelKey);
     setSelectedProvider(providerType);
     setSelectedReasoningEffort(selection.reasoningEffort);
     try {
-      await window.electronAPI?.setLLMModel?.({
-        providerType,
-        modelKey,
-        ...(selection.reasoningEffort
-          ? { reasoningEffort: selection.reasoningEffort }
-          : {}),
-      });
-      await loadLLMConfig();
-      // Remember an explicit composer choice for the next newly-created task.
-      // Existing tasks receive the same model as a one-turn override in
-      // handleSendMessage, so the visible model and the actual provider agree.
-      setSessionModelOverride(modelKey);
+      if (taskIdAtChange && !remoteTaskView) {
+        if (!window.electronAPI?.updateTaskModel) {
+          throw new Error("Session model updates are unavailable.");
+        }
+        const updatedTask = await window.electronAPI.updateTaskModel(
+          taskIdAtChange,
+          { providerType, modelKey },
+        );
+        setTasks((prev) => upsertTaskPreservingIdentity(prev, updatedTask));
+      } else if (taskIdAtChange && remoteTaskView) {
+        throw new Error("Remote session models must be changed on that device.");
+      } else {
+        await window.electronAPI?.setLLMModel?.({
+          providerType,
+          modelKey,
+          ...(selection.reasoningEffort
+            ? { reasoningEffort: selection.reasoningEffort }
+            : {}),
+        });
+        await loadLLMConfig();
+      }
     } catch (error) {
       console.error("Failed to save LLM model selection:", error);
+      if (selectedTaskIdRef.current === taskIdAtChange) {
+        setSelectedModel(previousSelection.modelKey);
+        setSelectedProvider(previousSelection.providerType);
+        setSelectedReasoningEffort(previousSelection.reasoningEffort);
+      }
       addToast({
         type: "error",
         title: t("app.toast.modelNotSaved.title", "Model not saved"),
@@ -6954,7 +7151,7 @@ export function App() {
             ? error.message
             : t(
                 "app.toast.modelNotSaved.message",
-                "Could not update the default model.",
+                "Could not update the session model.",
               ),
       });
     }
@@ -7656,6 +7853,7 @@ export function App() {
                   ? t("app.action.showPanel", "Show panel")
                   : t("app.action.hidePanel", "Hide panel")
               }
+              aria-pressed={!effectiveRightCollapsed}
             >
               <svg
                 className="title-bar-panel-toggle-icon"
@@ -8163,6 +8361,11 @@ export function App() {
                 <SelectedTaskWorkspaceView
                   task={selectedTask}
                   selectedTaskId={selectedTaskId}
+                  optimisticFollowUpStartedAt={
+                    selectedTaskId
+                      ? optimisticFollowUpStartedAtByTaskId[selectedTaskId] ?? null
+                      : null
+                  }
                   workspace={currentWorkspace}
                   projectId={
                     FEATURE_VISIBILITY.projects ? currentProjectId : null

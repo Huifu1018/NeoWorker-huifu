@@ -39,6 +39,36 @@ describe("TaskRepository.findAll", () => {
     expect(all).toHaveBeenCalledWith(25, 0);
   });
 
+  it("keeps task-scoped provider and model metadata in sidebar summaries", () => {
+    const all = vi.fn(() => [
+      {
+        id: "task-1",
+        title: "Task",
+        status: "completed",
+        workspace_id: "workspace-1",
+        created_at: 1,
+        updated_at: 2,
+        is_pinned: 0,
+        agent_config_provider_type: "openai",
+        agent_config_model_key: "gpt-5.4",
+      },
+    ]);
+    const prepare = vi.fn(() => ({ all }));
+    const repository = new TaskRepository({ prepare } as unknown as ConstructorParameters<
+      typeof TaskRepository
+    >[0]);
+
+    const [task] = repository.findSidebarSummaries(25, 0);
+    const sql = prepare.mock.calls[0]?.[0] || "";
+
+    expect(sql).toContain("json_extract(agent_config, '$.providerType')");
+    expect(sql).toContain("json_extract(agent_config, '$.modelKey')");
+    expect(task.agentConfig).toMatchObject({
+      providerType: "openai",
+      modelKey: "gpt-5.4",
+    });
+  });
+
   it("touches a task updated timestamp", () => {
     const beforeRow = {
       id: "task-1",

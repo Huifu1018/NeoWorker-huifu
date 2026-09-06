@@ -1692,6 +1692,31 @@ const browserApiBase = {
     saveTasks(tasks);
     return Promise.resolve(tasks.find((task) => task.id === taskId) ?? null);
   },
+  updateTaskModel: (
+    taskId: string,
+    selection: { providerType: LLMProviderType; modelKey: string },
+  ) => {
+    const tasks = readTasks().map((task) =>
+      task.id === taskId
+        ? {
+            ...task,
+            updatedAt: Date.now(),
+            agentConfig: {
+              ...task.agentConfig,
+              providerType: selection.providerType,
+              modelKey: selection.modelKey,
+              llmProfile: undefined,
+              llmProfileForced: false,
+            },
+          }
+        : task,
+    );
+    saveTasks(tasks);
+    const updatedTask = tasks.find((task) => task.id === taskId);
+    return updatedTask
+      ? Promise.resolve(updatedTask)
+      : Promise.reject(new Error(`Task not found: ${taskId}`));
+  },
   archiveTask: () => Promise.resolve(true),
   unarchiveTask: () => Promise.resolve(true),
   listArchivedTasks: () => Promise.resolve([]),

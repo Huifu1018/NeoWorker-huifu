@@ -6,7 +6,11 @@ import {
   type RichFrameDesignOptions,
   type RichFrameTheme,
 } from "../../shared/rich-frame-design-language";
-import { repairHiddenHtmlContent } from "../../shared/html-content-visibility";
+import {
+  getHtmlContentPreviewProblem,
+  isHtmlBootstrapPlaceholder,
+  repairHiddenHtmlContent,
+} from "../../shared/html-content-visibility";
 import { translate, useLanguage } from "../i18n";
 
 type InlineHtmlPreviewVariant = "default" | "frame";
@@ -59,11 +63,7 @@ function extractHtmlTitle(htmlContent: string): string {
 }
 
 export function isBootstrapHtmlPlaceholder(htmlContent: string): boolean {
-  const content = String(htmlContent || "").trim();
-  return (
-    content.length <= 1024 &&
-    /<p\b[^>]*>\s*Bootstrap artifact stub\.\s*<\/p>/i.test(content)
-  );
+  return isHtmlBootstrapPlaceholder(htmlContent);
 }
 
 function normalizeCssLength(value?: string): string | undefined {
@@ -218,6 +218,7 @@ export function InlineHtmlSourcePreview({
     [frameDesignOptions, htmlContent, isFrame],
   );
   const isBootstrapPlaceholder = isBootstrapHtmlPlaceholder(htmlContent);
+  const htmlProblem = getHtmlContentPreviewProblem(htmlContent);
 
   return (
     <div
@@ -237,6 +238,10 @@ export function InlineHtmlSourcePreview({
       {isBootstrapPlaceholder ? (
         <div className="inline-html-loading" role="status">
           {t("inlinePreview.html.preparing", "Preparing HTML preview…")}
+        </div>
+      ) : htmlProblem ? (
+        <div className="inline-html-error" role="alert">
+          {htmlProblem}
         </div>
       ) : (
         <div className="inline-html-frame-wrap">
@@ -290,6 +295,7 @@ export function InlineHtmlPreview({
   const isBootstrapPlaceholder = isBootstrapHtmlPlaceholder(
     result?.htmlContent || "",
   );
+  const htmlProblem = getHtmlContentPreviewProblem(result?.htmlContent || "");
 
   useEffect(() => {
     let cancelled = false;
@@ -311,6 +317,13 @@ export function InlineHtmlPreview({
         }
         if (response.data.fileType !== "html" || !response.data.htmlContent) {
           setError("File is not a previewable HTML document.");
+          return;
+        }
+        if (response.data.webPreview && !response.data.webPreview.canPreview) {
+          setError(
+            response.data.webPreview.previewMessage ||
+              "HTML 文档尚未生成完成，暂时无法预览。",
+          );
           return;
         }
         setResult(response.data);
@@ -395,7 +408,17 @@ export function InlineHtmlPreview({
         </div>
       )}
 
-      {!loading && !error && !isBootstrapPlaceholder && previewHtmlContent && (
+      {!loading && !error && !isBootstrapPlaceholder && htmlProblem && (
+        <div className="inline-html-error" role="alert">
+          {htmlProblem}
+        </div>
+      )}
+
+      {!loading &&
+        !error &&
+        !isBootstrapPlaceholder &&
+        !htmlProblem &&
+        previewHtmlContent && (
         <>
           {!hideChrome && (
             <InlineHtmlHeader

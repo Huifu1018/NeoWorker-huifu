@@ -28,6 +28,15 @@ describe("step-contract path extraction", () => {
     );
     expect(candidates).not.toEqual(expect.arrayContaining(["win95-ui/scripts/validate.py"]));
   });
+
+  it("extracts quoted CJK artifact paths used by shell assembly commands", () => {
+    const text =
+      'cat .neoworker/tmp/parts/01_head.html > ".neoworker/绩效分析报告_总览_结论.html"';
+    const candidates = extractArtifactPathCandidates(text);
+    expect(candidates).toEqual(
+      expect.arrayContaining([".neoworker/绩效分析报告_总览_结论.html"]),
+    );
+  });
 });
 
 describe("step-contract token classification", () => {

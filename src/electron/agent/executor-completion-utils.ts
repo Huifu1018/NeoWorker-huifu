@@ -48,12 +48,17 @@ export interface HtmlArtifactValidationOptions {
 
 const HTML_PLACEHOLDER_PATTERNS = [
   /bootstrap artifact stub/i,
+  /<!--\s*@NEXT@\s*-->/i,
   /<!--\s*(?:##|@@)[^>\n]{1,120}(?:##|@@)\s*-->/i,
   /\/\*\s*(?:##|@@)[A-Z0-9_.:-]{1,120}(?:##|@@)\s*\*\//i,
   /\/\/\s*(?:##|@@)[A-Z0-9_.:-]{1,120}(?:##|@@)/i,
   /\/\*\s*__+[A-Z0-9_.:-]{1,120}__+\s*\*\//i,
   /<!--\s*__+[A-Z0-9_.:-]{1,120}__+\s*-->/i,
   /<!--\s*NEOWORKER_(?:APPEND_POINT|MORE|TODO)\s*-->/i,
+  // Template tokens must never reach the browser. In particular, an
+  // unexpanded __DATAJS__ leaves every chart/table empty (and may abort the
+  // script before any fallback rendering runs).
+  /\b__DATAJS__\b/i,
 ];
 
 /**
@@ -147,7 +152,10 @@ export function getFollowUpIterationLimit(
   configuredMaximum: number,
 ): number {
   const configured = Math.max(1, Math.floor(configuredMaximum || 1));
-  return Math.min(contract.requiresArtifactEvidence ? 8 : 4, configured);
+  // Artifact follow-ups need enough turns to write, inspect, repair, and
+  // verify the file. Capping them at eight routinely ended after preparation
+  // scripts ran but before the final artifact write.
+  return Math.min(contract.requiresArtifactEvidence ? 16 : 4, configured);
 }
 
 /**

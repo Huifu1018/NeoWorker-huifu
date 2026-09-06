@@ -55,6 +55,12 @@ vi.mock("../../../utils/office-document-quality", () => ({
     issueCount: 0,
     issues: [],
     previewPath: "/tmp/preview.html",
+    visual: {
+      required: true,
+      passed: true,
+      evidencePath: `${process.cwd()}/resources/branding/neoworker-app-icon.png`,
+      message: "Visual evidence available",
+    },
     warnings: [],
     durationMs: 10,
     summary: "Office 文件已通过结构检查，并完成可视化预览。",

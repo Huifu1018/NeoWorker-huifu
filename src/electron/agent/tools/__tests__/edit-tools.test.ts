@@ -90,6 +90,7 @@ describe("EditTools", () => {
       });
 
       expect(result.success).toBe(false);
+      expect(result.no_change).toBe(true);
       expect(result.error).toContain("identical");
     });
   });

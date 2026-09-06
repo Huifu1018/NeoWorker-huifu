@@ -219,7 +219,7 @@ describe("DocumentParserTools", () => {
   });
 
   it("enforces workspace read permission and project ACCESS.md", async () => {
-    const projectDir = path.join(tmpDir, ".cowork", "projects", "private");
+    const projectDir = path.join(tmpDir, ".neoworker", "projects", "private");
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(path.join(projectDir, "ACCESS.md"), "## Deny\n- role: reviewer\n");
     fs.writeFileSync(path.join(projectDir, "notes.txt"), "restricted");
@@ -247,7 +247,7 @@ describe("DocumentParserTools", () => {
       "task-1",
     );
     await expect(
-      deniedByProject.parseDocument({ path: ".cowork/projects/private/notes.txt" }),
+      deniedByProject.parseDocument({ path: ".neoworker/projects/private/notes.txt" }),
     ).rejects.toThrow(/denied by ACCESS\.md/i);
   });
 

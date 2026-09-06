@@ -441,7 +441,7 @@ describe("TaskExecutor entrypoint guards", () => {
     expect(executor.task.status).toBe("completed");
     expect(typeof executor.task.completedAt).toBe("number");
     expect(executor.task.error).toBeUndefined();
-    expect(executor.task.terminalStatus).toBeUndefined();
+    expect(executor.task.terminalStatus).toBe("ok");
     expect(executor.task.failureClass).toBeUndefined();
     expect(executor.task.resultSummary).toBe(freshSummary);
     expect(executor.daemon.updateTask).toHaveBeenCalledWith(
@@ -449,7 +449,7 @@ describe("TaskExecutor entrypoint guards", () => {
       expect.objectContaining({
         status: "completed",
         error: null,
-        terminalStatus: undefined,
+        terminalStatus: "ok",
         failureClass: undefined,
         resultSummary: freshSummary,
         semanticSummary: "Opened canvas",

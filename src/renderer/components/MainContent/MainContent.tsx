@@ -132,6 +132,7 @@ import {
 import { areIntegrationMentionOptionsEqual } from "../../utils/integration-mention-options";
 import { getLocalizedAgentRoleText } from "../../utils/localized-agent-roles";
 import { getAgentRoleVisual } from "../../utils/agent-role-portraits";
+import { deriveCanonicalTaskStatus } from "../../../shared/task-status";
 import { type AttachmentDisplayInfo, extractAttachmentDetails } from "../utils/attachment-content";
 import { ArtifactFileTypeIcon } from "../ArtifactFileTypeIcon";
 import { AttachmentImagePreview, isPreviewableImageAttachment } from "../AttachmentImagePreview";
@@ -708,6 +709,7 @@ function limitCommandOutputSessions(sessions: CommandOutputSession[]): CommandOu
 interface MainContentProps {
   task: Task | undefined;
   selectedTaskId: string | null;
+  optimisticFollowUpStartedAt?: number | null;
   workspace: Workspace | null;
   projectId?: string | null;
   events: TaskEvent[];
@@ -4949,6 +4951,7 @@ function HomeAgentHub({
 function MainContentComponent({
   task,
   selectedTaskId,
+  optimisticFollowUpStartedAt = null,
   workspace,
   projectId = null,
   events: rawEvents,
@@ -6265,29 +6268,49 @@ function MainContentComponent({
   }, [filteredEvents, effectiveSharedTaskEventUi, suppressedParallelEventIds, verboseSteps]);
 
   const latestUserMessageTimestamp = useMemo(() => {
-    for (let i = events.length - 1; i >= 0; i--) {
-      if (getEffectiveTaskEventType(events[i]) === "user_message") {
-        return events[i].timestamp;
+    let latest: number | null = null;
+    for (const event of events) {
+      if (getEffectiveTaskEventType(event) !== "user_message") continue;
+      if (typeof event.timestamp !== "number" || !Number.isFinite(event.timestamp)) {
+        continue;
       }
+      latest = Math.max(latest ?? event.timestamp, event.timestamp);
     }
-    return null;
+    return latest;
   }, [events]);
 
   const hasActiveChildren = useMemo(
-    () =>
-      childTasks.some(
+    () => {
+      const parentTerminalAt =
+        task?.status === "completed" ||
+        task?.status === "failed" ||
+        task?.status === "cancelled"
+          ? Math.max(task.completedAt ?? 0, task.updatedAt ?? 0)
+          : 0;
+      return childTasks.some(
         (childTask) =>
-          childTask.status === "executing" ||
-          childTask.status === "planning" ||
-          childTask.status === "interrupted",
-      ),
-    [childTasks],
+          (childTask.status === "executing" ||
+            childTask.status === "planning" ||
+            childTask.status === "interrupted") &&
+          (!parentTerminalAt || childTask.updatedAt > parentTerminalAt),
+      );
+    },
+    [childTasks, task],
   );
 
   const isTaskWorking = useMemo(
     () => isTaskActivelyWorking(task, events, hasActiveChildren),
     [task, events, hasActiveChildren],
   );
+  // A follow-up can be sent while the task row still has the previous turn's
+  // terminal status. Keep the duration clock alive from the local send time
+  // until a terminal/paused event clears the optimistic marker. This closes
+  // the event-delivery gap without changing the task's persisted status.
+  const canonicalTaskStatus = task ? deriveCanonicalTaskStatus(task) : undefined;
+  const taskStatusImpliesWorking =
+    canonicalTaskStatus === "executing" || canonicalTaskStatus === "planning";
+  const isTaskWorkingForDuration =
+    isTaskWorking || optimisticFollowUpStartedAt !== null || taskStatusImpliesWorking;
 
   // Reset wrappingUp state when task stops working or task changes
   useEffect(() => {
@@ -6449,14 +6472,19 @@ function MainContentComponent({
     setTranscriptModeOverride((current) => (current === "inspect" ? null : "inspect"));
   }, [defaultTranscriptMode]);
   const canToggleCompletedTranscript = defaultTranscriptMode === "delivery";
-  const liveWorkStartedAt = task ? (latestUserMessageTimestamp ?? task.createdAt) : Date.now();
-  const liveWorkCompletedAt = isTaskFinished
+  const liveWorkStartedAt = task
+    ? (optimisticFollowUpStartedAt ?? latestUserMessageTimestamp ?? task.createdAt)
+    : Date.now();
+  // A newer follow-up user_message can arrive before the task object changes
+  // from its previous terminal status. In that state isTaskWorking is true,
+  // so the old completedAt must not freeze the new turn at 0s.
+  const liveWorkCompletedAt = !isTaskWorkingForDuration && isTaskFinished
     ? (task?.completedAt ?? task?.updatedAt)
-    : task?.completedAt;
+    : undefined;
   const liveWorkDuration = useTaskDuration(
     liveWorkStartedAt,
     liveWorkCompletedAt,
-    Boolean(task && isTaskWorking),
+    Boolean(task && isTaskWorkingForDuration),
   );
   const persistedWorkDuration =
     isTaskFinished &&
@@ -6465,7 +6493,7 @@ function MainContentComponent({
       ? formatDuration(task.lastRunDurationMs)
       : null;
   const workDuration = persistedWorkDuration ?? liveWorkDuration;
-  const workDurationLabel = isTaskWorking
+  const workDurationLabel = isTaskWorkingForDuration
     ? translate("taskHeader.workingFor", `Working for ${liveWorkDuration}`, {
         duration: liveWorkDuration,
       })
@@ -11178,8 +11206,8 @@ function MainContentComponent({
         ) : (
           <span
             className={`timeline-controls-label ${
-              isTaskWorking || isTaskFinished ? "with-duration" : ""
-            }${isTaskWorking ? " is-working" : ""}`}
+            isTaskWorkingForDuration || isTaskFinished ? "with-duration" : ""
+            }${isTaskWorkingForDuration ? " is-working" : ""}`}
           >
             {workDurationLabel}
           </span>
@@ -11216,6 +11244,7 @@ function MainContentComponent({
       continuationStatusChip,
       isTaskFinished,
       isTaskWorking,
+      isTaskWorkingForDuration,
       progressHeartbeat,
       toggleCompletedTranscriptMode,
       transcriptMode,
@@ -13562,7 +13591,7 @@ function MainContentComponent({
                   />
                 )}
               </button>
-              {isTaskWorking && onStopTask ? (
+              {isTaskWorkingForDuration && onStopTask ? (
                 <div className="task-control-buttons">
                   <button
                     className={`queue-follow-up-btn${
@@ -13881,6 +13910,7 @@ function areMainContentPropsEqual(prev: MainContentProps, next: MainContentProps
   return (
     getMainContentTaskSignature(prev.task) === getMainContentTaskSignature(next.task) &&
     prev.selectedTaskId === next.selectedTaskId &&
+    prev.optimisticFollowUpStartedAt === next.optimisticFollowUpStartedAt &&
     prev.workspace?.path === next.workspace?.path &&
     prev.events === next.events &&
     prev.sharedTaskEventUi === next.sharedTaskEventUi &&
