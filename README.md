@@ -2,17 +2,6 @@
   <strong>English</strong> | <a href="./docs/README.zh-CN.md">简体中文</a>
 </p>
 
-## Download NeoWorker v0.1.8
-
-Get the latest desktop installers directly from the official GitHub Release:
-
-| Platform | Download |
-| --- | --- |
-| **macOS (Apple Silicon)** | [Download DMG](https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg) |
-| **Windows (x64)** | [Download Windows Installer](https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe) |
-
-Other packages and release notes are available on the [v0.1.8 Release page](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8).
-
 <p align="center">
   <img src="./screenshots/readme/neoworker-logo.svg" alt="NeoWorker — AI · Work · Ready" width="560">
 </p>
@@ -48,6 +37,15 @@ Other packages and release notes are available on the [v0.1.8 Release page](http
   <a href="./docs/SECURITY.md">Security</a>
   &nbsp;·&nbsp;
   <a href="./docs/CONTRIBUTING.md">Contributing</a>
+</p>
+
+<p align="center">
+  <strong>Download the latest desktop release · v0.1.8</strong><br><br>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg">🍎 <strong>macOS (Apple Silicon)</strong></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe">⊞ <strong>Windows (x64)</strong></a>
+  <br><br>
+  <sub>Other packages and release notes: <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8">GitHub Release v0.1.8</a></sub>
 </p>
 
 ## What is NeoWorker?
