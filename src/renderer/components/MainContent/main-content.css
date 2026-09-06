@@ -18682,7 +18682,7 @@
 
 /* Focused homepage: use the workspace width while keeping the hero visually compact. */
 .welcome-content.welcome-content-focused {
-  width: min(980px, 100%);
+  width: min(780px, 100%);
   max-width: 100%;
 }
 
@@ -18690,10 +18690,10 @@
 @media (min-width: 721px) {
   .welcome-content.welcome-content-focused > .welcome-header-focused {
     align-self: stretch;
-    width: min(980px, 100%);
+    width: min(780px, 100%);
     box-sizing: border-box;
     display: grid;
-    grid-template-columns: minmax(360px, 430px) minmax(0, 1fr);
+    grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
     align-items: center;
     justify-content: stretch;
     gap: clamp(12px, 1.2vw, 16px);
@@ -18708,7 +18708,7 @@
 
   .welcome-content.welcome-content-focused > .welcome-header-focused .focused-brand-lockup {
     width: 100%;
-    max-width: 430px;
+    max-width: 340px;
     min-width: 0;
     justify-self: end;
     flex: none;
