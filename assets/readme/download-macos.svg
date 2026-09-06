@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="248" height="72" viewBox="0 0 248 72">
+  <title>Download NeoWorker for macOS — Apple Silicon, DMG</title>
+  <rect x=".5" y=".5" width="247" height="71" rx="12" fill="#172b4d" stroke="#334a69"/>
+  <g transform="translate(18 20)">
+    <rect width="32" height="32" rx="7" fill="#35c8f2"/>
+    <path d="M17 0h8a7 7 0 0 1 7 7v18a7 7 0 0 1-7 7h-7l-3-11h-5C10 13 13 5 17 0Z" fill="#e9f0f7"/>
+    <path d="M10 10v3m13-3v3M8 21c4 5 12 5 17-1" fill="none" stroke="#172b4d" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+    <text x="64" y="31" font-size="17" font-weight="600" fill="#fff">macOS</text>
+    <text x="64" y="51" font-size="12" fill="#c5d5e8">Apple Silicon · DMG</text>
+  </g>
+  <path d="M219 27v15m-5-5 5 5 5-5m-12 7v4h14v-4" fill="none" stroke="#c5d5e8" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

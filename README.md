@@ -40,12 +40,15 @@
 </p>
 
 <p align="center">
-  <strong>Download the latest desktop release · v0.1.8</strong><br><br>
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg"><img src="./assets/readme/macos-finder.svg" alt="macOS" width="20" height="20" valign="middle"> <strong>macOS (Apple Silicon)</strong></a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe"><img src="./assets/readme/windows.svg" alt="Windows" width="20" height="20" valign="middle"> <strong>Windows (x64)</strong></a>
-  <br><br>
-  <sub>Other packages and release notes: <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8">GitHub Release v0.1.8</a></sub>
+  <strong>Download NeoWorker · v0.1.8</strong>
+</p>
+<p align="center">
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-arm64.dmg"><img src="./assets/readme/download-macos.svg" alt="Download for macOS — Apple Silicon, DMG" width="248" height="72"></a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.1.8/NeoWorker-0.1.8-windows-x64-setup.exe"><img src="./assets/readme/download-windows.svg" alt="Download for Windows — x64, EXE" width="248" height="72"></a>
+</p>
+<p align="center">
+  <sub><a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.1.8">Release notes &amp; other platforms</a></sub>
 </p>
 
 ## What is NeoWorker?
