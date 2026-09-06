@@ -27,11 +27,11 @@ describe("Welcome layout", () => {
   it("gives the composer more room while keeping the hero artwork and copy close", () => {
     const source = readFileSync(stylesPath, "utf8");
 
-    expect(source).toContain("width: min(780px, 100%);");
-    expect(source).toContain("grid-template-columns: minmax(300px, 340px)");
+    expect(source).toContain("width: min(980px, 100%);");
+    expect(source).toContain("grid-template-columns: minmax(360px, 430px)");
     expect(source).toContain("gap: clamp(12px, 1.2vw, 16px);");
     expect(source).toContain("inset-inline-start: clamp(38px, 4vw, 46px);");
-    expect(source).toContain("max-width: 340px;");
+    expect(source).toContain("max-width: 430px;");
     expect(source).toContain("justify-self: end;");
     expect(source).toMatch(
       /\.quick-start-desc\s*\{[^}]*display:\s*-webkit-box;[^}]*-webkit-line-clamp:\s*2;/s,
