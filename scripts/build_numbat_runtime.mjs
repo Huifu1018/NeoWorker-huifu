@@ -146,13 +146,9 @@ function run(command, args, options = {}) {
 
 function tarPath(filePath) {
   const resolved = path.resolve(filePath);
-  // Git for Windows' tar expects POSIX-style drive paths. Passing the native
-  // `C:\\...` spelling, or even `C:/...`, makes it reinterpret the drive as a
-  // remote archive. Convert the drive to the `/c/...` form understood by
-  // Git Bash and by the tar bundled with the Windows runner.
-  if (process.platform !== "win32") return resolved;
-  const posixPath = resolved.replaceAll("\\", "/");
-  return posixPath.replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`);
+  // The Windows runner invokes native bsdtar from PowerShell. It accepts
+  // native drive-letter paths; `/c/...` is a Git-Bash path and fails here.
+  return resolved;
 }
 
 async function download(url, outputPath, expectedSha256, label) {
