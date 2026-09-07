@@ -194,6 +194,10 @@ export const AgentConfigSchema = z
     executionMode: z
       .enum(["execute", "chat", "plan", "analyze", "verified", "debug"])
       .optional(),
+    // Persisted task metadata used to distinguish an explicit user mode from
+    // one inferred by the strategy layer. This is part of AgentConfig and
+    // must be accepted when creating tasks in both chat and execute modes.
+    executionModeSource: z.enum(["user", "strategy", "auto_promote"]).optional(),
     taskDomain: z
       .enum([
         "auto",

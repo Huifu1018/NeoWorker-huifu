@@ -201,6 +201,19 @@ describe("TaskCreateSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts execution mode source metadata for chat and execute tasks", () => {
+    const result = TaskCreateSchema.safeParse({
+      title: "Test Task",
+      prompt: "Do something",
+      workspaceId: "__temp_workspace__",
+      agentConfig: {
+        executionMode: "chat",
+        executionModeSource: "user",
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+
   it("validates with session temp workspace ID", () => {
     const result = TaskCreateSchema.safeParse({
       title: "Test Task",
