@@ -888,6 +888,34 @@ function shouldRenderAssistantMessageInTranscript(
   if (isUserFacingPlanStepResult(event)) return true;
   if (event.payload?.internal === true) return false;
 
+  // Timeline v2 may persist the same user-facing answer both as a
+  // timeline_step_updated projection and as the legacy assistant_message
+  // event. They have different database ids, so identity-based merging cannot
+  // remove the duplicate. Treat equivalent assistant text in the same turn as
+  // one reply, regardless of which projection was ordered first.
+  const message =
+    typeof event.payload?.message === "string"
+      ? cleanAssistantMessageForDisplay(event.payload.message).trim()
+      : "";
+  if (message) {
+    const hasEquivalentReply = events.some((candidate, candidateIndex) => {
+      if (candidateIndex === eventIndex) return false;
+      if (getEffectiveTaskEventType(candidate) !== "assistant_message") return false;
+      if (candidate.payload?.internal === true) return false;
+      const candidateMessage =
+        typeof candidate.payload?.message === "string"
+          ? cleanAssistantMessageForDisplay(candidate.payload.message).trim()
+          : "";
+      if (!candidateMessage || candidateMessage !== message) return false;
+      const start = Math.min(eventIndex, candidateIndex);
+      const end = Math.max(eventIndex, candidateIndex);
+      return !events
+        .slice(start + 1, end)
+        .some((between) => getEffectiveTaskEventType(between) === "user_message");
+    });
+    if (hasEquivalentReply) return false;
+  }
+
   for (let index = eventIndex + 1; index < events.length; index += 1) {
     const candidate = events[index];
     if (!candidate) continue;
