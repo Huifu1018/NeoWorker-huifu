@@ -110,7 +110,7 @@ import {
   resolveTaskOutputSummaryFromCompletionEvent,
   resolveTaskOutputSummaryFromTask,
 } from "../../utils/task-outputs";
-import { isTaskActivelyWorking } from "../../utils/task-working-state";
+import { deriveTaskWorkTiming, isTaskActivelyWorking } from "../../utils/task-working-state";
 import { shouldShowPersistentNeedsUserActionBanner } from "../../utils/task-completion-ux";
 import {
   filterAdjacentDuplicateTimelineFailures,
@@ -132,7 +132,6 @@ import {
 import { areIntegrationMentionOptionsEqual } from "../../utils/integration-mention-options";
 import { getLocalizedAgentRoleText } from "../../utils/localized-agent-roles";
 import { getAgentRoleVisual } from "../../utils/agent-role-portraits";
-import { deriveCanonicalTaskStatus } from "../../../shared/task-status";
 import { type AttachmentDisplayInfo, extractAttachmentDetails } from "../utils/attachment-content";
 import { ArtifactFileTypeIcon } from "../ArtifactFileTypeIcon";
 import { AttachmentImagePreview, isPreviewableImageAttachment } from "../AttachmentImagePreview";
@@ -6270,6 +6269,7 @@ function MainContentComponent({
   const latestUserMessageTimestamp = useMemo(() => {
     let latest: number | null = null;
     for (const event of events) {
+      if (event.taskId !== task?.id) continue;
       if (getEffectiveTaskEventType(event) !== "user_message") continue;
       if (typeof event.timestamp !== "number" || !Number.isFinite(event.timestamp)) {
         continue;
@@ -6277,7 +6277,7 @@ function MainContentComponent({
       latest = Math.max(latest ?? event.timestamp, event.timestamp);
     }
     return latest;
-  }, [events]);
+  }, [events, task?.id]);
 
   const hasActiveChildren = useMemo(
     () => {
@@ -6306,11 +6306,11 @@ function MainContentComponent({
   // terminal status. Keep the duration clock alive from the local send time
   // until a terminal/paused event clears the optimistic marker. This closes
   // the event-delivery gap without changing the task's persisted status.
-  const canonicalTaskStatus = task ? deriveCanonicalTaskStatus(task) : undefined;
-  const taskStatusImpliesWorking =
-    canonicalTaskStatus === "executing" || canonicalTaskStatus === "planning";
-  const isTaskWorkingForDuration =
-    isTaskWorking || optimisticFollowUpStartedAt !== null || taskStatusImpliesWorking;
+  const workTiming = useMemo(
+    () => deriveTaskWorkTiming(task, events, hasActiveChildren, optimisticFollowUpStartedAt),
+    [task, events, hasActiveChildren, optimisticFollowUpStartedAt],
+  );
+  const isTaskWorkingForDuration = workTiming.isActive;
 
   // Reset wrappingUp state when task stops working or task changes
   useEffect(() => {
@@ -6472,15 +6472,11 @@ function MainContentComponent({
     setTranscriptModeOverride((current) => (current === "inspect" ? null : "inspect"));
   }, [defaultTranscriptMode]);
   const canToggleCompletedTranscript = defaultTranscriptMode === "delivery";
-  const liveWorkStartedAt = task
-    ? (optimisticFollowUpStartedAt ?? latestUserMessageTimestamp ?? task.createdAt)
-    : Date.now();
+  const liveWorkStartedAt = workTiming.startedAt;
   // A newer follow-up user_message can arrive before the task object changes
   // from its previous terminal status. In that state isTaskWorking is true,
   // so the old completedAt must not freeze the new turn at 0s.
-  const liveWorkCompletedAt = !isTaskWorkingForDuration && isTaskFinished
-    ? (task?.completedAt ?? task?.updatedAt)
-    : undefined;
+  const liveWorkCompletedAt = workTiming.completedAt;
   const liveWorkDuration = useTaskDuration(
     liveWorkStartedAt,
     liveWorkCompletedAt,
@@ -6488,6 +6484,7 @@ function MainContentComponent({
   );
   const persistedWorkDuration =
     isTaskFinished &&
+    (task?.completedAt ?? 0) >= liveWorkStartedAt &&
     typeof task?.lastRunDurationMs === "number" &&
     Number.isFinite(task.lastRunDurationMs)
       ? formatDuration(task.lastRunDurationMs)

@@ -7730,6 +7730,14 @@ ${transcript}
   private providerFailoverIndex = 0;
   private providerFailoverPreserveUntil = 0;
   private providerFailoverRequiresImageInput = false;
+  /** The last route that failed a provider/network request.  Kept across
+   * explicit follow-ups so a dead route is not silently retried forever. */
+  private lastFailedProviderRoute: {
+    providerType: string;
+    modelId: string;
+    error: string;
+    failedAt: number;
+  } | null = null;
   private toolBatchExecutor?: ToolBatchExecutor;
 
   private getToolBatchExecutor(): ToolBatchExecutor {
@@ -10056,6 +10064,15 @@ ${transcript}
           error.status === 502 ||
           error.status === 503 ||
           error.status === 504;
+
+        if (isRetryable) {
+          this.lastFailedProviderRoute = {
+            providerType: this.provider.type,
+            modelId: this.modelId,
+            error: String(error?.message || "provider request failed"),
+            failedAt: Date.now(),
+          };
+        }
 
         const retryKind = classifyLLMRetryKind(error);
         const retryReason = this.getRetryRouteReason(error);
@@ -20970,6 +20987,26 @@ You are continuing a previous conversation. The context from the previous conver
    */
   private isRedirectIntent(text: string): boolean {
     return IntentRouter.isRedirectIntent(text);
+  }
+
+  /**
+   * A completed task should not leak its full transcript into an unrelated
+   * follow-up. Keep explicit continuation/editing requests conversational, but
+   * isolate a standalone new question (for example, weather -> news research)
+   * even when the user did not say "forget the previous topic".
+   */
+  private isLikelyIndependentFollowUp(text: string): boolean {
+    const normalized = String(text || "").trim();
+    if (!normalized) return false;
+    if (this.isRedirectIntent(normalized)) return false;
+    if (
+      /(?:继续|接着|基于(?:刚才|上面|之前)|刚才|上面|之前|这个|该文件|该报告|这份|重新生成|再生成|重试|修改|调整|补充|导出|下载|修复|优化|换成|改成|解释一下刚才|为什么会这样)/i.test(
+        normalized,
+      )
+    ) {
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -41825,6 +41862,10 @@ Return ONLY a JSON object:
     const raw = String(error?.message || "Unknown error");
     const lower = raw.toLowerCase();
 
+    if (lower.includes("image-capable model/provider")) {
+      return "当前模型不支持图片，本轮已结束，对话上下文已保留。请切换支持图片的模型后重新发送。";
+    }
+
     if (lower.includes("without a conclusive final response")) {
       return "本轮工具执行后，模型仍未给出实际答案，因此没有标记为成功。本轮已结束，查询记录和上下文已保留，可以继续追问或重试。";
     }
@@ -41846,6 +41887,14 @@ Return ONLY a JSON object:
       )
     ) {
       return "模型连续返回空响应，本轮已结束，当前上下文已保留。请重试或切换模型。";
+    }
+
+    if (
+      lower.includes("connection refused") ||
+      lower.includes("do request failed") ||
+      lower.includes("500 internal server error")
+    ) {
+      return "模型服务连接失败，本轮已结束，当前上下文已保留。NeoWorker 会在下一条消息重新选择可用路由；如果仍失败，请切换模型或配置备用模型。";
     }
 
     if (
@@ -42666,6 +42715,46 @@ Return ONLY a JSON object:
     this.toolFailureTracker = new ToolFailureTracker();
     this.toolCallDeduplicator = new ToolCallDeduplicator(3, 120000, 4);
     this.toolRegistry?.resetOfficeArtifactRequest?.();
+    this.prepareProviderRouteForFollowUp();
+  }
+
+  /**
+   * A provider failure must not poison the whole session.  Before the next
+   * explicit user message, move to the next configured route if the previous
+   * route failed.  This makes the follow-up a fresh routing boundary while
+   * preserving conversation and files.
+   */
+  private prepareProviderRouteForFollowUp(): void {
+    const failed = this.lastFailedProviderRoute;
+    if (!failed) return;
+
+    const currentMatchesFailure =
+      failed.providerType === this.provider.type &&
+      failed.modelId === this.modelId;
+    if (!currentMatchesFailure) {
+      this.lastFailedProviderRoute = null;
+      return;
+    }
+
+    this.ensureProviderFailoverSelectionsContext(
+      this.providerFailoverRequiresImageInput,
+    );
+    const switched = this.failoverToNextProvider(
+      "provider_outage",
+      new Error(`previous follow-up route failed: ${failed.error}`),
+    );
+    if (switched) {
+      this.lastFailedProviderRoute = null;
+      logger.warn(
+        `${this.logTag} Activated provider failover before follow-up after previous route failure: ` +
+          `${failed.providerType}/${failed.modelId}`,
+      );
+      return;
+    }
+
+    // No fallback is configured. Clear the marker so a recovered endpoint can
+    // be retried on the next message instead of permanently blocking the chat.
+    this.lastFailedProviderRoute = null;
   }
 
   async sendMessage(
@@ -42675,21 +42764,29 @@ Return ONLY a JSON object:
     options?: Pick<TaskFollowUpInput, "agentConfigOverride">,
   ): Promise<void> {
     await this.getLifecycleMutex().runExclusive(async () => {
-      const persistedAgentConfig =
-        this.daemon.getTask(this.task.id)?.agentConfig ?? this.task.agentConfig;
+      const persistedTask = this.daemon.getTask(this.task.id);
+      const persistedAgentConfig = persistedTask?.agentConfig ?? this.task.agentConfig;
+      // Snapshot before setup changes the task to executing/clears completedAt.
+      const previousStatus = persistedTask?.status ?? this.task.status;
+      const previousCompletedAt = persistedTask?.completedAt ?? this.task.completedAt;
       const previousConversationTurnId = this.activeConversationTurnId;
       const previousFollowUpCompletionContract =
         this.activeFollowUpCompletionContract;
       this.activeConversationTurnId = `turn:${this.task.id}:follow-up:${randomUUID()}`;
       this.activeFollowUpCompletionContract = null;
-      this.resetToolRetryStateForUserFollowUp();
       try {
+        this.resetToolRetryStateForUserFollowUp();
         await this.sendMessageUnlocked(
           message,
           images,
           quotedAssistantMessage,
           options,
         );
+      } catch (error) {
+        // Attachment/provider/prompt setup runs before the unified loop's
+        // error boundary. Those failures must close this turn as well, or
+        // the UI keeps spinning forever despite already displaying an error.
+        this.finalizeRecoverableFollowUpFailure(error, previousStatus, previousCompletedAt);
       } finally {
         this.activeConversationTurnId = previousConversationTurnId;
         this.activeFollowUpCompletionContract =
@@ -43037,6 +43134,26 @@ Return ONLY a JSON object:
           reason: "terminal_contextual_follow_up_compaction",
         });
       }
+    }
+
+    // Completed-task follow-ups that introduce a standalone topic must start
+    // from a compact session stub. Otherwise the full previous transcript is
+    // sent to the model and unrelated answers can be merged (most visible with
+    // short weather/news queries on models with strong conversation recall).
+    const independentFollowUp =
+      shouldStartNewCanvasSession &&
+      !isRecoveredFollowUpContinuation &&
+      !contextualTerminalStateUpdate &&
+      !this.redirectRequested &&
+      this.isLikelyIndependentFollowUp(executionMessage);
+    if (independentFollowUp) {
+      this.compactHistoryForRedirect();
+      this.systemPrompt = "";
+      this.emitEvent("log", {
+        message:
+          "Isolated an independent follow-up topic from the completed task transcript.",
+        reason: "independent_follow_up_compaction",
+      });
     }
 
     if (!shouldResumeAfterFollowup && this.isExplicitChatExecutionMode()) {

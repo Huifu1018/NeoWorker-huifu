@@ -41,12 +41,14 @@ export function useTaskDuration(
     // callers may use a transient Date.now() fallback when no task is
     // selected, and setting state here would turn that changing fallback into
     // an update loop.
-    if (!isActive || completedAt) return;
+    if (!isActive) return;
     setNow(Date.now());
     const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [createdAt, isActive, completedAt]);
 
-  const endTime = completedAt || (isActive ? now : Date.now());
+  // A follow-up can retain the previous run's completedAt until persistence
+  // catches up. Active work must always use the live clock.
+  const endTime = isActive ? now : (completedAt ?? Date.now());
   return formatDuration(endTime - createdAt);
 }

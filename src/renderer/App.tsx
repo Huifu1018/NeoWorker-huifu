@@ -2598,7 +2598,7 @@ export function App() {
   useEffect(() => {
     if (!selectedTaskId || !selectedTask) return;
     const startedAt = optimisticFollowUpStartedAtByTaskId[selectedTaskId];
-    const completedAt = selectedTask.completedAt;
+    const completedAt = Math.max(selectedTask.completedAt ?? 0, selectedTask.updatedAt ?? 0);
     if (
       startedAt === undefined ||
       !isTerminalTaskStatus(selectedTask.status) ||
@@ -4151,6 +4151,7 @@ export function App() {
           effectiveType === "task_paused" ||
           effectiveType === "approval_requested" ||
           effectiveType === "input_request_created" ||
+          effectiveType === "follow_up_completed" ||
           effectiveType === "follow_up_failed" ||
           effectiveType === "task_interrupted" ||
           (effectiveType === "task_status" &&
@@ -7115,18 +7116,9 @@ export function App() {
     setSelectedProvider(providerType);
     setSelectedReasoningEffort(selection.reasoningEffort);
     try {
-      if (taskIdAtChange && !remoteTaskView) {
-        if (!window.electronAPI?.updateTaskModel) {
-          throw new Error("Session model updates are unavailable.");
-        }
-        const updatedTask = await window.electronAPI.updateTaskModel(
-          taskIdAtChange,
-          { providerType, modelKey },
-        );
-        setTasks((prev) => upsertTaskPreservingIdentity(prev, updatedTask));
-      } else if (taskIdAtChange && remoteTaskView) {
+      if (taskIdAtChange && remoteTaskView) {
         throw new Error("Remote session models must be changed on that device.");
-      } else {
+      } else if (!taskIdAtChange) {
         await window.electronAPI?.setLLMModel?.({
           providerType,
           modelKey,
@@ -7155,9 +7147,11 @@ export function App() {
               ),
       });
     }
-    // A model choice changes the route for the next request, not the active
-    // conversation. Keep the selected task, timeline and workspace mounted so
-    // the user can continue the same session with the newly selected model.
+    // A model choice is a local per-query override for an active session. Do
+    // not persist it onto the task row: historical turns must retain their
+    // original route, and changing the composer model must not rewrite every
+    // subsequent query in the session. New tasks still snapshot the global
+    // default through handleCreateTask.
   };
 
   const handleDevRunLoggingEnabledChange = (enabled: boolean) => {

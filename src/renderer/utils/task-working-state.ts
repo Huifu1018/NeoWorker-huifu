@@ -27,6 +27,57 @@ const TERMINAL_WORK_EVENT_TYPES = new Set<
   "follow_up_failed",
 ]);
 
+export function isTerminalWorkEvent(event: TaskEvent): boolean {
+  const type = getEffectiveTaskEventType(event);
+  return TERMINAL_WORK_EVENT_TYPES.has(type as EventType) ||
+    (type === "task_status" &&
+      ["completed", "failed", "cancelled", "paused", "blocked"].includes(
+        String(event.payload?.status),
+      ));
+}
+
+/** Timing belongs to the current turn, not the parent task's first result. */
+export function deriveTaskWorkTiming(
+  task: Task | null | undefined,
+  events: TaskEvent[],
+  hasActiveChildren: boolean,
+  optimisticStartedAt: number | null = null,
+  now = Date.now(),
+): { startedAt: number; completedAt?: number; isActive: boolean } {
+  if (!task) return { startedAt: now, isActive: false };
+  let latestUserAt: number | undefined;
+  let latestTerminalAt: number | undefined;
+  for (const event of events) {
+    if (event.taskId !== task.id || !Number.isFinite(event.timestamp)) continue;
+    if (getEffectiveTaskEventType(event) === "user_message") {
+      latestUserAt = Math.max(latestUserAt ?? 0, event.timestamp);
+    }
+    if (isTerminalWorkEvent(event)) {
+      latestTerminalAt = Math.max(latestTerminalAt ?? 0, event.timestamp);
+    }
+  }
+  const status = deriveCanonicalTaskStatus(task);
+  const terminalRowAt = ["completed", "failed", "cancelled", "paused", "blocked"].includes(status)
+    ? Math.max(task.completedAt ?? 0, task.updatedAt ?? 0)
+    : 0;
+  const optimisticActive = optimisticStartedAt !== null &&
+    optimisticStartedAt > Math.max(latestTerminalAt ?? 0, terminalRowAt);
+  const startedAt = (optimisticActive ? optimisticStartedAt : latestUserAt) ?? task.createdAt;
+  const isActive = optimisticActive || isTaskActivelyWorking(task, events, hasActiveChildren, now);
+  // Prefer this turn's explicit end event. Failed follow-ups intentionally
+  // preserve the parent's completedAt, which can be earlier than startedAt.
+  const endAt = latestTerminalAt !== undefined && latestTerminalAt >= startedAt
+    ? latestTerminalAt
+    : task.completedAt !== undefined && task.completedAt >= startedAt
+      ? task.completedAt
+      : terminalRowAt >= startedAt ? terminalRowAt : undefined;
+  return {
+    startedAt,
+    completedAt: isActive ? undefined : endAt,
+    isActive,
+  };
+}
+
 function isActiveWorkSignal(event: TaskEvent, effectiveType: string): boolean {
   const isActiveProgressSignal =
     effectiveType === "progress_update" &&
@@ -78,15 +129,7 @@ export function isTaskActivelyWorking(
         event.timestamp,
       );
     }
-    if (
-      TERMINAL_WORK_EVENT_TYPES.has(
-        effectiveType as
-          | EventType
-          | "task_paused"
-          | "task_cancelled"
-          | "follow_up_failed",
-      )
-    ) {
+    if (isTerminalWorkEvent(event)) {
       latestTerminalTimestamp = Math.max(
         latestTerminalTimestamp ?? event.timestamp,
         event.timestamp,
@@ -120,15 +163,7 @@ export function isTaskActivelyWorking(
       const event = events[i];
       if (event.taskId !== task.id) continue;
       const effectiveType = getEffectiveTaskEventType(event);
-      if (
-        TERMINAL_WORK_EVENT_TYPES.has(
-          effectiveType as
-            | EventType
-            | "task_paused"
-            | "task_cancelled"
-            | "follow_up_failed",
-        )
-      ) {
+      if (isTerminalWorkEvent(event)) {
         return false;
       }
       if (isActiveWorkSignal(event, effectiveType)) {
@@ -157,15 +192,7 @@ export function isTaskActivelyWorking(
     if (event.taskId !== task.id) continue;
     const effectiveType = getEffectiveTaskEventType(event);
 
-    if (
-      TERMINAL_WORK_EVENT_TYPES.has(
-        effectiveType as
-          | EventType
-          | "task_paused"
-          | "task_cancelled"
-          | "follow_up_failed",
-      )
-    ) {
+    if (isTerminalWorkEvent(event)) {
       return false;
     }
     if (isActiveWorkSignal(event, effectiveType)) {

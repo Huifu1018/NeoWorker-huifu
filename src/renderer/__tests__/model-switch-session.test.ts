@@ -8,24 +8,17 @@ const appSource = readFileSync(
 );
 
 describe("model switching inside an active session", () => {
-  it("persists the model on the active task without changing the global default", () => {
+  it("keeps model changes as a per-query override without rewriting the active task", () => {
     const handlerStart = appSource.indexOf("const handleModelChange = async");
     const handlerEnd = appSource.indexOf(
       "const handleDevRunLoggingEnabledChange",
       handlerStart,
     );
     const handlerSource = appSource.slice(handlerStart, handlerEnd);
-    const activeTaskBranchEnd = handlerSource.indexOf(
-      "} else if (taskIdAtChange && remoteTaskView)",
-    );
-    const activeTaskBranch = handlerSource.slice(0, activeTaskBranchEnd);
-
     expect(handlerStart).toBeGreaterThanOrEqual(0);
     expect(handlerEnd).toBeGreaterThan(handlerStart);
     expect(handlerSource).toContain("setSelectedModel(modelKey)");
-    expect(activeTaskBranchEnd).toBeGreaterThan(0);
-    expect(activeTaskBranch).toContain("updateTaskModel");
-    expect(activeTaskBranch).not.toContain("setLLMModel");
+    expect(handlerSource).not.toContain("updateTaskModel");
     expect(handlerSource).not.toContain("setSelectedTaskId(null)");
     expect(handlerSource).not.toContain("setEvents([])");
     expect(handlerSource).not.toContain("clearRemoteTaskView()");

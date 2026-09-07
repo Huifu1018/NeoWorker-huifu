@@ -9,6 +9,42 @@ import { SessionRecallService } from "../../memory/SessionRecallService";
 import type { Task, TaskBestKnownOutcome } from "../../../shared/types";
 
 describe("TaskExecutor entrypoint guards", () => {
+  it("closes setup failures before the loop and permits the next follow-up", async () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.lifecycleMutex = { runExclusive: async (fn: () => Promise<void>) => fn() };
+    executor.task = { id: "setup-failure", status: "completed", completedAt: 1000 };
+    executor.activeConversationTurnId = "original-turn";
+    executor.daemon = { getTask: () => executor.task, updateTask: vi.fn() };
+    executor.emitEvent = vi.fn();
+    executor.appendConversationHistory = vi.fn();
+    executor.saveConversationSnapshot = vi.fn();
+    executor.provider = { type: "deepseek" };
+    executor.modelId = "deepseek-chat";
+    executor.ensureProviderFailoverSelectionsContext = vi.fn();
+    executor.sendMessageUnlocked = vi.fn(async (message: string, images: Any[]) => {
+      executor.task.status = "executing";
+      executor.task.completedAt = undefined;
+      await executor.buildUserContent(message, images);
+    });
+
+    await executor.sendMessage("分析这张图", [{ data: "AA==", mimeType: "image/png", filename: "image.png", sizeBytes: 2 }]);
+
+    expect(executor.task.status).toBe("completed");
+    expect(executor.task.completedAt).toBe(1000);
+    expect(executor.emitEvent).toHaveBeenCalledWith("follow_up_failed", expect.objectContaining({
+      parentTaskStatus: "completed",
+      turnId: expect.stringMatching(/^turn:setup-failure:follow-up:/),
+    }));
+    expect(executor.emitEvent).toHaveBeenCalledWith("assistant_message", expect.objectContaining({
+      message: "当前模型不支持图片，本轮已结束，对话上下文已保留。请切换支持图片的模型后重新发送。",
+    }));
+    expect(executor.activeConversationTurnId).toBe("original-turn");
+    executor.sendMessageUnlocked.mockResolvedValueOnce(undefined);
+    await executor.sendMessage("继续文字对话");
+    expect(executor.sendMessageUnlocked).toHaveBeenCalledTimes(2);
+    expect(executor.emitEvent.mock.calls.filter(([type]: [string]) => type === "follow_up_failed")).toHaveLength(1);
+  });
+
   it("serializes execute/sendMessage via lifecycle mutex wrappers", async () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     const runExclusive = vi.fn(async (fn: () => Promise<void>) => fn());
