@@ -549,7 +549,16 @@ Write-Output $item.VersionInfo.ProductVersion
 `;
     const versionResult = powershell(versionScript);
     const installedVersion = String(versionResult.stdout || "").trim();
-    if (installedVersion && !installedVersion.startsWith(expectedVersion)) {
+    // Windows ProductVersion drops the npm prerelease/build suffix (for
+    // example package 0.1.8-3 is reported by the installer as 0.1.8.0).
+    // Compare the stable base as well so this platform-specific formatting
+    // difference does not reject an otherwise valid installer.
+    const expectedWindowsBase = expectedVersion.split(/[+-]/, 1)[0];
+    if (
+      installedVersion &&
+      !installedVersion.startsWith(expectedVersion) &&
+      !installedVersion.startsWith(`${expectedWindowsBase}.`)
+    ) {
       throw new Error(
         `Expected installed app version ${expectedVersion}, found ${installedVersion}`,
       );
