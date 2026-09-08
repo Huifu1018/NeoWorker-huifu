@@ -1208,7 +1208,11 @@ const SelectedTaskWorkspaceView = memo(
       readPersistedSpreadsheetSidebarWidth,
     );
     const [isSpreadsheetResizing, setIsSpreadsheetResizing] = useState(false);
-    const artifactFocusActive = Boolean(spreadsheetArtifact);
+    // The preview is rendered inside the right panel controlled by the
+    // window-level collapse button. Do not keep focus mode active while that
+    // panel is collapsed, or the preview can remain mounted over the main UI.
+    const artifactFocusActive =
+      Boolean(spreadsheetArtifact) && !effectiveRightCollapsed;
     useLayoutEffect(() => {
       onArtifactFocusChange(artifactFocusActive);
       return () => {
@@ -1907,7 +1911,8 @@ const SelectedTaskWorkspaceView = memo(
         spawnedAgentSidebar ||
         sideChat) &&
       workspace?.path &&
-      !remoteTaskView,
+      !remoteTaskView &&
+      !effectiveRightCollapsed,
     );
     const workbenchSidebarMinWidth = spreadsheetArtifact
       ? ARTIFACT_FOCUS_MIN_SIDEBAR_WIDTH
@@ -2015,7 +2020,10 @@ const SelectedTaskWorkspaceView = memo(
               onOpenChildAgentSidebar={openSpawnedAgentSidebar}
             />
           </Suspense>
-          {sideChat && workspace?.path && !remoteTaskView ? (
+          {sideChat &&
+          workspace?.path &&
+          !remoteTaskView &&
+          !effectiveRightCollapsed ? (
             <>
               <ResizableDividerHandle
                 className="spreadsheet-sidebar-resize-handle"
@@ -2053,7 +2061,8 @@ const SelectedTaskWorkspaceView = memo(
               browserWorkbench ||
               spawnedAgentSidebar) &&
             workspace?.path &&
-            !remoteTaskView ? (
+            !remoteTaskView &&
+            !effectiveRightCollapsed ? (
             <>
               <ResizableDividerHandle
                 className="spreadsheet-sidebar-resize-handle"

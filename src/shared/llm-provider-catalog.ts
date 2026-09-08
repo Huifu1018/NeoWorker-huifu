@@ -19,6 +19,19 @@ export interface ProviderCatalogEntry {
 
 export const CUSTOM_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   {
+    id: "hermes",
+    name: "Hermes Agent",
+    compatibility: "openai",
+    baseUrl: "http://127.0.0.1:8642/v1",
+    defaultModel: "hermes-agent",
+    knownModels: ["hermes-agent"],
+    apiKeyLabel: "API Key (optional)",
+    apiKeyPlaceholder: "Leave blank for local Hermes",
+    apiKeyOptional: true,
+    description:
+      "Local Hermes Gateway using the OpenAI-compatible API. NeoWorker keeps tool execution and shell approvals local.",
+  },
+  {
     id: "opencode",
     name: "OpenCode Zen",
     compatibility: "openai",

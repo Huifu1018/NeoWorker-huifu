@@ -15,12 +15,14 @@ import { MacOSSandbox } from "./macos-sandbox";
 import { DockerSandbox } from "./docker-sandbox";
 import { spawn, type ChildProcess } from "child_process";
 import * as os from "os";
+import * as path from "path";
+import { promises as fs } from "fs";
 import { createSecureTempFile } from "./security-utils";
 
 /**
  * Sandbox type enumeration
  */
-export type SandboxType = "macos" | "docker" | "none";
+export type SandboxType = "macos" | "docker" | "windows-restricted" | "none";
 
 /**
  * Sandbox execution options
@@ -93,7 +95,7 @@ export interface ISandbox {
  */
 export class NoSandbox implements ISandbox {
   readonly type: SandboxType = "none";
-  private workspace: Workspace;
+  protected workspace: Workspace;
 
   constructor(workspace: Workspace) {
     this.workspace = workspace;
@@ -212,6 +214,531 @@ export class NoSandbox implements ISandbox {
   cleanup(): void {
     // No cleanup needed
   }
+}
+
+/**
+ * Windows fallback for approved, workspace-scoped commands.
+ *
+ * Windows does not provide a sandbox-exec equivalent. This runner deliberately
+ * does not invoke cmd.exe/PowerShell and rejects shell operators, so the
+ * fallback is limited to a single executable plus arguments. Docker remains
+ * preferred when available; this path exists so bundled workflows (Python
+ * preflight and officecli.exe) work on a clean Windows installation without
+ * requiring a global unsandboxed-shell override.
+ */
+export class WindowsRestrictedSandbox extends NoSandbox {
+  readonly type: SandboxType = "windows-restricted";
+
+  async execute(
+    command: string,
+    args: string[] = [],
+    options: SandboxOptions = {},
+  ): Promise<SandboxResult> {
+    if (process.platform !== "win32") {
+      return super.execute(command, args, options);
+    }
+    if (args.length === 0 && /[\r\n&|<>^]/.test(command)) {
+      const sequence = parseWindowsRestrictedSequence(command);
+      if (sequence) {
+        return executeWindowsRestrictedSequence(this, sequence, options);
+      }
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "Windows restricted runner rejected unsupported shell syntax. Use direct commands, &&/||/; sequencing, and workspace-local > redirection.",
+        killed: false,
+        timedOut: false,
+        error: "WINDOWS_RESTRICTED_SHELL_SYNTAX",
+      };
+    }
+
+    const timeout = options.timeout ?? 5 * 60 * 1000;
+    const maxOutputSize = options.maxOutputSize ?? 100 * 1024;
+    const cwd = options.cwd || this.workspacePath();
+    const resolvedCwd = path.resolve(cwd);
+    const workspaceRoot = path.resolve(this.workspacePath());
+    const relativeCwd = path.relative(workspaceRoot, resolvedCwd);
+    if (relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd)) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "Windows restricted runner only permits commands inside the active workspace.",
+        killed: false,
+        timedOut: false,
+        error: "WINDOWS_RESTRICTED_CWD_OUTSIDE_WORKSPACE",
+      };
+    }
+
+    const commandLine = args.length > 0 ? [command, ...args].join(" ") : command;
+    const tokens = tokenizeDirectWindowsCommand(commandLine);
+    if (!tokens || tokens.length === 0) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "Windows restricted runner requires one executable and direct arguments.",
+        killed: false,
+        timedOut: false,
+        error: "WINDOWS_RESTRICTED_INVALID_COMMAND",
+      };
+    }
+    const executableToken = normalizeWindowsExecutable(tokens[0]);
+    if (WINDOWS_SHELL_EXECUTABLES.has(executableToken.toLowerCase())) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "Windows restricted runner does not invoke cmd.exe, PowerShell, or another shell.",
+        killed: false,
+        timedOut: false,
+        error: "WINDOWS_RESTRICTED_NESTED_SHELL",
+      };
+    }
+    const executable = executableToken.toLowerCase() === "python3" ? "python" : executableToken;
+    const childArgs = tokens.slice(1);
+    if (childArgs.some((arg) => WINDOWS_CODE_EXECUTION_FLAGS.has(arg.toLowerCase()))) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "Windows restricted runner rejects inline code execution; use a workspace script file.",
+        killed: false,
+        timedOut: false,
+        error: "WINDOWS_RESTRICTED_INLINE_CODE",
+      };
+    }
+    const builtin = await executeWindowsWorkspaceBuiltin(
+      executable,
+      childArgs,
+      resolvedCwd,
+      workspaceRoot,
+      timeout,
+      maxOutputSize,
+    );
+    if (builtin) return builtin;
+    const env = {
+      PATH: process.env.PATH || "",
+      USERPROFILE: process.env.USERPROFILE || "",
+      TEMP: process.env.TEMP || process.env.TMP || "",
+      TMP: process.env.TMP || process.env.TEMP || "",
+      SystemRoot: process.env.SystemRoot || "C:\\Windows",
+      COMSPEC: process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
+      OFFICECLI_RESIDENT_FLUSH: "each",
+    };
+    return spawnDirectProcess(executable, childArgs, {
+      cwd: resolvedCwd,
+      env,
+      timeout,
+      maxOutputSize,
+      onProcess: options.onProcess,
+    });
+  }
+
+  private workspacePath(): string {
+    return this.workspace.path;
+  }
+
+  /** Exposed only for the restricted command compatibility layer. */
+  getWorkspacePath(): string {
+    return this.workspace.path;
+  }
+}
+
+const WINDOWS_SHELL_EXECUTABLES = new Set([
+  "cmd",
+  "cmd.exe",
+  "powershell",
+  "powershell.exe",
+  "pwsh",
+  "pwsh.exe",
+  "bash",
+  "sh",
+  "npm",
+  "npm.cmd",
+  "npx",
+  "npx.cmd",
+]);
+const WINDOWS_CODE_EXECUTION_FLAGS = new Set([
+  "-c",
+  "/c",
+  "-e",
+  "-exec",
+  "--eval",
+  "--exec",
+  "--execute",
+  "-m",
+  "-command",
+  "-encodedcommand",
+]);
+
+function normalizeWindowsExecutable(value: string): string {
+  return value.replace(/^['"]|['"]$/g, "");
+}
+
+function tokenizeDirectWindowsCommand(command: string): string[] | null {
+  const tokens: string[] = [];
+  const pattern = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  let lastIndex = 0;
+  while ((match = pattern.exec(command)) !== null) {
+    if (command.slice(lastIndex, match.index).trim()) return null;
+    tokens.push((match[1] ?? match[2] ?? match[3] ?? "").replace(/\\"/g, '"'));
+    lastIndex = pattern.lastIndex;
+  }
+  return command.slice(lastIndex).trim() ? null : tokens;
+}
+
+type WindowsRestrictedCommandPart = {
+  command: string;
+  operator: "&&" | "||" | ";" | null;
+};
+
+function parseWindowsRestrictedSequence(command: string): WindowsRestrictedCommandPart[] | null {
+  const parts: WindowsRestrictedCommandPart[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let pendingOperator: WindowsRestrictedCommandPart["operator"] = null;
+  let hasOperator = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote && command[index - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "\r" || char === "\n" || char === "|" || char === "<" || char === "^") {
+      return null;
+    }
+    if (char === ";") {
+      const text = command.slice(start, index).trim();
+      if (!text) return null;
+      parts.push({ command: text, operator: pendingOperator });
+      pendingOperator = ";";
+      start = index + 1;
+      hasOperator = true;
+      continue;
+    }
+    if (char === "&") {
+      if (command[index + 1] !== "&") return null;
+      const text = command.slice(start, index).trim();
+      if (!text) return null;
+      parts.push({ command: text, operator: pendingOperator });
+      pendingOperator = "&&";
+      start = index + 2;
+      index += 1;
+      hasOperator = true;
+    }
+  }
+  if (quote) return null;
+  const last = command.slice(start).trim();
+  if (!last) return null;
+  parts.push({ command: last, operator: pendingOperator });
+  // A single redirection (e.g. officecli ... > report.json) is also handled
+  // by this interpreter, while unsupported pipes and shell syntax return null.
+  if (!hasOperator && !/>\s*[^>]/.test(command)) return null;
+  return parts;
+}
+
+function splitWindowsRestrictedRedirection(command: string): {
+  command: string;
+  target: string;
+  append: boolean;
+} | null {
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote && command[index - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char !== ">") continue;
+    const append = command[index + 1] === ">";
+    const left = command.slice(0, index).trim();
+    const right = command.slice(index + (append ? 2 : 1)).trim();
+    if (!left || !right || /[<>|&;]/.test(right)) return null;
+    const targetTokens = tokenizeDirectWindowsCommand(right);
+    if (!targetTokens || targetTokens.length !== 1) return null;
+    return { command: left, target: targetTokens[0], append };
+  }
+  return { command, target: "", append: false };
+}
+
+async function executeWindowsRestrictedSequence(
+  sandbox: WindowsRestrictedSandbox,
+  parts: WindowsRestrictedCommandPart[],
+  options: SandboxOptions,
+): Promise<SandboxResult> {
+  let cwd = options.cwd || sandbox.getWorkspacePath();
+  let previous: SandboxResult = {
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    killed: false,
+    timedOut: false,
+  };
+  let stdout = "";
+  let stderr = "";
+  for (const part of parts) {
+    if (part.operator === "&&" && previous.exitCode !== 0) continue;
+    if (part.operator === "||" && previous.exitCode === 0) continue;
+    const cdMatch = /^(?:cd|chdir)\s+(.+)$/i.exec(part.command);
+    if (cdMatch) {
+      const tokens = tokenizeDirectWindowsCommand(cdMatch[1]);
+      if (!tokens || tokens.length !== 1) {
+        previous = {
+          exitCode: 1,
+          stdout: "",
+          stderr: "cd requires one workspace-local path.",
+          killed: false,
+          timedOut: false,
+          error: "WINDOWS_RESTRICTED_INVALID_COMMAND",
+        };
+      } else {
+        const nextCwd = path.resolve(cwd, tokens[0]);
+        const relative = path.relative(sandbox.getWorkspacePath(), nextCwd);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+          previous = {
+            exitCode: 1,
+            stdout: "",
+            stderr: "cd cannot leave the active workspace.",
+            killed: false,
+            timedOut: false,
+            error: "WINDOWS_RESTRICTED_CWD_OUTSIDE_WORKSPACE",
+          };
+        } else {
+          try {
+            const stat = await fs.stat(nextCwd);
+            if (!stat.isDirectory()) throw new Error("Not a directory");
+            cwd = nextCwd;
+            previous = { exitCode: 0, stdout: "", stderr: "", killed: false, timedOut: false };
+          } catch (error) {
+            previous = { exitCode: 1, stdout: "", stderr: String(error), killed: false, timedOut: false };
+          }
+        }
+      }
+    } else {
+      const redirect = splitWindowsRestrictedRedirection(part.command);
+      if (!redirect) {
+        previous = {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Invalid workspace-local redirection.",
+          killed: false,
+          timedOut: false,
+          error: "WINDOWS_RESTRICTED_SHELL_SYNTAX",
+        };
+      } else {
+        previous = await sandbox.execute(redirect.command, [], { ...options, cwd });
+        if (previous.exitCode === 0 && redirect.target) {
+          const target = path.resolve(cwd, redirect.target);
+          const relative = path.relative(sandbox.getWorkspacePath(), target);
+          if (relative.startsWith("..") || path.isAbsolute(relative)) {
+            previous = {
+              exitCode: 1,
+              stdout: "",
+              stderr: "Redirection target must remain inside the active workspace.",
+              killed: false,
+              timedOut: false,
+              error: "WINDOWS_RESTRICTED_CWD_OUTSIDE_WORKSPACE",
+            };
+          } else {
+            await fs.writeFile(target, previous.stdout, { encoding: "utf8", flag: redirect.append ? "a" : "w" });
+            previous = { ...previous, stdout: "" };
+          }
+        }
+      }
+    }
+    stdout += previous.stdout;
+    stderr += previous.stderr;
+  }
+  return { ...previous, stdout, stderr };
+}
+
+/**
+ * Windows has several useful commands (dir, type, md, del) as cmd.exe
+ * built-ins, while agent workflows commonly use their POSIX spellings (ls,
+ * pwd, cat, mkdir, rm).  The restricted runner intentionally does not start
+ * a shell, so implement this small, workspace-scoped compatibility layer
+ * directly with filesystem APIs. This keeps normal validation workflows
+ * usable without weakening the no-shell boundary.
+ */
+async function executeWindowsWorkspaceBuiltin(
+  executable: string,
+  args: string[],
+  cwd: string,
+  workspaceRoot: string,
+  timeout: number,
+  maxOutputSize: number,
+): Promise<SandboxResult | null> {
+  const name = path.basename(executable).toLowerCase();
+  const aliases = new Set([
+    "pwd",
+    "ls",
+    "dir",
+    "cat",
+    "type",
+    "echo",
+    "mkdir",
+    "md",
+    "touch",
+    "rm",
+    "del",
+    "rmdir",
+    "rd",
+    "cp",
+    "copy",
+    "mv",
+    "move",
+    "whoami",
+  ]);
+  if (!aliases.has(name)) return null;
+
+  const startedAt = Date.now();
+  const result = (stdout = "", stderr = "", exitCode = 0): SandboxResult => ({
+    exitCode,
+    stdout: stdout.slice(0, maxOutputSize),
+    stderr: stderr.slice(0, maxOutputSize),
+    killed: false,
+    timedOut: Date.now() - startedAt > timeout,
+  });
+  const fail = (message: string) => result("", message, 1);
+  const safePath = (value: string): string | null => {
+    const resolved = path.resolve(cwd, value || ".");
+    const relative = path.relative(workspaceRoot, resolved);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    return resolved;
+  };
+  const isFlag = (arg: string): boolean =>
+    arg.startsWith("-") || /^\/(?:a|b|s|q|w|p|on|od|o-d|t)$/i.test(arg);
+  const nonFlagArgs = args.filter((arg) => !isFlag(arg));
+
+  try {
+    if (name === "pwd") return args.length ? fail("pwd does not accept arguments in the restricted runner") : result(`${cwd}\n`);
+    if (name === "whoami") return result(`${process.env.USERNAME || process.env.USER || "user"}\n`);
+    if (name === "echo") return result(`${args.join(" ")}\n`);
+
+    if (name === "ls" || name === "dir") {
+      const includeHidden = args.some((arg) => /(^-|\/)a/i.test(arg));
+      const target = safePath(nonFlagArgs[0] || ".");
+      if (!target) return fail("Path escapes the active workspace.");
+      const entries = await fs.readdir(target, { withFileTypes: true });
+      const visible = includeHidden ? entries : entries.filter((entry) => !entry.name.startsWith("."));
+      return result(visible.map((entry) => `${entry.name}${entry.isDirectory() ? path.sep : ""}`).join("\n") + (visible.length ? "\n" : ""));
+    }
+
+    if (name === "cat" || name === "type") {
+      if (nonFlagArgs.length === 0) return fail(`${name} requires a file path.`);
+      let output = "";
+      for (const value of nonFlagArgs) {
+        const target = safePath(value);
+        if (!target) return fail("Path escapes the active workspace.");
+        output += await fs.readFile(target, "utf8");
+      }
+      return result(output);
+    }
+
+    if (name === "mkdir" || name === "md") {
+      if (nonFlagArgs.length === 0) return fail(`${name} requires a directory path.`);
+      for (const value of nonFlagArgs) {
+        const target = safePath(value);
+        if (!target) return fail("Path escapes the active workspace.");
+        await fs.mkdir(target, { recursive: true });
+      }
+      return result();
+    }
+
+    if (name === "touch") {
+      if (nonFlagArgs.length === 0) return fail("touch requires a file path.");
+      for (const value of nonFlagArgs) {
+        const target = safePath(value);
+        if (!target) return fail("Path escapes the active workspace.");
+        await fs.writeFile(target, "", { flag: "a" });
+      }
+      return result();
+    }
+
+    if (["rm", "del", "rmdir", "rd"].includes(name)) {
+      if (nonFlagArgs.length === 0) return fail(`${name} requires a path.`);
+      const recursive = args.some((arg) => /^-r/i.test(arg) || /^\/s/i.test(arg));
+      for (const value of nonFlagArgs) {
+        const target = safePath(value);
+        if (!target || target === workspaceRoot) return fail("Refusing to delete outside or the root of the active workspace.");
+        await fs.rm(target, { recursive, force: true });
+      }
+      return result();
+    }
+
+    if (["cp", "copy", "mv", "move"].includes(name)) {
+      if (nonFlagArgs.length !== 2) return fail(`${name} requires a source and destination.`);
+      const source = safePath(nonFlagArgs[0]);
+      const destination = safePath(nonFlagArgs[1]);
+      if (!source || !destination) return fail("Path escapes the active workspace.");
+      if (name === "cp" || name === "copy") {
+        await fs.cp(source, destination, { recursive: true });
+      } else {
+        await fs.rename(source, destination);
+      }
+      return result();
+    }
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+  return null;
+}
+
+function spawnDirectProcess(
+  executable: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    maxOutputSize: number;
+    onProcess?: (process: ChildProcess) => void;
+  },
+): Promise<SandboxResult> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    let timedOut = false;
+    const child = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    options.onProcess?.(child);
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      killed = true;
+      child.kill();
+    }, options.timeout);
+    const append = (target: "stdout" | "stderr", data: Buffer) => {
+      const value = data.toString();
+      const current = target === "stdout" ? stdout : stderr;
+      const next = current.length + value.length <= options.maxOutputSize
+        ? current + value
+        : current + value.slice(0, Math.max(0, options.maxOutputSize - current.length)) + "\n[Output truncated]";
+      if (target === "stdout") stdout = next;
+      else stderr = next;
+    };
+    child.stdout?.on("data", (data: Buffer) => append("stdout", data));
+    child.stderr?.on("data", (data: Buffer) => append("stderr", data));
+    child.on("error", (error) => {
+      clearTimeout(timeoutHandle);
+      resolve({ exitCode: 1, stdout, stderr: error.message, killed, timedOut, error: error.message });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timeoutHandle);
+      const error = signal ? `Process terminated by signal ${signal}` : undefined;
+      resolve({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
+    });
+  });
 }
 
 /**
@@ -365,6 +892,13 @@ export async function detectAvailableSandbox(): Promise<SandboxType> {
     return "docker";
   }
 
+  // Windows has no native sandbox-exec. Use the direct, workspace-scoped
+  // runner rather than falling through to the generic `none` type, which is
+  // intentionally blocked by the shell policy.
+  if (process.platform === "win32") {
+    return "windows-restricted";
+  }
+
   // Fallback to no sandbox
   return "none";
 }
@@ -410,6 +944,9 @@ export async function createSandbox(
       break;
     case "docker":
       sandbox = new DockerSandbox(workspace);
+      break;
+    case "windows-restricted":
+      sandbox = new WindowsRestrictedSandbox(workspace);
       break;
     case "none":
     default:

@@ -1,0 +1,29 @@
+# Hermes Runtime integration
+
+NeoWorker has two Hermes integration layers:
+
+- **Hermes Agent provider** sends model requests to a local Hermes OpenAI-compatible Gateway (`http://127.0.0.1:8642/v1`). The normal NeoWorker `SessionRuntime`, `ToolRegistry`, approval policy, sandbox, and Shell executor remain in control.
+- **Hermes ACP session adapter** (`HermesAcpClient` and `HermesRuntimeAdapter`) can start a real `hermes acp` process, persist an ACP session handle, stream `session/update` events, cancel a prompt, and restore a session. It is an integration seam and test harness while tool mediation is being completed.
+
+The ACP adapter is not enabled for ordinary NeoWorker tasks yet. Hermes owns its tool execution; the integration must configure and verify its execution backend before production use. ACP permission callbacks do not cover every operation and are not a sandbox. A pinned-source adapter remains a viable implementation path.
+
+`HermesRuntimeOptions.onPermissionRequest` receives the operation details, offered options, and an AbortSignal. Return the selected option ID or null. `HermesPermissionBridge` validates the active session and options and dismisses on timeout, cancellation or handler failure. Generic `onRequest` callbacks cannot approve permission requests. The host must wire this handler to its task approval service and close pending UI when the signal aborts. This wiring is not implemented yet.
+
+The daemon now exposes `createHermesPermissionHandler(taskId)`, the intended injection point for an ACP task. It delegates to the existing `requestApproval` path, keeping workspace rules, persisted approval actions, and UI events centralized. Production task selection still needs to pass this handler when constructing the ACP adapter.
+
+For current evidence, outstanding requirements and package freshness, see [hermes-test-report.md](hermes-test-report.md).
+
+## Local test
+
+1. Start and configure Hermes (`hermes status`; `hermes acp --check`).
+2. Start Hermes Gateway if testing the Provider entry, or use the ACP adapter tests for the subprocess path.
+3. In NeoWorker settings choose **Hermes Agent**, keep the default base URL, and select a model advertised by the Gateway.
+4. Run the focused checks:
+
+```sh
+hermes acp --check
+npm test -- --run src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
+npm test -- --run src/electron/agent/tools/__tests__/shell-tools.test.ts
+```
+
+Do not automatically retry an interrupted ACP prompt: Hermes may already have performed a side effect. Restore the checkpoint and let the user explicitly continue.

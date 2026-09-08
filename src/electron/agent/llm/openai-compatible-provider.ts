@@ -6,7 +6,10 @@ import {
   fromOpenAICompatibleResponse,
   type OpenAICompatibleToolOptions,
 } from "./openai-compatible";
-import { buildOpenAIPromptCacheFields } from "./prompt-cache";
+import {
+  buildOpenAIPromptCacheFields,
+  extractOpenAICompatibleCacheUsage,
+} from "./prompt-cache";
 
 const OPENCODE_GO_KIMI_MAX_COMPLETION_TOKENS = 32_768;
 
@@ -287,6 +290,111 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return undefined;
   }
 
+  private emitStreamProgress(
+    callback: LLMRequest["onStreamProgress"],
+    startedAt: number,
+    inputTokens: number,
+    outputTokens: number,
+    text: string,
+    streaming: boolean,
+  ): void {
+    callback?.({
+      inputTokens,
+      outputTokens,
+      outputChars: text.length,
+      elapsedMs: Date.now() - startedAt,
+      streaming,
+      text,
+    });
+  }
+
+  private async fromStreamResponse(
+    response: Response,
+    request: LLMRequest,
+    startedAt: number,
+  ): Promise<LLMResponse> {
+    if (!response.body) {
+      throw new OpenAICompatibleProviderError(
+        `${this.providerName} API returned an empty stream`,
+        { providerName: this.providerName, code: "EMPTY_STREAM", retryable: true },
+      );
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cachedTokens: number | undefined;
+    let cacheWriteTokens: number | undefined;
+    let finishReason: string = "end_turn";
+    const toolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
+    const consume = (data: string): void => {
+      if (!data || data === "[DONE]") return;
+      let payload: Any;
+      try { payload = JSON.parse(data); } catch { return; }
+      if (payload.usage) {
+        inputTokens = payload.usage.prompt_tokens ?? inputTokens;
+        outputTokens = payload.usage.completion_tokens ?? outputTokens;
+        const cache = extractOpenAICompatibleCacheUsage(payload.usage);
+        cachedTokens = cache.cachedTokens ?? cachedTokens;
+        cacheWriteTokens = cache.cacheWriteTokens ?? cacheWriteTokens;
+      }
+      const choice = Array.isArray(payload.choices) ? payload.choices[0] : undefined;
+      const delta = choice?.delta;
+      if (typeof delta?.content === "string" && delta.content) {
+        text += delta.content;
+        this.emitStreamProgress(request.onStreamProgress, startedAt, inputTokens, outputTokens, text, true);
+      }
+      for (const call of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
+        const index = Number.isFinite(call?.index) ? Number(call.index) : toolCalls.size;
+        const current = toolCalls.get(index) ?? { arguments: "" };
+        if (typeof call?.id === "string") current.id = call.id;
+        if (typeof call?.function?.name === "string") current.name = call.function.name;
+        if (typeof call?.function?.arguments === "string") current.arguments += call.function.arguments;
+        toolCalls.set(index, current);
+      }
+      if (choice?.finish_reason === "tool_calls") finishReason = "tool_use";
+      else if (choice?.finish_reason === "length") finishReason = "max_tokens";
+      else if (choice?.finish_reason === "content_filter") finishReason = "stop_sequence";
+    };
+    const flush = (line: string): void => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("data:")) consume(trimmed.slice(5).trimStart());
+    };
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let newline = buffer.indexOf("\n");
+        while (newline !== -1) {
+          flush(buffer.slice(0, newline).replace(/\r$/, ""));
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf("\n");
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer) flush(buffer);
+    } finally {
+      reader.releaseLock();
+    }
+    const message: Any = { content: text };
+    if (toolCalls.size > 0) {
+      message.tool_calls = [...toolCalls.entries()].sort(([a], [b]) => a - b).map(([index, call]) => ({
+        id: call.id || `call_${index}`,
+        type: "function",
+        function: { name: call.name || "unknown", arguments: call.arguments },
+      }));
+      finishReason = "tool_use";
+    }
+    this.emitStreamProgress(request.onStreamProgress, startedAt, inputTokens, outputTokens, text, false);
+    return fromOpenAICompatibleResponse({
+      choices: [{ message, finish_reason: finishReason === "tool_use" ? "tool_calls" : finishReason === "max_tokens" ? "length" : finishReason === "stop_sequence" ? "content_filter" : "stop" }],
+      usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, ...(cachedTokens !== undefined ? { cached_tokens: cachedTokens } : {}), ...(cacheWriteTokens !== undefined ? { cache_write_tokens: cacheWriteTokens } : {}) },
+    });
+  }
+
   async createMessage(request: LLMRequest): Promise<LLMResponse> {
     const model = this.normalizeModelForEndpoint(
       request.model || this.defaultModel,
@@ -311,6 +419,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
         : undefined;
       const outputTokenField = this.getOutputTokenField(model);
       const maxOutputTokens = this.getMaxOutputTokens(model, request.maxTokens);
+      const startedAt = Date.now();
+      const shouldStream = request.onStreamProgress !== undefined;
       console.log(`[${this.providerName}] Calling API with model: ${model}`);
 
       const headers: Record<string, string> = {
@@ -324,7 +434,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       const response = await fetch(this.chatCompletionsUrl, {
         method: "POST",
         headers,
-        body: JSON.stringify({
+          body: JSON.stringify({
           model,
           messages,
           [outputTokenField]: maxOutputTokens,
@@ -335,6 +445,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
               }
             : {}),
           ...this.getToolRequestExtras(model, tools),
+          ...(shouldStream ? { stream: true, stream_options: { include_usage: true } } : {}),
           ...buildOpenAIPromptCacheFields(request.promptCache),
         }),
         signal: request.signal,
@@ -354,6 +465,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
           },
         );
       }
+
+      if (shouldStream) return await this.fromStreamResponse(response, request, startedAt);
 
       let data: Any;
       try {

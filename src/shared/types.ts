@@ -1943,7 +1943,7 @@ export type ExecutionModeSource = "user" | "strategy" | "auto_promote";
 
 export type ExternalRuntimePermissionMode =
   "approve-reads" | "approve-all" | "deny-all";
-export type ExternalRuntimeAgent = "codex" | "claude";
+export type ExternalRuntimeAgent = "codex" | "claude" | "hermes";
 
 export interface ExternalRuntimeConfig {
   kind: "acpx";
@@ -4122,7 +4122,7 @@ export function isTempWorkspaceId(id: string | null | undefined): boolean {
 /**
  * Sandbox type for command execution isolation
  */
-export type SandboxType = "auto" | "macos" | "docker" | "none";
+export type SandboxType = "auto" | "macos" | "docker" | "windows-restricted" | "none";
 
 /**
  * Docker sandbox configuration
@@ -8900,6 +8900,7 @@ export const CUSTOM_LLM_PROVIDER_TYPES = [
   "kimi-coding",
   "anthropic-compatible",
   "hf-agents",
+  "hermes",
 ] as const;
 
 export const LLM_PROVIDER_TYPES = [
@@ -8939,6 +8940,7 @@ export const MULTI_LLM_PROVIDER_DISPLAY: Record<
   },
   moa: { name: "Mixture of Agents", icon: "\u{2699}\uFE0F", color: "#0f766e" },
   "nano-gpt": { name: "NanoGPT", icon: "\u{2728}", color: "#22c55e" },
+  hermes: { name: "Hermes Agent", icon: "\u{2699}\uFE0F", color: "#0ea5e9" },
 };
 
 export interface CachedModelInfo {

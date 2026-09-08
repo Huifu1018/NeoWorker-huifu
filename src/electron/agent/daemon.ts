@@ -194,6 +194,7 @@ import {
   buildAgentConfigFromAutonomyPolicy,
 } from "../agents/autonomy-policy";
 import { PermissionEngine } from "./runtime/PermissionEngine";
+import { createHermesPermissionHandler } from "./runtime/hermes-permission-bridge";
 import { WorktreeManager } from "../git/WorktreeManager";
 import type { ComparisonService } from "../git/ComparisonService";
 import {
@@ -5956,6 +5957,19 @@ export class AgentDaemon extends EventEmitter {
         timeoutHandle,
       });
     });
+  }
+
+  /**
+   * Adapter used by a Hermes ACP task. Keeping this factory on the daemon
+   * ensures ACP approvals use the same workspace rules, persistence and UI
+   * events as NeoWorker-native tools.
+   */
+  createHermesPermissionHandler(taskId: string) {
+    return createHermesPermissionHandler(
+      (requestedTaskId, type, description, details, opts) =>
+        this.requestApproval(requestedTaskId, type, description, details, opts),
+      taskId,
+    );
   }
 
   /**

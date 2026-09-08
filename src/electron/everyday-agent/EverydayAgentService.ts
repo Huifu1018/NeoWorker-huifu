@@ -74,7 +74,7 @@ function failClosedPolicies(): AdminPolicies {
     },
     runtime: {
       allowedPermissionModes: [],
-      allowedSandboxTypes: ["macos", "docker"],
+      allowedSandboxTypes: ["macos", "docker", "windows-restricted"],
       requireSandboxForShell: true,
       allowUnsandboxedShell: false,
       network: {

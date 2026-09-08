@@ -338,8 +338,8 @@ function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefin
  * Get the shell arguments for running a command string.
  * Unix shells use -c, PowerShell uses -Command, cmd.exe uses /c.
  */
-function getShellArgs(shell: string, command: string): string[] {
-  if (process.platform === "win32") {
+function getShellArgs(shell: string, command: string, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32") {
     const lowerShell = shell.toLowerCase();
     if (lowerShell.includes("powershell") || lowerShell.includes("pwsh")) {
       return ["-NoProfile", "-Command", command];
@@ -348,6 +348,15 @@ function getShellArgs(shell: string, command: string): string[] {
     return ["/c", command];
   }
   return ["-c", command];
+}
+
+function prepareWindowsCommand(shell: string, command: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return command;
+  const lowerShell = shell.toLowerCase();
+  if (lowerShell.includes("powershell") || lowerShell.includes("pwsh")) {
+    return `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
+  }
+  return `chcp 65001>nul & ${command}`;
 }
 
 function resolveCommandCwd(workspacePath: string, cwd?: string): string {
@@ -683,10 +692,14 @@ export class ShellTools {
           sandboxType: sandbox.type,
           allowedSandboxTypes: policies.runtime.allowedSandboxTypes,
         });
+        const platformHint =
+          process.platform === "win32"
+            ? "Windows uses the built-in workspace-restricted runner; enable it in the runtime sandbox policy or start Docker Desktop for full OS isolation."
+            : "Configure the native macOS sandbox or Docker.";
         throw new Error(
           sandbox.type === "none"
-            ? `run_command requires an OS-level sandbox for complex shell execution. Configure macOS sandboxing or Docker, or set ${UNSANDBOXED_SHELL_OVERRIDE_ENV}=1 with admin policy allowUnsandboxedShell=true for explicit local development fallback.`
-            : `run_command sandbox type "${sandbox.type}" is blocked by admin policy.`,
+            ? `run_command cannot execute safely because no supported sandbox is available. ${platformHint}`
+            : `run_command sandbox type "${sandbox.type}" is blocked by admin policy. ${platformHint}`,
         );
       }
 
@@ -1368,11 +1381,15 @@ export class ShellTools {
       this.clearEscalationTimeouts();
 
       // Use a shell to handle complex commands with pipes, redirects, etc.
-      const child = spawn(resolvedShell, getShellArgs(resolvedShell, effectiveCommand), {
+      const child = spawn(
+        resolvedShell,
+        getShellArgs(resolvedShell, prepareWindowsCommand(resolvedShell, effectiveCommand)),
+        {
         cwd,
         env: safeEnv,
         stdio: ["pipe", "pipe", "pipe"], // Enable stdin for interactive commands
-      });
+        },
+      );
 
       // Store reference to active process for stdin support
       this.activeProcess = child;
@@ -1380,7 +1397,14 @@ export class ShellTools {
       // Set timeout
       const timeoutId = setTimeout(() => {
         killed = true;
-        child.kill("SIGTERM");
+        // child.kill() only signals the shell wrapper on Windows and leaves
+        // grandchildren (npm, PowerShell, compilers) running. Kill the whole
+        // tree so timeouts actually release resources and unblock the agent.
+        if (child.pid) {
+          killProcessTree(child.pid, process.platform === "win32" ? "SIGTERM" : "SIGTERM");
+        } else {
+          child.kill("SIGTERM");
+        }
         this.daemon.logEvent(this.taskId, "command_output", {
           command,
           type: "error",
@@ -1596,4 +1620,6 @@ export const _testUtils = {
   isSandboxRuntimeFailure,
   buildEmptyCommandFailureMessage,
   buildSafeShellPath,
+  getShellArgs,
+  prepareWindowsCommand,
 };
