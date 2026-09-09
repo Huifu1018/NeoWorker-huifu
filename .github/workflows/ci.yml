@@ -250,9 +250,15 @@ jobs:
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
 
-      - name: Package application
-        if: github.event_name == 'workflow_dispatch'
+      - name: Package macOS application
+        if: github.event_name == 'workflow_dispatch' && runner.os != 'Windows'
         run: npm run package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package Windows x64 application
+        if: github.event_name == 'workflow_dispatch' && runner.os == 'Windows'
+        run: npm run package:win:x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
