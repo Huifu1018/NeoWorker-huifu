@@ -146,11 +146,9 @@ function run(command, args, options = {}) {
 
 function tarPath(filePath) {
   const resolved = path.resolve(filePath);
-  // Git for Windows' tar treats a drive-letter colon as a remote archive
-  // prefix ("C:"). Convert native paths to MSYS form before invoking it.
-  if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(resolved)) {
-    return `/${resolved[0].toLowerCase()}${resolved.slice(2).replaceAll("\\", "/")}`;
-  }
+  // The Windows runner invokes this script from PowerShell. Its bundled tar
+  // accepts native drive-letter paths; converting to /c/... can address a
+  // different filesystem view and produce a false "archive not found" error.
   return resolved;
 }
 
@@ -375,10 +373,9 @@ const temporaryRoot = fs.mkdtempSync(
 );
 
 try {
-  // Use POSIX-style paths on Windows so the bundled/system tar implementation
-  // can extract the archive without interpreting a drive letter as a remote
-  // archive.  Some Windows tar implementations do not support the GNU-only
-  // `--force-local` flag, so keep the invocation portable across runners.
+  // Use the same native paths that were used for download/cache access. This
+  // avoids Git-for-Windows path translation issues when tar is launched from
+  // PowerShell.
   const sourceExtractArgs = ["-xzf", tarPath(sourceArchive), "-C", tarPath(temporaryRoot)];
   run("tar", sourceExtractArgs);
   const sourceEntries = fs
