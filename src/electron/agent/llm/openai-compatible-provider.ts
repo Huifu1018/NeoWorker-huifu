@@ -32,10 +32,24 @@ const RETRYABLE_TRANSPORT_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
+function parseRetryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(Math.round(seconds * 1000), 5 * 60 * 1000);
+  }
+  const timestamp = Date.parse(trimmed);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return Math.min(Math.max(0, timestamp - Date.now()), 5 * 60 * 1000);
+}
+
 export class OpenAICompatibleProviderError extends Error {
   readonly status?: number;
   readonly code?: string;
   readonly retryable: boolean;
+  readonly retryAfterMs?: number;
   readonly retryKind?: "malformed_response";
   readonly providerName: string;
   override readonly cause?: unknown;
@@ -47,6 +61,7 @@ export class OpenAICompatibleProviderError extends Error {
       status?: number;
       code?: string;
       retryable: boolean;
+      retryAfterMs?: number;
       retryKind?: "malformed_response";
       cause?: unknown;
     },
@@ -57,6 +72,7 @@ export class OpenAICompatibleProviderError extends Error {
     this.status = options.status;
     this.code = options.code;
     this.retryable = options.retryable;
+    this.retryAfterMs = options.retryAfterMs;
     this.retryKind = options.retryKind;
     this.cause = options.cause;
   }
@@ -507,6 +523,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
             status: response.status,
             code: `HTTP_${response.status}`,
             retryable: RETRYABLE_HTTP_STATUSES.has(response.status),
+            retryAfterMs: parseRetryAfterMs(response.headers?.get("retry-after")),
           },
         );
       }

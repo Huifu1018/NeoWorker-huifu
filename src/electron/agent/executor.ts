@@ -31541,7 +31541,12 @@ You are continuing a previous conversation. The context from the previous conver
           /429|rate limit|too many requests|free-models-per-min/i.test(
             String(reason).toLowerCase(),
           );
-        const delayMs = isRateLimit ? 60 * 1000 : undefined; // 60s for rate limit, else default
+        const retryAfterMs = Number(error?.retryAfterMs);
+        const delayMs = isRateLimit
+          ? Number.isFinite(retryAfterMs) && retryAfterMs >= 0
+            ? Math.min(Math.floor(retryAfterMs), 5 * 60 * 1000)
+            : 60 * 1000
+          : undefined;
         const scheduled = this.daemon.handleTransientTaskFailure(
           this.task.id,
           reason,

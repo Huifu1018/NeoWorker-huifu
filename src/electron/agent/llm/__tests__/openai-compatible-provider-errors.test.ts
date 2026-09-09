@@ -241,6 +241,29 @@ describe("OpenAICompatibleProvider error metadata", () => {
     });
   });
 
+  it("preserves the provider Retry-After hint for rate-limit recovery", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        statusText: "Too Many Requests",
+        headers: new Headers({ "retry-after": "7" }),
+        json: vi.fn().mockResolvedValue({
+          error: { message: "rate limit exceeded" },
+        }),
+      }),
+    );
+
+    await expect(
+      createProvider().createMessage(createRequest()),
+    ).rejects.toMatchObject({
+      status: 429,
+      retryable: true,
+      retryAfterMs: 7_000,
+    });
+  });
+
   it("does not retry authentication failures", async () => {
     vi.stubGlobal(
       "fetch",
