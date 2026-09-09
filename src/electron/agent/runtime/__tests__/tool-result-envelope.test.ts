@@ -75,4 +75,16 @@ describe("buildToolResultEnvelope", () => {
       }),
     ]);
   });
+
+  it("bounds oversized model payloads while keeping JSON parseable", () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId: "tool-large",
+      toolName: "run_command",
+      status: "success",
+      result: { stdout: "x".repeat(250_000), command: "build" },
+    });
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+    expect(JSON.parse(envelope.modelPayload)).toMatchObject({ truncated: true });
+    expect((envelope.structuredData as { stdout: string }).stdout).toHaveLength(250_000);
+  });
 });

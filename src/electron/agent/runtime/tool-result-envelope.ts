@@ -20,6 +20,11 @@ export interface BuildToolResultEnvelopeParams {
   telemetry?: Record<string, unknown>;
 }
 
+// Keep model context bounded while retaining the complete structured result in
+// the task log and on the envelope's structuredData field.
+const MAX_MODEL_PAYLOAD_CHARS = 200_000;
+const MODEL_PAYLOAD_TRUNCATION_MARKER = "\n[Tool result truncated by NeoWorker]\n";
+
 function stringifyJsonResult(value: unknown): string {
   try {
     return JSON.stringify(value ?? {});
@@ -50,20 +55,32 @@ function stringifyModelPayload(params: BuildToolResultEnvelopeParams): string {
     typeof params.modelReminder === "string" && params.modelReminder.trim().length > 0
       ? params.modelReminder.trim()
       : "";
+  let payload: string;
   if (params.error) {
     const message = String((params.error as { message?: string })?.message || params.error || "");
-    return reminder
+    payload = reminder
       ? stringifyPayloadWithReminder(message || "Tool execution failed", reminder, "error")
       : JSON.stringify({ error: message || "Tool execution failed" });
-  }
-  if (typeof params.result === "string") {
-    return reminder
+  } else if (typeof params.result === "string") {
+    payload = reminder
       ? stringifyPayloadWithReminder(params.result, reminder, "content")
       : params.result;
+  } else {
+    payload = reminder
+      ? stringifyPayloadWithReminder(params.result, reminder, "content")
+      : stringifyJsonResult(params.result);
   }
-  return reminder
-    ? stringifyPayloadWithReminder(params.result, reminder, "content")
-    : stringifyJsonResult(params.result);
+  if (payload.length <= MAX_MODEL_PAYLOAD_CHARS) return payload;
+  // Preserve valid JSON for structured payloads; plain text is capped directly.
+  if (typeof params.result === "string" && !params.error) {
+    return `${payload.slice(0, MAX_MODEL_PAYLOAD_CHARS - MODEL_PAYLOAD_TRUNCATION_MARKER.length)}${MODEL_PAYLOAD_TRUNCATION_MARKER}`;
+  }
+  return JSON.stringify({
+    // Leave room for the JSON wrapper itself as well as the marker.
+    content: payload.slice(0, MAX_MODEL_PAYLOAD_CHARS - MODEL_PAYLOAD_TRUNCATION_MARKER.length - 1_000),
+    truncated: true,
+    _modelReminder: MODEL_PAYLOAD_TRUNCATION_MARKER.trim(),
+  });
 }
 
 function buildUserSummary(params: BuildToolResultEnvelopeParams): string {
