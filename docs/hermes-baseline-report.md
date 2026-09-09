@@ -18,7 +18,7 @@
 ## 当前结果
 
 - `npm run type-check`：退出码 2，共记录 305 个 `TS` 错误。主要集中在 `UsageInsightsPanel.tsx` 的可空数据、Renderer 类型漂移、缺失背景 SVG、UI density 导出和少量测试类型断言。
-- `npm test -- --run`：846 个测试文件中 786 通过、59 失败、1 个跳过；8473 个测试中 8305 通过、163 失败、3 个跳过、2 个 todo。执行耗时约 55 秒（含测试环境初始化）。
+- `npm test -- --run`：847 个测试文件中 787 通过、59 失败、1 个跳过；8480 个测试中 8312 通过、163 失败、3 个跳过、2 个 todo。执行耗时约 53 秒（含测试环境初始化）。
 - Hermes/NeoWorker 专项回归：6 个测试文件、106 项测试通过，覆盖 ACP 通信与首字节/总时限、权限桥接、暂停恢复、Provider 辅助请求超时、Windows Shell 和 `neoworker_tool_host_v1`。
 - Electron 编译通过；安装包构建按计划延后，当前不把历史 DMG/Windows artifact 作为本轮交付证据。
 

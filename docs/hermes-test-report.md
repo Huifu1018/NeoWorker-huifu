@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-09。当前交付提交：`cabc322`（`Huifu1018/NeoWorker-huifu`）。
+更新时间：2026-09-09。当前交付提交：`76a1c89`（`Huifu1018/NeoWorker-huifu`）。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -36,7 +36,7 @@
 - ACP 权限回调负责审批协调，不等同于操作系统沙箱；ACP-native 工具托管尚未完全迁移到 NeoWorker Tool Host。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 Vitest 当前为 846 个测试文件：786 通过、59 失败、1 跳过；8473 个测试：8305 通过、163 失败、3 跳过、2 todo。失败主要是既有 Renderer 文案/快照、数据库初始化和外部 SecureSettings 环境问题；本轮执行链专项未出现新增回归。
+- 全量 Vitest 当前为 847 个测试文件：787 通过、59 失败、1 跳过；8480 个测试：8312 通过、163 失败、3 跳过、2 todo。失败主要是既有 Renderer 文案/快照、数据库初始化、外部 SecureSettings 和环境迁移测试；本轮执行链专项未出现新增回归。
 
 ## 下一步
 
