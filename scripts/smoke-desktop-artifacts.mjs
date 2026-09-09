@@ -278,7 +278,9 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
  * files pattern drops the runtime modules from the shipped desktop app.
  */
 function validatePackagedNeoWorkerRuntime(asarPath) {
-  const entries = new Set(listPackage(asarPath));
+  const entries = new Set(
+    listPackage(asarPath).map((entry) => entry.replace(/^[/\\]+/, "")),
+  );
   const required = [
     "dist/electron/electron/agent/runtime/hermes-runtime-adapter.js",
     "dist/electron/electron/agent/runtime/hermes-acp-client.js",
