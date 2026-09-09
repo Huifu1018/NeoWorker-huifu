@@ -280,11 +280,11 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
 function validatePackagedNeoWorkerRuntime(asarPath) {
   const entries = new Set(listPackage(asarPath));
   const required = [
-    "dist/electron/agent/runtime/hermes-runtime-adapter.js",
-    "dist/electron/agent/runtime/hermes-acp-client.js",
-    "dist/electron/agent/runtime/tool-host-protocol.js",
-    "dist/electron/agent/runtime/ToolExecutionCoordinator.js",
-    "dist/electron/agent/sandbox/sandbox-factory.js",
+    "dist/electron/electron/agent/runtime/hermes-runtime-adapter.js",
+    "dist/electron/electron/agent/runtime/hermes-acp-client.js",
+    "dist/electron/electron/agent/runtime/tool-host-protocol.js",
+    "dist/electron/electron/agent/runtime/ToolExecutionCoordinator.js",
+    "dist/electron/electron/agent/sandbox/sandbox-factory.js",
   ];
   const missing = required.filter((entry) => !entries.has(entry));
   if (missing.length > 0) {
