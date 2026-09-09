@@ -329,7 +329,7 @@ function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefin
       path.win32.join(systemRoot, "System32", "Wbem"),
       path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
       "C:\\Program Files\\PowerShell\\7",
-      path.win32.join(process.env.APPDATA || "", "npm"),
+      ...(process.env.APPDATA ? [path.win32.join(process.env.APPDATA, "npm")] : []),
     ].filter(Boolean);
     return Array.from(new Set([...systemPaths, ...inheritedPaths])).join(delimiter);
   }
