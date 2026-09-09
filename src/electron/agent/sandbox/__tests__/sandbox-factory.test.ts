@@ -118,6 +118,7 @@ describe("Windows restricted runner", () => {
   let platformSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    spawnMock.mockReset();
     platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
   });
 
@@ -228,14 +229,40 @@ describe("Windows restricted runner", () => {
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
-    await expect(sandbox.execute("npm", ["install", "--ignore-scripts"], {
+    await expect(sandbox.execute("npm.exe", ["install", "--ignore-scripts"], {
       cwd: "/tmp/workspace",
     })).resolves.toMatchObject({ exitCode: 0, stdout: "installed\n" });
     expect(spawnMock).toHaveBeenCalledWith(
-      "npm",
+      "npm.exe",
       ["install", "--ignore-scripts"],
       expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
     );
+  });
+
+  it("caps direct-process output once and discards later chunks", async () => {
+    const proc = makeChildProcess({ stayOpen: true });
+    spawnMock.mockImplementationOnce(() => proc);
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    const resultPromise = sandbox.execute("python", ["script.py"], {
+      cwd: "/tmp/workspace",
+      timeout: 1_000,
+      maxOutputSize: 10,
+    });
+    await Promise.resolve();
+    proc.stdout?.emit("data", Buffer.from("1234567890abcdefghij"));
+    proc.stdout?.emit("data", Buffer.from("later output that must be discarded"));
+    proc.emit("close", 0, null);
+
+    const result = await resultPromise;
+    expect(result.stdout).toBe("1234567890\n[Output truncated]");
+    expect(result.stdout.match(/Output truncated/g)).toHaveLength(1);
   });
 
   it("rejects workspace paths that resolve through an outside symlink", async () => {

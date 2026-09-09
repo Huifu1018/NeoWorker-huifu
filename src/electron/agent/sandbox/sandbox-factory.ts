@@ -19,6 +19,7 @@ import * as path from "path";
 import { realpathSync } from "fs";
 import { promises as fs } from "fs";
 import { createSecureTempFile } from "./security-utils";
+import { resolveWindowsPackageManagerLaunch } from "./windows-package-manager-launch";
 
 /**
  * Sandbox type enumeration
@@ -340,7 +341,14 @@ export class WindowsRestrictedSandbox extends NoSandbox {
         env[key] = process.env[key] as string;
       }
     }
-    return spawnDirectProcess(executable, childArgs, {
+    let launch;
+    try {
+      launch = resolveWindowsPackageManagerLaunch(executable, childArgs, resolvedCwd, env);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { exitCode: 1, stdout: "", stderr: message, killed: false, timedOut: false, error: "WINDOWS_PACKAGE_MANAGER_UNAVAILABLE" };
+    }
+    return spawnDirectProcess(launch.executable, launch.args, {
       cwd: resolvedCwd,
       env,
       timeout,
@@ -790,6 +798,8 @@ function spawnDirectProcess(
     let stderr = "";
     let killed = false;
     let timedOut = false;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     const child = spawn(executable, args, {
       cwd: options.cwd,
       env: options.env,
@@ -804,11 +814,18 @@ function spawnDirectProcess(
       child.kill();
     }, options.timeout);
     const append = (target: "stdout" | "stderr", data: Buffer) => {
+      const alreadyTruncated = target === "stdout" ? stdoutTruncated : stderrTruncated;
+      if (alreadyTruncated) return;
       const value = decodeProcessOutput(data);
       const current = target === "stdout" ? stdout : stderr;
+      const remaining = options.maxOutputSize - current.length;
       const next = current.length + value.length <= options.maxOutputSize
         ? current + value
-        : current + value.slice(0, Math.max(0, options.maxOutputSize - current.length)) + "\n[Output truncated]";
+        : current + value.slice(0, Math.max(0, remaining)) + "\n[Output truncated]";
+      if (current.length + value.length > options.maxOutputSize) {
+        if (target === "stdout") stdoutTruncated = true;
+        else stderrTruncated = true;
+      }
       if (target === "stdout") stdout = next;
       else stderr = next;
     };
