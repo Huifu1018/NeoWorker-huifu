@@ -151,6 +151,17 @@ describe('Hermes runtime session', () => {
     expect(await waiting).toMatchObject({stopReason:'cancelled'});
     expect(await r.prompt('next')).toMatchObject({assistantText:'你好 OK',stopReason:'end_turn'});
   });
+  it('pauses without discarding the checkpoint and resumes the session', async () => {
+    const r = runtime();
+    const pending = r.prompt('wait');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await r.pause();
+    expect(r.isPaused()).toBe(true);
+    expect(await pending).toMatchObject({stopReason:'cancelled'});
+    const resumed = await r.resume('continue');
+    expect(resumed).toMatchObject({assistantText:'你好 OK',stopReason:'end_turn'});
+    expect(resumed.sessionId).toBe(r.getCheckpoint()?.sessionId);
+  });
   it('does not create a new conversation on a mismatched checkpoint', async () => {
     const r=runtime({checkpoint:{schema:'neoworker_hermes_acp_v1',sessionId:'old',cwd:'/different',agentVersion:'fixture'}});
     await expect(r.connect()).rejects.toThrow('does not match');

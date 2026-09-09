@@ -33,8 +33,8 @@ const ASSISTANT_TEXT_TRUNCATION_MARKER = "\n[Hermes response truncated by NeoWor
 
 /**
  * A real Hermes ACP session, independent of NeoWorker's TurnKernel.
- * Not yet selected by the production executor. Permission callbacks are mediated
- * here; enforcing the workspace's sandbox policy requires a configured backend.
+ * The production executor owns the host-side policy boundary; this adapter keeps
+ * Hermes protocol details isolated from Electron business code.
  */
 export class HermesRuntimeAdapter {
   private readonly client = new HermesAcpClient();
@@ -46,6 +46,7 @@ export class HermesRuntimeAdapter {
   private connecting?: Promise<HermesSessionCheckpoint>;
   private readonly permissions: HermesPermissionBridge;
   private cancelRequested = false;
+  private paused = false;
 
   constructor(private readonly options: HermesRuntimeOptions) {
     this.checkpoint = options.checkpoint;
@@ -119,6 +120,7 @@ export class HermesRuntimeAdapter {
   prompt(text: string, signal?: AbortSignal): Promise<HermesPromptResult> {
     if (this.activePrompt) return Promise.reject(new HermesAcpError("A Hermes prompt is already running", "SESSION_BUSY"));
     this.cancelRequested = false;
+    this.paused = false;
     const run = async () => {
       const checkpoint = await this.connect();
       if (this.cancelRequested) return { assistantText: "", stopReason: "cancelled", sessionId: checkpoint.sessionId };
@@ -165,6 +167,26 @@ export class HermesRuntimeAdapter {
     } finally {
       if (force) clearTimeout(force);
     }
+  }
+
+  /**
+   * Pause at a safe protocol boundary. Hermes has no portable pause primitive,
+   * so an active prompt is cancelled without discarding its persisted session;
+   * resume() continues that session and never replays the interrupted request.
+   */
+  async pause(): Promise<void> {
+    this.paused = true;
+    await this.cancel();
+  }
+
+  async resume(prompt = "Continue the task from the last checkpoint. Do not repeat side effects whose result is unknown."): Promise<HermesPromptResult> {
+    if (!this.paused) throw new HermesAcpError("Hermes session is not paused", "SESSION_NOT_PAUSED");
+    this.paused = false;
+    return this.prompt(prompt);
+  }
+
+  isPaused(): boolean {
+    return this.paused;
   }
 
   getCheckpoint(): HermesSessionCheckpoint | undefined {
