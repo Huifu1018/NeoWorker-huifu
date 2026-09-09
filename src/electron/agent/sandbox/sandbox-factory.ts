@@ -425,15 +425,40 @@ function isPathWithinWorkspace(workspaceRoot: string, candidate: string): boolea
 
 function tokenizeDirectWindowsCommand(command: string): string[] | null {
   const tokens: string[] = [];
-  const pattern = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
-  let match: RegExpExecArray | null;
-  let lastIndex = 0;
-  while ((match = pattern.exec(command)) !== null) {
-    if (command.slice(lastIndex, match.index).trim()) return null;
-    tokens.push((match[1] ?? match[2] ?? match[3] ?? "").replace(/\\"/g, '"'));
-    lastIndex = pattern.lastIndex;
+  let token = "";
+  let quote: '"' | "'" | null = null;
+  let tokenStarted = false;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        // Backslashes are Windows path separators, not generic escapes.
+        token += char;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    token += char;
+    tokenStarted = true;
   }
-  return command.slice(lastIndex).trim() ? null : tokens;
+  if (quote) return null;
+  if (tokenStarted) tokens.push(token);
+  return tokens;
 }
 
 type WindowsRestrictedCommandPart = {
@@ -1062,3 +1087,8 @@ export function resetMacOSSandboxCache(): void {
   macOSSandboxAvailable = null;
   macOSSandboxCheckPromise = null;
 }
+
+export const _testUtils = {
+  tokenizeDirectWindowsCommand,
+  isPathWithinWorkspace,
+};

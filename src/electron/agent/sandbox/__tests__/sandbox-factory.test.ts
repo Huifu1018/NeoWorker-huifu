@@ -15,6 +15,7 @@ import {
   isMacOSSandboxAvailable,
   resetMacOSSandboxCache,
   WindowsRestrictedSandbox,
+  _testUtils,
 } from "../sandbox-factory";
 
 function makeChildProcess(options: {
@@ -118,6 +119,17 @@ describe("Windows restricted runner", () => {
 
   beforeEach(() => {
     platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+  });
+
+  it("preserves backslashes in quoted Windows path arguments", () => {
+    expect(_testUtils.tokenizeDirectWindowsCommand(
+      'python "C:\\work space\\scripts\\build.py" --cwd "C:\\work space"',
+    )).toEqual([
+      "python",
+      "C:\\work space\\scripts\\build.py",
+      "--cwd",
+      "C:\\work space",
+    ]);
   });
 
   afterEach(() => {
