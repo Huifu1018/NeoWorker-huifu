@@ -229,4 +229,24 @@ describe("Windows restricted runner", () => {
       else process.env.NEOWORKER_TEST_ENV = previous;
     }
   });
+
+  it("decodes common Windows code-page output when UTF-8 is invalid", async () => {
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+    spawnMock.mockImplementationOnce(() => {
+      const process = makeChildProcess({ stayOpen: true });
+      queueMicrotask(() => process.stdout?.emit("data", Buffer.from([0xd6, 0xd0])));
+      queueMicrotask(() => process.emit("close", 0, null));
+      return process;
+    });
+    await expect(sandbox.execute("python", ["script.py"], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "中",
+    });
+  });
 });

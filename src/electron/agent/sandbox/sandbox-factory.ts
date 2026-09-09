@@ -741,7 +741,7 @@ function spawnDirectProcess(
       child.kill();
     }, options.timeout);
     const append = (target: "stdout" | "stderr", data: Buffer) => {
-      const value = data.toString();
+      const value = decodeProcessOutput(data);
       const current = target === "stdout" ? stdout : stderr;
       const next = current.length + value.length <= options.maxOutputSize
         ? current + value
@@ -761,6 +761,22 @@ function spawnDirectProcess(
       resolve({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
     });
   });
+}
+
+/**
+ * Windows console programs may still emit the system code page (commonly
+ * CP936) even when stdout is redirected. Prefer UTF-8, then decode a chunk
+ * with GBK only when UTF-8 produced replacement characters. Unix output keeps
+ * Node's normal UTF-8 behavior.
+ */
+function decodeProcessOutput(data: Buffer): string {
+  const utf8 = data.toString("utf8");
+  if (process.platform !== "win32" || !utf8.includes("\uFFFD")) return utf8;
+  try {
+    return new TextDecoder("gbk").decode(data);
+  } catch {
+    return utf8;
+  }
 }
 
 /**
