@@ -366,6 +366,8 @@ describe("ShellTools Integration", () => {
     });
     it("forces UTF-8 output for PowerShell and cmd", () => {
       expect(prepareWindowsCommand("pwsh.exe", "Write-Output 中文", "win32"))
+        .toContain("$OutputEncoding = [System.Text.Encoding]::UTF8;")
+        .toContain("[Console]::InputEncoding = [System.Text.Encoding]::UTF8;")
         .toContain("[System.Text.Encoding]::UTF8;");
       expect(prepareWindowsCommand("cmd.exe", "echo 中文", "win32"))
         .toBe("chcp 65001>nul & echo 中文");

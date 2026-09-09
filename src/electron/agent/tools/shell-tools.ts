@@ -369,7 +369,10 @@ function prepareWindowsCommand(shell: string, command: string, platform: NodeJS.
   if (platform !== "win32") return command;
   const lowerShell = shell.toLowerCase();
   if (lowerShell.includes("powershell") || lowerShell.includes("pwsh")) {
-    return `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
+    // Set both the console encoding and PowerShell's native-command encoding.
+    // The latter is what controls text emitted by npm, git and other Win32
+    // programs when the child is launched with redirected pipes.
+    return `$OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
   }
   return `chcp 65001>nul & ${command}`;
 }
