@@ -87,4 +87,64 @@ describe("buildToolResultEnvelope", () => {
     expect(JSON.parse(envelope.modelPayload)).toMatchObject({ truncated: true });
     expect((envelope.structuredData as { stdout: string }).stdout).toHaveLength(250_000);
   });
+
+  it.each(['\\\\\\"\n\t\u0000', '中文😀'])('bounds JSON after escaping %j', fragment => {
+    const result = { stdout: fragment.repeat(100_000), exitCode: 1 };
+    const envelope = buildToolResultEnvelope({toolUseId:'escaped',toolName:'run_command',status:'success',result});
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+    expect(JSON.parse(envelope.modelPayload).truncated).toBe(true);
+    expect(envelope.structuredData).toBe(result);
+  });
+
+  it('preserves valid JSON and the reminder for oversized text', () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId:'reminder',toolName:'read_file',status:'success',
+      result:'x'.repeat(250_000),modelReminder:'Read the omitted part before editing.',
+    });
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+    expect(JSON.parse(envelope.modelPayload)).toMatchObject({
+      truncated:true,_modelReminder:'Read the omitted part before editing.',
+    });
+  });
+
+  it('retains shell diagnostic tails and exit status', () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId:'build',toolName:'run_command',status:'success',
+      result:{stdout:'log\n'.repeat(80_000)+'BUILD FAILED',stderr:'trace\n'.repeat(80_000)+'MISSING MODULE',exitCode:1,success:false},
+    });
+    const payload = JSON.parse(envelope.modelPayload);
+    expect(payload.stdout).toContain('BUILD FAILED');
+    expect(payload.stderr).toContain('MISSING MODULE');
+    expect(payload).toMatchObject({exitCode:1,success:false,truncated:true});
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+  });
+
+  it('retains the error field and reminder when a diagnostic is oversized', () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId:'error',toolName:'run_command',status:'error',
+      error:new Error('stack\n'.repeat(90_000)+'FINAL CAUSE'),modelReminder:'Do not replay this command.',
+    });
+    const payload = JSON.parse(envelope.modelPayload);
+    expect(payload.error).toContain('FINAL CAUSE');
+    expect(payload._modelReminder).toBe('Do not replay this command.');
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+  });
+
+  it('bounds non-shell structured previews after JSON escaping', () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId:'json',toolName:'read_file',status:'success',
+      result:{data:['\\"\n\t'.repeat(120_000)]},
+    });
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+    expect(JSON.parse(envelope.modelPayload)).toMatchObject({truncated:true,contentFormat:'json_preview'});
+  });
+
+  it('keeps plain text bounded without splitting a surrogate pair', () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId:'unicode',toolName:'read_file',status:'success',result:'😀'.repeat(120_000),
+    });
+    const prefix = envelope.modelPayload.split('\n[Tool result truncated')[0];
+    expect(prefix.endsWith('😀')).toBe(true);
+    expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
+  });
 });

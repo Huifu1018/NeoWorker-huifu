@@ -9,7 +9,7 @@ export interface HermesAcpClientOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
-  /** Maximum time before the first response frame arrives. */
+  /** Time to the first correlated response, session update or permission request. */
   firstByteTimeoutMs?: number;
   maxFrameBytes?: number;
 }
@@ -24,6 +24,7 @@ export class HermesAcpError extends Error {
 }
 
 interface PendingRequest {
+  activitySessionId?: string;
   resolve(value: unknown): void;
   reject(error: Error): void;
   firstByte(): void;
@@ -138,6 +139,8 @@ export class HermesAcpClient {
       const firstByteTimer = setTimeout(() => interrupt("FIRST_BYTE_TIMEOUT"), conn.firstByteTimeoutMs);
       // Register before writing: immediate responses must find their waiter.
       conn.pending.set(id, {
+        activitySessionId: (method === 'session/prompt' || method === 'session/load') && typeof params.sessionId === 'string'
+          ? params.sessionId : undefined,
         resolve: (value) => { cleanup(); resolve(value as T); },
         reject: (error) => { cleanup(); reject(error); },
         firstByte: () => clearTimeout(firstByteTimer),
@@ -208,6 +211,19 @@ export class HermesAcpClient {
     if (typeof message.method === "string") {
       if (message.params !== undefined && !object(message.params)) return this.protocolFailure(conn, "Invalid ACP params");
       const params = (message.params ?? {}) as AcpObject;
+      // ACP streams updates and approvals before the final JSON-RPC response.
+      // Only traffic belonging to this pending session counts as a first
+      // response; unrelated notifications must not keep a silent task alive.
+      const sessionActivity =
+        (message.method === 'session/update' && message.id === undefined &&
+          object(params.update) && typeof params.update.sessionUpdate === 'string') ||
+        (message.method === 'session/request_permission' &&
+          (typeof message.id === 'string' || typeof message.id === 'number'));
+      if (sessionActivity && typeof params.sessionId === 'string') {
+        for (const request of conn.pending.values()) {
+          if (request.activitySessionId === params.sessionId) request.firstByte();
+        }
+      }
       if (typeof message.id === "string" || typeof message.id === "number") {
         void this.handleRequest(conn, message.id, message.method, params);
       } else if (message.id === undefined) {

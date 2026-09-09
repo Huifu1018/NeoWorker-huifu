@@ -20,10 +20,78 @@ export interface BuildToolResultEnvelopeParams {
   telemetry?: Record<string, unknown>;
 }
 
-// Keep model context bounded while retaining the complete structured result in
-// the task log and on the envelope's structuredData field.
+// Bound the model projection without changing structuredData. Persistence and
+// retention of the full result are the caller's responsibility.
 const MAX_MODEL_PAYLOAD_CHARS = 200_000;
 const MODEL_PAYLOAD_TRUNCATION_MARKER = "\n[Tool result truncated by NeoWorker]\n";
+
+function truncateText(text: string, retained: number, tail: boolean): string {
+  if (text.length <= retained) return text;
+  // Avoid cutting a UTF-16 surrogate pair in half, including in plain text.
+  let boundary = tail ? text.length - retained : retained;
+  if (boundary > 0 && boundary < text.length &&
+      /[\uD800-\uDBFF]/.test(text[boundary - 1]) && /[\uDC00-\uDFFF]/.test(text[boundary])) {
+    boundary += tail ? 1 : -1;
+  }
+  return tail
+    ? MODEL_PAYLOAD_TRUNCATION_MARKER + text.slice(boundary)
+    : text.slice(0, boundary) + MODEL_PAYLOAD_TRUNCATION_MARKER;
+}
+
+function boundModelPayload(payload: string, params: BuildToolResultEnvelopeParams, reminder: string): string {
+  if (payload.length <= MAX_MODEL_PAYLOAD_CHARS) return payload;
+  const shell = params.toolName === 'run_command';
+  if (typeof params.result === 'string' && !params.error && !reminder) {
+    return truncateText(payload, MAX_MODEL_PAYLOAD_CHARS - MODEL_PAYLOAD_TRUNCATION_MARKER.length, shell);
+  }
+
+  const parsed = JSON.parse(payload);
+  const record = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  const base: Record<string, unknown> = {
+    truncated: true,
+    originalChars: payload.length,
+    _truncation: MODEL_PAYLOAD_TRUNCATION_MARKER.trim(),
+  };
+  if (reminder) base._modelReminder = truncateText(reminder, 8_000, false);
+  const fields: Record<string, string> = {};
+  if (params.error) {
+    fields.error = String(record.error ?? 'Tool execution failed');
+  } else if (shell && ['stdout', 'stderr', 'output'].some(key => typeof record[key] === 'string')) {
+    // Keep the diagnostic end of build logs and each stream separately; status
+    // must remain visible even if stdout consumed most of the original result.
+    for (const key of ['exitCode', 'success', 'killed', 'timedOut', 'terminationReason', 'signal']) {
+      const value = record[key];
+      if (typeof value === 'boolean' || typeof value === 'number' || value === null) base[key] = value;
+      else if (typeof value === 'string') base[key] = truncateText(value, 256, false);
+    }
+    for (const key of ['stdout', 'stderr', 'output']) {
+      if (typeof record[key] === 'string') fields[key] = record[key];
+    }
+    if (typeof record.command === 'string') base.command = truncateText(record.command, 4_000, false);
+  } else {
+    fields.content = typeof params.result === 'string' ? params.result : payload;
+    base.contentFormat = typeof params.result === 'string' ? 'text' : 'json_preview';
+  }
+
+  const serialize = (retained: number): string => JSON.stringify({
+    ...base,
+    ...Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, truncateText(value, retained, shell)])),
+  });
+  // Escaping can expand each source character by up to six characters. Measure
+  // the actual serialized envelope instead of guessing JSON wrapper overhead.
+  let low = 0;
+  let high = MAX_MODEL_PAYLOAD_CHARS;
+  let best = serialize(0);
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = serialize(mid);
+    if (candidate.length <= MAX_MODEL_PAYLOAD_CHARS) {
+      best = candidate;
+      low = mid + 1;
+    } else high = mid - 1;
+  }
+  return best;
+}
 
 function stringifyJsonResult(value: unknown): string {
   try {
@@ -70,17 +138,7 @@ function stringifyModelPayload(params: BuildToolResultEnvelopeParams): string {
       ? stringifyPayloadWithReminder(params.result, reminder, "content")
       : stringifyJsonResult(params.result);
   }
-  if (payload.length <= MAX_MODEL_PAYLOAD_CHARS) return payload;
-  // Preserve valid JSON for structured payloads; plain text is capped directly.
-  if (typeof params.result === "string" && !params.error) {
-    return `${payload.slice(0, MAX_MODEL_PAYLOAD_CHARS - MODEL_PAYLOAD_TRUNCATION_MARKER.length)}${MODEL_PAYLOAD_TRUNCATION_MARKER}`;
-  }
-  return JSON.stringify({
-    // Leave room for the JSON wrapper itself as well as the marker.
-    content: payload.slice(0, MAX_MODEL_PAYLOAD_CHARS - MODEL_PAYLOAD_TRUNCATION_MARKER.length - 1_000),
-    truncated: true,
-    _modelReminder: MODEL_PAYLOAD_TRUNCATION_MARKER.trim(),
-  });
+  return boundModelPayload(payload, params, reminder);
 }
 
 function buildUserSummary(params: BuildToolResultEnvelopeParams): string {

@@ -26,6 +26,16 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  case 'session/prompt':
    promptId=id;
    if (params.prompt[0].text === 'wait') break;
+   if (['delayed-stream', 'foreign-stream', 'stream-without-result'].includes(params.prompt[0].text)) {
+     send({method:'session/update', params:{
+       sessionId:params.prompt[0].text === 'foreign-stream' ? 'unrelated' : params.sessionId,
+       update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Working'}},
+     }});
+     if (params.prompt[0].text !== 'stream-without-result') {
+       setTimeout(() => { result(id,{stopReason:'end_turn'}); promptId=undefined; }, 500);
+     }
+     break;
+   }
    if (['permission', 'foreign-permission'].includes(params.prompt[0].text)) {
      send({id:'prompt-permission',method:'session/request_permission',params:{
        sessionId:params.prompt[0].text === 'foreign-permission' ? 'foreign' : sessionId,

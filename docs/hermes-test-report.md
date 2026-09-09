@@ -15,7 +15,7 @@
 | macOS ARM64 安装包 | 通过 | DMG smoke、ad hoc 签名和 app.asar 内容检查通过 |
 | Windows x64 安装包 | 通过 | GitHub Actions run 34319024080：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
-| Hermes 暂停恢复 | 通过专项测试 | checkpoint 保留、session 恢复和未知副作用不重放 |
+| Hermes session 暂停恢复原语 | 通过专项测试 | checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停控制尚未接通 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 
 ## 安装包
@@ -31,7 +31,7 @@
 
 - Hermes ACP 需要本机可执行的 `hermes acp`；缺失时会返回结构化的 `HERMES_UNAVAILABLE`。
 - 普通 NeoWorker 任务仍使用原生 SessionRuntime/TurnKernel；只有显式选择 Hermes 外部 Runtime 的任务才进入 ACP。
-- ACP 权限回调负责审批协调，不等同于操作系统沙箱；实际工具权限仍受 NeoWorker 工作区策略约束。
+- ACP 权限回调负责审批协调，不等同于操作系统沙箱；ACP-native 工具托管尚未完全迁移到 NeoWorker Tool Host。
 - 全量 Vitest 仍有大量既有 Renderer/快照失败，需要建立基线后逐项清理；Hermes 专项测试目前通过。
 
 ## 下一步

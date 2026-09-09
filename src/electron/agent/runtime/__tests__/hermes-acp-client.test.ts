@@ -85,6 +85,38 @@ describe("Hermes ACP subprocess transport", () => {
     await c.start({ ...options, firstByteTimeoutMs: 30 });
     await expect(c.request("wait", {}, { timeoutMs: 1000 })).rejects.toMatchObject({ code: "FIRST_BYTE_TIMEOUT" });
   });
+  it("accepts a matching streamed event before a slow final response", async () => {
+    const c = new HermesAcpClient(); cleanup.push(() => c.stop());
+    await c.start({ ...options, firstByteTimeoutMs: 200 });
+    await c.initialize();
+    expect(await c.prompt('fixture-session', 'delayed-stream', 2000))
+      .toMatchObject({stopReason:'end_turn'});
+  });
+  it("does not count a foreign session's update as the first response", async () => {
+    const c = new HermesAcpClient(); cleanup.push(() => c.stop());
+    await c.start({ ...options, firstByteTimeoutMs: 200 });
+    await c.initialize();
+    await expect(c.prompt('fixture-session', 'foreign-stream', 2000))
+      .rejects.toMatchObject({code:'FIRST_BYTE_TIMEOUT'});
+  });
+  it("keeps the total timeout after a matching streamed event", async () => {
+    const c = new HermesAcpClient(); cleanup.push(() => c.stop());
+    await c.start({ ...options, firstByteTimeoutMs: 200 });
+    await c.initialize();
+    await expect(c.prompt('fixture-session', 'stream-without-result', 500))
+      .rejects.toMatchObject({code:'REQUEST_TIMEOUT'});
+  });
+  it("does not time out waiting for the first response while approval is open", async () => {
+    const c = new HermesAcpClient(); cleanup.push(() => c.stop());
+    await c.start({ ...options, firstByteTimeoutMs: 200 });
+    await c.initialize();
+    c.onRequest = async () => {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return {outcome:{outcome:'selected',optionId:'reject'}};
+    };
+    expect(await c.prompt('fixture-session', 'permission', 2000))
+      .toMatchObject({stopReason:'end_turn'});
+  });
   it("fails fast on malformed protocol output", async () => {
     await expect((await client()).request('invalid', {})).rejects.toMatchObject({code:'PROTOCOL_ERROR'});
   });
