@@ -203,6 +203,26 @@ describe("Windows restricted runner", () => {
     );
   });
 
+  it("allows npm and npx as direct package-manager executables", async () => {
+    spawnMock.mockImplementationOnce(() => makeChildProcess({ stdout: "installed\n" }));
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("npm", ["install", "--ignore-scripts"], {
+      cwd: "/tmp/workspace",
+    })).resolves.toMatchObject({ exitCode: 0, stdout: "installed\n" });
+    expect(spawnMock).toHaveBeenCalledWith(
+      "npm",
+      ["install", "--ignore-scripts"],
+      expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
+    );
+  });
+
   it("passes only explicitly requested environment variables", async () => {
     const previous = process.env.NEOWORKER_TEST_ENV;
     process.env.NEOWORKER_TEST_ENV = "hermes-proxy";

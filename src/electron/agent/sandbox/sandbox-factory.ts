@@ -381,10 +381,6 @@ const WINDOWS_SHELL_EXECUTABLES = new Set([
   "pwsh.exe",
   "bash",
   "sh",
-  "npm",
-  "npm.cmd",
-  "npx",
-  "npx.cmd",
 ]);
 const WINDOWS_CODE_EXECUTION_FLAGS = new Set([
   "-c",
