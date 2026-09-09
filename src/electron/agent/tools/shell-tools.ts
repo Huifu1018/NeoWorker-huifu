@@ -54,6 +54,7 @@ function stripScriptControlCodes(text: string): string {
 const MAX_TIMEOUT = 5 * 60 * 1000; // 5 minutes max
 const DEFAULT_TIMEOUT = 60 * 1000; // 1 minute default
 const MAX_OUTPUT_SIZE = 100 * 1024; // 100KB max output
+const OUTPUT_TRUNCATION_MARKER = `\n[Output truncated after ${Math.round(MAX_OUTPUT_SIZE / 1024)}KB]\n`;
 const UNSANDBOXED_SHELL_OVERRIDE_ENV = "NEOWORKER_ALLOW_UNSANDBOXED_SHELL";
 
 const SHELL_OUTPUT_REDACTION_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
@@ -1403,6 +1404,38 @@ export class ShellTools {
       let stdout = "";
       let stderr = "";
       let killed = false;
+      let stdoutTruncated = false;
+      let stderrTruncated = false;
+
+      const appendBoundedOutput = (target: "stdout" | "stderr", chunk: string): string => {
+        const current = target === "stdout" ? stdout : stderr;
+        const wasTruncated = target === "stdout" ? stdoutTruncated : stderrTruncated;
+        if (wasTruncated) return "";
+        const remaining = MAX_OUTPUT_SIZE - current.length;
+        if (remaining <= 0) {
+          if (target === "stdout") stdoutTruncated = true;
+          else stderrTruncated = true;
+          if (target === "stdout") stdout += OUTPUT_TRUNCATION_MARKER;
+          else stderr += OUTPUT_TRUNCATION_MARKER;
+          return OUTPUT_TRUNCATION_MARKER;
+        }
+        if (chunk.length <= remaining) {
+          if (target === "stdout") stdout += chunk;
+          else stderr += chunk;
+          return chunk;
+        }
+        const bounded = chunk.slice(0, remaining);
+        if (target === "stdout") {
+          stdout += bounded;
+          stdoutTruncated = true;
+        } else {
+          stderr += bounded;
+          stderrTruncated = true;
+        }
+        if (target === "stdout") stdout += OUTPUT_TRUNCATION_MARKER;
+        else stderr += OUTPUT_TRUNCATION_MARKER;
+        return `${bounded}${OUTPUT_TRUNCATION_MARKER}`;
+      };
 
       // Increment session ID to invalidate any pending escalation timeouts from previous commands
       this.processSessionId++;
@@ -1446,8 +1479,8 @@ export class ShellTools {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
           : decodeProcessOutput(data);
-        const chunk = this.sanitizeCommandOutput(raw);
-        stdout += chunk;
+        const chunk = appendBoundedOutput("stdout", this.sanitizeCommandOutput(raw));
+        if (!chunk) return;
         // Emit live output
         this.daemon.logEvent(this.taskId, "command_output", {
           command,
@@ -1461,8 +1494,8 @@ export class ShellTools {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
           : decodeProcessOutput(data);
-        const chunk = this.sanitizeCommandOutput(raw);
-        stderr += chunk;
+        const chunk = appendBoundedOutput("stderr", this.sanitizeCommandOutput(raw));
+        if (!chunk) return;
         // Emit live output
         this.daemon.logEvent(this.taskId, "command_output", {
           command,
@@ -1523,7 +1556,7 @@ export class ShellTools {
           stdout: this.sanitizeCommandOutput(truncatedStdout),
           stderr: this.sanitizeCommandOutput(truncatedStderr),
           exitCode: code,
-          truncated: stdout.length > MAX_OUTPUT_SIZE || stderr.length > MAX_OUTPUT_SIZE,
+          truncated: stdoutTruncated || stderrTruncated,
           error: errorMessage,
           terminationReason,
         }));
@@ -1615,7 +1648,7 @@ export class ShellTools {
    * Truncate output to prevent context overflow
    */
   private truncateOutput(output: string): string {
-    if (output.length <= MAX_OUTPUT_SIZE) {
+    if (output.length <= MAX_OUTPUT_SIZE || output.includes(OUTPUT_TRUNCATION_MARKER)) {
       return output;
     }
     return (
