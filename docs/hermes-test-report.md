@@ -14,7 +14,7 @@
 | Windows Shell 路由 | 通过单元验证 | PowerShell/cmd 参数、UTF-8 编码、路径处理测试通过 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | macOS ARM64 安装包 | 通过 | DMG smoke、ad hoc 签名和 app.asar 内容检查通过 |
-| Windows x64 安装包 | 通过 | GitHub Actions runs 34319024080、34321784613：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
+| Windows x64 安装包 | 通过 | GitHub Actions run 34326486221（提交 96666ff）：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 已接通；checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
@@ -25,6 +25,8 @@
 
 - `release/NeoWorker-0.1.8-3-arm64.dmg`
 - `release/NeoWorker-0.1.8-3-arm64-mac.zip`
+
+以上 macOS 包于 2026-09-09 15:55 重新生成，包含提交 72086c6 的 Provider 辅助请求超时修复，并再次通过 DMG smoke。对应 Windows 安装器可从 GitHub Actions run 34326486221 的 `NeoWorker-0.1.8-3-windows-x64` artifact 下载。
 
 该包为 unsigned/ad hoc 签名测试包。OfficeCLI 下载源不可用时使用了仓库支持的 `NEOWORKER_SKIP_OFFICECLI=1`，不影响 Hermes Runtime 和 Electron 主程序验证。
 
