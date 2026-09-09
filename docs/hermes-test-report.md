@@ -15,7 +15,7 @@
 | Windows Shell 环境继承 | 通过单元验证 | 自定义环境变量不再覆盖系统 PATH；PowerShell 原生命令统一使用 UTF-8 编码 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | macOS ARM64 安装包 | 通过 | DMG smoke、ad hoc 签名和 app.asar 内容检查通过 |
-| Windows x64 安装包 | 通过 | GitHub Actions run 34326486221（提交 96666ff）：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
+| Windows x64 安装包 | 通过 | GitHub Actions run 34332716271（提交 fe8471d）：构建、密钥检查、安装后 smoke 和构件上传全部通过；artifact 约 240 MB |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 已接通；checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
@@ -28,7 +28,7 @@
 - `release/NeoWorker-0.1.8-3-arm64.dmg`
 - `release/NeoWorker-0.1.8-3-arm64-mac.zip`
 
-以上 macOS 包于 2026-09-09 17:11 重新生成，包含提交 fe8471d 的 NeoWorker Tool Host 协议去重、Provider 辅助请求/响应解析超时修复和 Windows Shell 修复，并再次通过 DMG smoke。Windows 最新提交的 GitHub Actions run 34332716271 正在执行；完成后可从其 `NeoWorker-0.1.8-3-windows-x64` artifact 下载。
+以上 macOS 包于 2026-09-09 17:11 重新生成，包含提交 fe8471d 的 NeoWorker Tool Host 协议去重、Provider 辅助请求/响应解析超时修复和 Windows Shell 修复，并再次通过 DMG smoke。对应 Windows x64 安装包由 GitHub Actions run 34332716271 构建并通过密钥扫描、安装 smoke，可从该 run 的 `NeoWorker-0.1.8-3-windows-x64` artifact 下载。
 
 该包为 unsigned/ad hoc 签名测试包。OfficeCLI 下载源不可用时使用了仓库支持的 `NEOWORKER_SKIP_OFFICECLI=1`，不影响 Hermes Runtime 和 Electron 主程序验证。
 
