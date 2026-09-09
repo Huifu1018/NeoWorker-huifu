@@ -1,0 +1,63 @@
+const readline = require('node:readline');
+const send = (message) => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...message})+'\n');
+const result = (id, value) => send({id, result: value});
+let promptId;
+let permissionParent;
+const sessionId = 'fixture-session';
+readline.createInterface({input:process.stdin}).on('line', line => {
+ const message = JSON.parse(line);
+ const {id, method, params} = message;
+ if (!method) {
+   if (id === 'prompt-permission' && promptId) {
+     send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(message.result)}}}});
+     result(promptId,{stopReason:'end_turn'}); promptId=undefined;
+   }
+   if (id === 'server-permission') result(permissionParent, message.result || message.error);
+   return;
+ }
+ switch(method) {
+ case 'initialize':
+   process.stderr.write('x'.repeat(512*1024), () => result(id, {protocolVersion:1, agentInfo:{name:'hermes-agent', version:'fixture'}, agentCapabilities:{loadSession:true}}));
+   break;
+ case 'session/new': result(id, {sessionId}); break;
+ case 'session/load':
+   send({method:'session/update', params:{sessionId:params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HISTORY'}}}});
+   result(id, {}); break;
+ case 'session/prompt':
+   promptId=id;
+   if (params.prompt[0].text === 'wait') break;
+   if (['permission', 'foreign-permission'].includes(params.prompt[0].text)) {
+     send({id:'prompt-permission',method:'session/request_permission',params:{
+       sessionId:params.prompt[0].text === 'foreign-permission' ? 'foreign' : sessionId,
+       toolCall:{toolCallId:'write-1',title:'Write a file',rawInput:{path:'example.txt'}},
+       options:[{optionId:'allow',kind:'allow_once',name:'Allow once'},{optionId:'reject',kind:'reject_once',name:'Reject'}],
+     }}); break;
+   }
+   send({method:'session/update', params:{sessionId:'unrelated',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'WRONG'}}}});
+   send({method:'session/update', params:{sessionId:params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'你好'}}}});
+   send({method:'session/update', params:{sessionId:params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:' OK'}}}});
+   result(id,{stopReason:'end_turn'}); promptId=undefined; break;
+ case 'session/cancel':
+   if(promptId) result(promptId,{stopReason:'cancelled'});
+   promptId=undefined; break;
+ case 'echo': setTimeout(() => result(id,params), params.delay || 0); break;
+ case 'permission':
+   permissionParent=id;
+   send({id:'server-permission',method:'session/request_permission',params:{sessionId,options:[{optionId:'allow_once',kind:'allow_once',name:'Allow'}]}}); break;
+ case 'unknownCallback':
+   permissionParent=id;
+   send({id:'server-permission',method:'fs/write_text_file',params:{sessionId}}); break;
+ case 'unicode': {
+   const bytes=Buffer.from(JSON.stringify({jsonrpc:'2.0',id,result:'中文 😀'})+'\n');
+   let i=0;
+   const write=()=>{ if(i<bytes.length) {process.stdout.write(bytes.subarray(i,++i));setImmediate(write);} };
+   write(); break;
+ }
+ case 'invalid': process.stdout.write('not json\n'); break;
+ case 'oversized': process.stdout.write('x'.repeat(4096)); break;
+ case 'error': send({id,error:{code:-32001,message:'fixture failure',data:{retryable:false}}}); break;
+ case 'exit': process.exit(7); break;
+ case 'wait': break;
+ default: send({id,error:{code:-32601,message:'unknown'}});
+ }
+});

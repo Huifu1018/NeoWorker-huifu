@@ -193,6 +193,46 @@ describe("MacOSSandbox", () => {
     await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
   });
 
+  it("allows packaged skill resources to be read from the app Resources directory", async () => {
+    const proc = new EventEmitter() as ChildProcess;
+    proc.stdout = new EventEmitter() as ChildProcess["stdout"];
+    proc.stderr = new EventEmitter() as ChildProcess["stderr"];
+    proc.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
+    spawnMock.mockImplementationOnce(() => proc);
+    const previousResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+    Object.defineProperty(process, "resourcesPath", {
+      configurable: true,
+      value: "/Applications/NeoWorker.app/Contents/Resources",
+    });
+    const workspacePath = "/tmp/neoworker workspace";
+    const sandbox = new MacOSSandbox(makeWorkspace({ path: workspacePath }));
+
+    const resultPromise = sandbox.execute("python3 scripts/neoworker_preflight.py", [], {
+      cwd: "/Applications/NeoWorker.app/Contents/Resources/skills/ppt-master",
+      timeout: 1000,
+    });
+
+    const [, args] = spawnMock.mock.calls[0];
+    const profile = fs.readFileSync(args[1], "utf-8");
+    expect(profile).toContain(
+      '(allow file-read* (subpath "/Applications/NeoWorker.app/Contents/Resources"))',
+    );
+    expect(profile).toContain(
+      '(allow file-read* (subpath "/Applications/NeoWorker.app/Contents/Resources/skills"))',
+    );
+
+    proc.emit("close", 0, null);
+    await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+    if (previousResourcesPath === undefined) {
+      delete (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+    } else {
+      Object.defineProperty(process, "resourcesPath", {
+        configurable: true,
+        value: previousResourcesPath,
+      });
+    }
+  });
+
   it("keeps generation staging writable while protecting private NeoWorker state", async () => {
     const proc = new EventEmitter() as ChildProcess;
     proc.stdout = new EventEmitter() as ChildProcess["stdout"];

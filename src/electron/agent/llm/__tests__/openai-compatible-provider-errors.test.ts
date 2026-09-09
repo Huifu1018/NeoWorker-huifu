@@ -29,6 +29,53 @@ afterEach(() => {
 });
 
 describe("OpenAICompatibleProvider error metadata", () => {
+  it("parses streamed Hermes text and fragmented tool calls", async () => {
+    const sse = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+    const frames = [
+      sse({ choices: [{ delta: { content: "hello " } }] }),
+      sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "run_command", arguments: "{\"command\":" } }] } }] }),
+      sse({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"echo hi\"}" } }] }, finish_reason: "tool_calls" }] }),
+      sse({ usage: { prompt_tokens: 3, completion_tokens: 4 } }),
+      "data: [DONE]\n\n",
+    ];
+    const encoder = new TextEncoder();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: {
+        getReader: () => ({
+          read: async () => frames.length > 0
+            ? { done: false, value: encoder.encode(frames.shift()!) }
+            : { done: true, value: undefined },
+          releaseLock: vi.fn(),
+        }),
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const progress = vi.fn();
+    const response = await createProvider().createMessage({ ...createRequest(), onStreamProgress: progress });
+    expect(response.stopReason).toBe("tool_use");
+    expect(response.content).toEqual([
+      { type: "text", text: "hello " },
+      { type: "tool_use", id: "call_1", name: "run_command", input: { command: "echo hi" } },
+    ]);
+    expect(response.usage).toMatchObject({ inputTokens: 3, outputTokens: 4 });
+    expect(progress.mock.calls.at(-1)?.[0]).toMatchObject({ streaming: false, text: "hello " });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ stream: true });
+  });
+
+  it("marks a disconnected stream retryable", async () => {
+    const transportError = new Error("stream disconnected");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: { getReader: () => ({ read: async () => { throw transportError; }, releaseLock: vi.fn() }) },
+    }));
+    await expect(createProvider().createMessage({ ...createRequest(), onStreamProgress: vi.fn() }))
+      .rejects.toMatchObject({ code: "TRANSPORT_ERROR", retryable: true });
+  });
   it("sends image_url content for a DeepSeek vision model", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

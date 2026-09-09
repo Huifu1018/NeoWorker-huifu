@@ -16046,6 +16046,8 @@ a,
 
 .file-viewer-overlay--side-pane,
 .theme-light .file-viewer-overlay--side-pane {
+  /* Keep the native/custom title bar interactive while a side-pane preview is open. */
+  top: var(--title-bar-height);
   align-items: stretch;
   justify-content: flex-end;
   background: transparent;
@@ -16082,7 +16084,7 @@ a,
 
 .file-viewer-modal--side-pane {
   width: clamp(680px, 64vw, 1180px);
-  height: 100dvh;
+  height: calc(100dvh - var(--title-bar-height));
   max-height: none;
   border-width: 0 0 0 1px;
   border-radius: 0;

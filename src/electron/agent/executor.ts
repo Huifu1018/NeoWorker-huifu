@@ -127,6 +127,11 @@ import type {
 } from "./runtime/turn-kernel";
 import { createVerificationRuntime } from "./runtime/VerificationRuntime";
 import {
+  HermesRuntimeAdapter,
+  type HermesRuntimeOptions,
+  type HermesSessionCheckpoint,
+} from "./runtime/hermes-runtime-adapter";
+import {
   buildWorkerRolePrompt,
   resolveWorkerRoleKind,
 } from "./runtime/worker-role-registry";
@@ -4663,11 +4668,55 @@ export class TaskExecutor {
     );
   }
 
+  private async executeWithHermesRuntime(initialPrompt: string): Promise<void> {
+    const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
+    this.hermesRuntimeAdapter = runtime;
+    this.daemon.updateTaskStatus(this.task.id, "executing");
+    this.emitEvent("executing", { message: "Delegating task to Hermes Agent Runtime" });
+    try {
+      const result = await runtime.prompt(initialPrompt || this.getContractPrompt() || "");
+      this.hermesCheckpoint = runtime.getCheckpoint();
+      const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
+      if (assistantText) {
+        this.lastAssistantOutput = assistantText;
+        this.lastAssistantText = assistantText;
+        this.lastNonVerificationOutput = assistantText;
+      }
+      this.finalizeTaskBestEffort(assistantText || "Hermes Agent completed without a final assistant message.", "hermes runtime completed");
+    } finally {
+      this.hermesRuntimeAdapter = null;
+      runtime.close();
+    }
+  }
+
   private async sendMessageWithAcpxRuntime(
     message: string,
     _images?: ImageAttachment[],
     quotedAssistantMessage?: QuotedAssistantMessage,
   ): Promise<void> {
+    if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
+      const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
+      this.hermesRuntimeAdapter = runtime;
+      const followUp = this.buildQuotedAssistantContextMessage(message, quotedAssistantMessage);
+      this.daemon.updateTaskStatus(this.task.id, "executing");
+      this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
+      this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
+      try {
+        const result = await runtime.prompt(followUp);
+        this.hermesCheckpoint = runtime.getCheckpoint();
+        const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true, requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({ rawPrompt: message }) });
+        if (assistantText) {
+          this.lastAssistantOutput = assistantText;
+          this.lastAssistantText = assistantText;
+          this.lastNonVerificationOutput = assistantText;
+          this.emitEvent("assistant_message", { message: assistantText });
+        }
+      } finally {
+        this.hermesRuntimeAdapter = null;
+        runtime.close();
+      }
+      return;
+    }
     const runner = this.getAcpxRuntimeRunner();
     const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
     const followUpConversationMessage = this.buildQuotedAssistantContextMessage(
@@ -7720,6 +7769,8 @@ ${transcript}
   private agentPolicyConfig: AgentPolicyConfig | null = null;
   private agentPolicyFilePath: string | null = null;
   private acpxRuntimeRunner: AcpxRuntimeRunner | null = null;
+  private hermesRuntimeAdapter: HermesRuntimeAdapter | null = null;
+  private hermesCheckpoint: HermesSessionCheckpoint | undefined;
   private lastRoutingState: LLMRoutingRuntimeState | null = null;
   private cachedLlmSettings: ReturnType<
     typeof LLMProviderFactory.loadSettings
@@ -9357,6 +9408,22 @@ ${transcript}
       fallbackOccurred: false,
       manualOverride: this.hasExplicitTaskRouteOverride(),
     });
+  }
+
+  /** Construct the explicitly opted-in Hermes ACP runtime for this task. */
+  createHermesRuntimeAdapter(checkpoint?: HermesSessionCheckpoint): HermesRuntimeAdapter {
+    const options: HermesRuntimeOptions = {
+      cwd: this.workspace.path,
+      checkpoint,
+      onCheckpoint: async (saved) => {
+        this.daemon.logEvent(this.task.id, "hermes_runtime_checkpoint", saved);
+      },
+      onUpdate: (update) => {
+        this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);
+      },
+      onPermissionRequest: this.daemon.createHermesPermissionHandler(this.task.id),
+    };
+    return new HermesRuntimeAdapter(options);
   }
 
   /** Attach images from the initial task creation (before execute() is called). */
@@ -30809,9 +30876,11 @@ You are continuing a previous conversation. The context from the previous conver
 
       if (this.isAcpxExternalRuntimeTask()) {
         try {
-          await this.executeWithAcpxRuntime(
-            initialPrompt || this.getContractPrompt() || "",
-          );
+          if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
+            await this.executeWithHermesRuntime(initialPrompt || this.getContractPrompt() || "");
+          } else {
+            await this.executeWithAcpxRuntime(initialPrompt || this.getContractPrompt() || "");
+          }
           return;
         } catch (error) {
           if (error instanceof AcpxRuntimeUnavailableError) {
@@ -45999,7 +46068,13 @@ Return ONLY a JSON object:
 
     if (this.isAcpxExternalRuntimeTask()) {
       try {
-        await this.getAcpxRuntimeRunner().cancel();
+        if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
+          await this.hermesRuntimeAdapter?.cancel();
+          this.hermesRuntimeAdapter?.close();
+          this.hermesRuntimeAdapter = null;
+        } else {
+          await this.getAcpxRuntimeRunner().cancel();
+        }
       } catch (error) {
         this.emitEvent("log", {
           message: "Failed to cancel acpx runtime cleanly.",

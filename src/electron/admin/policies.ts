@@ -27,7 +27,7 @@ import {
   type AgentSecurityRuleProfile,
 } from "../../shared/agent-security";
 
-export type AdminSandboxType = "macos" | "docker" | "none";
+export type AdminSandboxType = "macos" | "docker" | "windows-restricted" | "none";
 export type AdminNetworkDefault = "allow" | "deny";
 
 /**
@@ -163,7 +163,9 @@ const DEFAULT_POLICIES: AdminPolicies = {
   },
   runtime: {
     allowedPermissionModes: [],
-    allowedSandboxTypes: ["macos", "docker"],
+    // Windows has no sandbox-exec equivalent. The restricted runner is used
+    // for approved, workspace-scoped commands when Docker is unavailable.
+    allowedSandboxTypes: ["macos", "docker", "windows-restricted"],
     requireSandboxForShell: false,
     allowUnsandboxedShell: false,
     network: {
@@ -516,13 +518,29 @@ function normalizePermissionModes(value: unknown): PermissionMode[] {
   );
 }
 
-const VALID_SANDBOX_TYPES = new Set<AdminSandboxType>(["macos", "docker", "none"]);
+const VALID_SANDBOX_TYPES = new Set<AdminSandboxType>([
+  "macos",
+  "docker",
+  "windows-restricted",
+  "none",
+]);
 
 function normalizeSandboxTypes(value: unknown): AdminSandboxType[] {
   const normalized = normalizeStringList(value).filter((mode): mode is AdminSandboxType =>
     VALID_SANDBOX_TYPES.has(mode as AdminSandboxType),
   );
-  return normalized.length > 0 ? normalized : [...DEFAULT_POLICIES.runtime.allowedSandboxTypes];
+  const result = normalized.length > 0 ? normalized : [...DEFAULT_POLICIES.runtime.allowedSandboxTypes];
+  // Migrate policies written by pre-Windows-runner builds. Keep an explicit
+  // `none`-only policy untouched, but do not let the old macOS/Docker default
+  // disable the native Windows restricted runner after an upgrade.
+  if (
+    process.platform === "win32" &&
+    result.some((mode) => mode === "macos" || mode === "docker") &&
+    !result.includes("windows-restricted")
+  ) {
+    result.push("windows-restricted");
+  }
+  return result;
 }
 
 const VALID_AGENT_SECURITY_MODES = new Set<AgentSecurityMode>(["monitor", "enforce"]);

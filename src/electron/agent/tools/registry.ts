@@ -401,7 +401,7 @@ const READ_MOSTLY_CODEX_PROMPT_PATTERN =
   /\b(review|analy[sz]e|analysis|plan|audit|inspect|investigate|research|summari[sz]e|critique)\b/i;
 
 export type SpawnAgentRuntimeMode = "native" | "acpx";
-export type SpawnAgentRuntimeAgent = "codex" | "claude";
+export type SpawnAgentRuntimeAgent = "codex" | "claude" | "hermes";
 
 export function isExplicitCodexSpawnRequest(input: {
   runtime_agent?: string;
@@ -12751,9 +12751,9 @@ ${skillDescriptions}`;
             },
             runtime_agent: {
               type: "string",
-              enum: ["codex", "claude"],
+              enum: ["codex", "claude", "hermes"],
               description:
-                'When runtime is "acpx", selects the target adapter, such as "codex" or "claude".',
+                'When runtime is "acpx", selects the target adapter, such as "codex", "claude" or "hermes".',
             },
             wait: {
               type: "boolean",

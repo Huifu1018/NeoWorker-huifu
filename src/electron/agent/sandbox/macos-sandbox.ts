@@ -42,6 +42,20 @@ const MACOS_RUNTIME_READ_PATHS = [
   "/etc/ssl",
 ];
 
+function getBundledRuntimeReadPaths(): string[] {
+  const resourcesRoot =
+    typeof process.resourcesPath === "string" && process.resourcesPath.trim()
+      ? path.resolve(process.resourcesPath)
+      : "";
+  if (!resourcesRoot) return [];
+  return [
+    resourcesRoot,
+    path.join(resourcesRoot, "skills"),
+    path.join(resourcesRoot, "app.asar.unpacked"),
+    path.join(resourcesRoot, "node_modules"),
+  ];
+}
+
 const PROTECTED_WORKSPACE_WRITE_RELATIVE_PATHS = [
   ".git",
   // The managed NeoWorker root is intentionally not protected as a whole.
@@ -381,6 +395,7 @@ export class MacOSSandbox implements ISandbox {
         "/usr/lib",
         "/System",
         os.tmpdir(),
+        ...getBundledRuntimeReadPaths(),
       ];
       for (const sysPath of systemReadPaths) {
         if (realTarget.startsWith(sysPath + path.sep) || realTarget === sysPath) {
@@ -436,6 +451,7 @@ export class MacOSSandbox implements ISandbox {
     validatePathForSandboxProfile(this.workspace.path);
     const workspaceAliases = this.getMacOSPathAliases(this.workspace.path);
     const tempAliases = this.getMacOSPathAliases(tempDir);
+    const bundledRuntimeReadPaths = getBundledRuntimeReadPaths();
     const escapedWorkspace = escapeSandboxProfileString(this.workspace.path);
     const escapedTempDir = escapeSandboxProfileString(tempDir);
 
@@ -451,7 +467,7 @@ export class MacOSSandbox implements ISandbox {
 (allow sysctl-read)
 
 ; Allow reading system libraries and binaries
-(allow file-read*
+  (allow file-read*
   (subpath "/usr/lib")
   (subpath "/usr/bin")
   (subpath "/bin")
@@ -490,11 +506,13 @@ export class MacOSSandbox implements ISandbox {
       "/dev/random",
       "/private/tmp",
       "/opt/homebrew",
+      ...bundledRuntimeReadPaths,
       ...workspaceAliases,
       ...tempAliases,
     ]);
     profile = this.appendReadSubpathRules(profile, workspaceAliases);
     profile = this.appendReadSubpathRules(profile, tempAliases);
+    profile = this.appendReadSubpathRules(profile, bundledRuntimeReadPaths);
 
     // Allow writing to workspace if permitted
     if (permissions.write) {

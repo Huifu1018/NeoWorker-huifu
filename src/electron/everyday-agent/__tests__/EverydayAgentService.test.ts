@@ -18,7 +18,7 @@ const policyMocks = vi.hoisted(() => {
     },
     runtime: {
       allowedPermissionModes: [],
-      allowedSandboxTypes: ["macos", "docker"],
+      allowedSandboxTypes: ["macos", "docker", "windows-restricted"],
       requireSandboxForShell: false,
       allowUnsandboxedShell: false,
       network: {

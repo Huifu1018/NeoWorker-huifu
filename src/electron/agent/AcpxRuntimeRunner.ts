@@ -41,6 +41,8 @@ export function getAcpxPermissionArgs(
 
 export function getAcpxAgentDisplayName(agent: ExternalRuntimeConfig["agent"]): string {
   switch (agent) {
+    case "hermes":
+      return "Hermes Agent";
     case "claude":
       return "Claude Code";
     case "codex":

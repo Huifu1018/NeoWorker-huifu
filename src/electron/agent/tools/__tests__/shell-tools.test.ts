@@ -14,6 +14,8 @@ const {
   resolveCommandCwd,
   shouldUsePersistentShell,
   buildSafeShellPath,
+  getShellArgs,
+  prepareWindowsCommand,
   isSandboxRuntimeFailure,
   buildEmptyCommandFailureMessage,
 } =
@@ -336,6 +338,26 @@ describe("ShellTools Integration", () => {
         "/bin",
       ]);
       expect(built.indexOf("/opt/homebrew/bin")).toBe(built.lastIndexOf("/opt/homebrew/bin"));
+    });
+  });
+
+  describe("Windows shell argument routing", () => {
+    it("uses PowerShell's non-profile command mode", () => {
+      expect(getShellArgs("C:\\Program Files\\PowerShell\\7\\pwsh.exe", "Write-Output ok", "win32"))
+        .toEqual(["-NoProfile", "-Command", "Write-Output ok"]);
+    });
+    it("uses cmd.exe /c while preserving the complete command string", () => {
+      expect(getShellArgs("C:\\Windows\\System32\\cmd.exe", "echo one && echo two", "win32"))
+        .toEqual(["/c", "echo one && echo two"]);
+    });
+    it("uses -c for POSIX shells", () => {
+      expect(getShellArgs("/bin/sh", "printf ok", "linux")).toEqual(["-c", "printf ok"]);
+    });
+    it("forces UTF-8 output for PowerShell and cmd", () => {
+      expect(prepareWindowsCommand("pwsh.exe", "Write-Output 中文", "win32"))
+        .toContain("[System.Text.Encoding]::UTF8;");
+      expect(prepareWindowsCommand("cmd.exe", "echo 中文", "win32"))
+        .toBe("chcp 65001>nul & echo 中文");
     });
   });
 

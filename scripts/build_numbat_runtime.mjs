@@ -146,8 +146,11 @@ function run(command, args, options = {}) {
 
 function tarPath(filePath) {
   const resolved = path.resolve(filePath);
-  // The Windows runner invokes native bsdtar from PowerShell. It accepts
-  // native drive-letter paths; `/c/...` is a Git-Bash path and fails here.
+  // Git for Windows' tar treats a drive-letter colon as a remote archive
+  // prefix ("C:"). Convert native paths to MSYS form before invoking it.
+  if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(resolved)) {
+    return `/${resolved[0].toLowerCase()}${resolved.slice(2).replaceAll("\\", "/")}`;
+  }
   return resolved;
 }
 

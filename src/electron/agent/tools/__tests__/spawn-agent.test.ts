@@ -354,6 +354,23 @@ describe("spawn_agent AgentConfig building", () => {
     });
   });
 
+  it("builds a Hermes acpx external runtime from an explicit runtime override", () => {
+    expect(
+      resolveSpawnAgentExternalRuntime({
+        runtime: "acpx",
+        runtime_agent: "hermes",
+        prompt: "Run the task in Hermes",
+        defaultCodexRuntimeMode: "native",
+      }),
+    ).toEqual({
+      kind: "acpx",
+      agent: "hermes",
+      sessionMode: "persistent",
+      outputMode: "json",
+      permissionMode: "deny-all",
+    });
+  });
+
   it("builds acpx external runtime from the default Codex runtime setting for explicit Codex flows", () => {
     expect(
       resolveSpawnAgentExternalRuntime({

@@ -8,7 +8,11 @@ vi.mock("child_process", () => ({
   spawn: spawnMock,
 }));
 
-import { isMacOSSandboxAvailable, resetMacOSSandboxCache } from "../sandbox-factory";
+import {
+  isMacOSSandboxAvailable,
+  resetMacOSSandboxCache,
+  WindowsRestrictedSandbox,
+} from "../sandbox-factory";
 
 function makeChildProcess(options: {
   closeCode?: number | null;
@@ -99,5 +103,74 @@ describe("sandbox factory macOS probe", () => {
 
     await expect(available).resolves.toBe(false);
     expect(proc.kill).toHaveBeenCalled();
+  });
+});
+
+describe("Windows restricted runner", () => {
+  let platformSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+  });
+
+  afterEach(() => {
+    platformSpy.mockRestore();
+  });
+
+  it("rejects shell operators instead of invoking cmd.exe", async () => {
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("python script.py & whoami", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      error: "WINDOWS_RESTRICTED_SHELL_SYNTAX",
+      exitCode: 1,
+    });
+  });
+
+  it("rejects nested PowerShell and inline code execution", async () => {
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("powershell.exe -Command whoami", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      error: "WINDOWS_RESTRICTED_NESTED_SHELL",
+      exitCode: 1,
+    });
+    await expect(sandbox.execute("python -c print(1)", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      error: "WINDOWS_RESTRICTED_INLINE_CODE",
+      exitCode: 1,
+    });
+  });
+
+  it("runs workspace compatibility builtins without starting a shell", async () => {
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("pwd", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "/tmp/workspace\n",
+    });
+    await expect(sandbox.execute("echo validation", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "validation\n",
+    });
+    await expect(sandbox.execute("echo one && echo two", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "one\ntwo\n",
+    });
   });
 });
