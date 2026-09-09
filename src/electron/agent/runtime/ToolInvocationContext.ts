@@ -18,6 +18,12 @@ export interface ToolInvocationContext {
   emitEvent?: (type: string, payload: Any) => void;
   beginHeartbeat?: (toolName: string, toolTimeoutMs: number, input: unknown) => (() => void) | void;
   timeoutMsResolver?: (toolName: string, input: unknown) => number;
+  /**
+   * Read the last persisted Tool Host lifecycle record for a tool call. A
+   * response may be replayed safely; a request without a response is treated
+   * as an unknown side effect and must never be re-executed automatically.
+   */
+  loadToolHostRecord?: (toolCallId: string) => unknown;
   workspaceRecovery?: (args: {
     toolName: string;
     input: Any;

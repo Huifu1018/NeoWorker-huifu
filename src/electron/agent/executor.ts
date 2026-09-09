@@ -140,6 +140,7 @@ import { enrichToolEventPayload } from "./runtime/tool-event-enrichment";
 import {
   NeoWorkerToolHost,
   createToolHostRequest,
+  type PersistedToolHostRecord,
 } from "./runtime/tool-host-protocol";
 import { resolveSkillSlashAlias } from "./skill-slash-aliases";
 import {
@@ -12356,6 +12357,8 @@ ${transcript}
               this.beginToolExecutionHeartbeat(name, timeoutMs, rawInput) ||
               undefined,
             timeoutMsResolver: () => toolTimeoutMs,
+            loadToolHostRecord: (requestedToolCallId) =>
+              this.loadPersistedToolHostRecord(requestedToolCallId),
             workspaceRecovery: async (args) =>
               this.tryWorkspaceBoundaryRecovery({
                 toolName: args.toolName,
@@ -12379,6 +12382,48 @@ ${transcript}
     } finally {
       parentSignal.removeEventListener("abort", onParentAbort);
     }
+  }
+
+  /**
+   * Recover a host-side tool result after an executor restart. A lifecycle
+   * request without a terminal response is deliberately returned as-is so the
+   * Tool Host can fail closed instead of replaying an unknown side effect.
+   */
+  private loadPersistedToolHostRecord(
+    toolCallId: string,
+  ): PersistedToolHostRecord | undefined {
+    const events = this.daemon.getTaskEvents(this.task.id, {
+      types: ["log"],
+      limit: 200,
+    });
+    const lifecycle = events
+      .map((event) => event.payload as Record<string, unknown> | undefined)
+      .filter(
+        (payload): payload is Record<string, unknown> =>
+          payload?.metric === "tool_host_lifecycle" &&
+          payload.toolCallId === toolCallId,
+      );
+    const latest = lifecycle.at(-1);
+    if (!latest) return undefined;
+    const status = latest.status;
+    const fingerprint = latest.fingerprint;
+    if (
+      (status !== "request" &&
+        status !== "running" &&
+        status !== "deduplicated" &&
+        status !== "response") ||
+      typeof fingerprint !== "string" ||
+      !fingerprint
+    ) {
+      return undefined;
+    }
+    return {
+      status,
+      fingerprint,
+      ...(status === "response" && latest.outcome && typeof latest.outcome === "object"
+        ? { outcome: latest.outcome as PersistedToolHostRecord["outcome"] }
+        : {}),
+    };
   }
 
   /**

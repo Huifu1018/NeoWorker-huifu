@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   NeoWorkerToolHost,
   ToolHostRequestConflictError,
+  ToolHostUnknownOutcomeError,
   TOOL_HOST_SCHEMA_VERSION,
   createToolHostRequest,
 } from "../tool-host-protocol";
@@ -167,5 +168,55 @@ describe("NeoWorker tool host protocol", () => {
       idempotencyKey: '["task-1","call-1"]',
       schemaVersion: TOOL_HOST_SCHEMA_VERSION,
     });
+  });
+
+  it("replays a persisted response after a fresh Tool Host instance", async () => {
+    const outcome = {
+      result: { success: true, path: "a.txt" }, durationMs: 2, resultJson: "{}",
+      envelope: { toolUseId: "call-persisted", toolName: "write_file", status: "success" as const,
+        modelPayload: "{}", userSummary: "write_file completed", structuredData: { success: true, path: "a.txt" },
+        evidence: [], retryable: false },
+    };
+    const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
+    const events: Any[] = [];
+    const firstContext = { ...context, emitEvent: vi.fn((type, payload) => events.push({ type, payload })) };
+    const firstRequest = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-persisted", input: { path: "a.txt" } });
+    await new NeoWorkerToolHost(coordinator).execute(firstRequest, firstContext);
+    const responseRecord = events
+      .map((event) => event.payload)
+      .find((payload) => payload.metric === "tool_host_lifecycle" && payload.status === "response");
+    expect(responseRecord).toBeDefined();
+
+    const second = await new NeoWorkerToolHost(coordinator).execute(
+      { ...firstRequest, requestId: "fresh-request" },
+      { ...context, loadToolHostRecord: () => responseRecord },
+    );
+    expect(second.response.requestId).toBe("fresh-request");
+    expect(second.outcome.result).toEqual(outcome.result);
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a persisted request has no terminal response", async () => {
+    const outcome = {
+      result: { success: true }, durationMs: 1, resultJson: "{}",
+      envelope: { toolUseId: "unknown-call", toolName: "run_command", status: "success" as const,
+        modelPayload: "{}", userSummary: "run_command completed", structuredData: { success: true },
+        evidence: [], retryable: false },
+    };
+    const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
+    const events: Any[] = [];
+    const recordingHost = new NeoWorkerToolHost(coordinator);
+    const recordRequest = createToolHostRequest({ taskId: "task-1", toolName: "run_command", toolCallId: "unknown-call-2", input: { command: "npm test" } });
+    await recordingHost.execute(recordRequest, {
+      ...context,
+      emitEvent: (_type, payload) => events.push(payload),
+      loadToolHostRecord: () => undefined,
+    });
+    const requestRecord = events.find((payload) => payload.status === "request");
+    await expect(new NeoWorkerToolHost(coordinator).execute(
+      { ...recordRequest, requestId: "retry-request" },
+      { ...context, loadToolHostRecord: () => ({ status: "running", fingerprint: requestRecord.fingerprint }) },
+    )).rejects.toBeInstanceOf(ToolHostUnknownOutcomeError);
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
   });
 });

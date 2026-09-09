@@ -31,6 +31,12 @@ export interface ToolHostExecution {
   outcome: CoordinatedToolExecutionResult;
 }
 
+export interface PersistedToolHostRecord {
+  status: "request" | "running" | "deduplicated" | "response";
+  fingerprint: string;
+  outcome?: CoordinatedToolExecutionResult;
+}
+
 interface CachedToolExecution {
   fingerprint: string;
   promise: Promise<CoordinatedToolExecutionResult>;
@@ -42,6 +48,15 @@ export class ToolHostRequestConflictError extends Error {
   constructor(toolCallId: string) {
     super(`Tool call ${toolCallId} was retransmitted with different tool or input`);
     this.name = "ToolHostRequestConflictError";
+  }
+}
+
+export class ToolHostUnknownOutcomeError extends Error {
+  readonly code = "TOOL_CALL_OUTCOME_UNKNOWN";
+
+  constructor(toolCallId: string) {
+    super(`Tool call ${toolCallId} was previously dispatched but has no persisted result; refusing automatic replay`);
+    this.name = "ToolHostUnknownOutcomeError";
   }
 }
 
@@ -95,12 +110,16 @@ export class NeoWorkerToolHost {
         toolCallId: normalized.toolCallId,
         tool: normalized.toolName,
         idempotencyKey: executionKey,
+        fingerprint,
         status,
         ...extra,
       });
     };
-    emitHostLifecycle("request", { schemaVersion: normalized.schemaVersion });
     const cached = this.inFlightOrCompleted.get(executionKey);
+    const persisted = !cached
+      ? (context.loadToolHostRecord?.(normalized.toolCallId) as PersistedToolHostRecord | undefined)
+      : undefined;
+    emitHostLifecycle("request", { schemaVersion: normalized.schemaVersion });
     if (cached && cached.fingerprint !== fingerprint) {
       // A stable toolCallId is an idempotency key. Reusing it for another
       // operation would make a transport retry indistinguishable from a new
@@ -109,6 +128,15 @@ export class NeoWorkerToolHost {
     }
     let outcomePromise = cached?.promise;
     if (cached) emitHostLifecycle("deduplicated");
+    if (!cached && persisted) {
+        if (persisted.fingerprint !== fingerprint) {
+          throw new ToolHostRequestConflictError(normalized.toolCallId);
+        }
+        if (persisted.status !== "response" || !persisted.outcome) {
+          throw new ToolHostUnknownOutcomeError(normalized.toolCallId);
+        }
+        outcomePromise = Promise.resolve(persisted.outcome);
+    }
     if (!outcomePromise) {
       outcomePromise = this.coordinator.executeTool(
         normalized.toolName,
@@ -132,6 +160,7 @@ export class NeoWorkerToolHost {
     emitHostLifecycle("response", {
       responseStatus: outcome.envelope.status,
       durationMs: outcome.durationMs,
+      outcome,
     });
     return {
       outcome,
