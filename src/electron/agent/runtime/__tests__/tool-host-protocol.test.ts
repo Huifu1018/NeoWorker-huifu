@@ -126,4 +126,20 @@ describe("NeoWorker tool host protocol", () => {
     await expect(host.execute({ ...request, requestId: "retry" }, context)).rejects.toThrow("transport lost");
     expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
   });
+
+  it("keeps task/tool idempotency keys distinct when IDs contain separators", async () => {
+    const outcome = {
+      result: { success: true }, durationMs: 1, resultJson: "{}",
+      envelope: { toolUseId: "call-1", toolName: "read_file", status: "success" as const,
+        modelPayload: "{}", userSummary: "read_file completed", structuredData: { success: true },
+        evidence: [], retryable: false },
+    };
+    const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
+    const host = new NeoWorkerToolHost(coordinator);
+    const first = createToolHostRequest({ taskId: "task:a", toolName: "read_file", toolCallId: "b", input: { path: "a" } });
+    const second = createToolHostRequest({ taskId: "task", toolName: "read_file", toolCallId: "a:b", input: { path: "b" } });
+    await host.execute(first, { taskId: "task:a", phase: "step" });
+    await host.execute(second, { taskId: "task", phase: "step" });
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(2);
+  });
 });

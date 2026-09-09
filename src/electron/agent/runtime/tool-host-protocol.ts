@@ -80,7 +80,9 @@ export class NeoWorkerToolHost {
     // one promise per task/toolCallId so a side effect is never executed twice.
     // Each transport attempt keeps its own requestId; callers correlate
     // retries by the stable toolCallId.
-    const executionKey = `${context.taskId}:${normalized.toolCallId}`;
+    // Encode both components structurally so task/tool IDs containing ':'
+    // cannot alias another pair (for example ['a:b', 'c'] vs ['a', 'b:c']).
+    const executionKey = stableJsonStringify([context.taskId, normalized.toolCallId], { sortKeys: false });
     const fingerprint = createHash("sha256")
       .update(
         `${normalized.toolName}\n${String(stableJsonStringify(normalized.input, { sortKeys: true, maxOutputChars: 500_000 }))}`,
