@@ -26,6 +26,8 @@ NeoWorker is **free and open source**. To run tasks, configure your own model cr
 | xAI Grok OAuth (SuperGrok Subscription) | Browser sign-in in Settings | Uses your active SuperGrok subscription |
 | Kimi (Moonshot) | API key in Settings | Pay-per-token |
 | Pi (Multi-LLM) | Unified API via pi-ai | Routes to multiple providers |
+| Hermes Model Proxy | Run `hermes proxy start --provider nous` or `xai`, then select a model in Settings | Uses the configured Hermes upstream |
+| Hermes Agent | Local Hermes API Server at `http://127.0.0.1:8642/v1`; runs Hermes-native tools as an external runtime | Uses the configured Hermes upstream |
 
 ## Compatible / Gateway Providers
 
@@ -52,6 +54,8 @@ NeoWorker is **free and open source**. To run tasks, configure your own model cr
 | Kimi Coding | API key in Settings | Provider billing |
 | OpenAI-Compatible (Custom) | API key + base URL in Settings | Provider billing |
 | Anthropic-Compatible (Custom) | API key + base URL in Settings | Provider billing |
+
+Hermes has two distinct local HTTP surfaces. Use **Hermes Model Proxy** (`8645/v1`) when NeoWorker must own file, Shell, approval, sandbox, and task-log side effects. **Hermes Agent** (`8642/v1`) runs its own Agent Loop and native tools; NeoWorker treats it as an external runtime.
 
 **Your usage is billed directly by your provider.** NeoWorker does not proxy or resell model access.
 

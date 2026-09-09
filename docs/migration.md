@@ -140,7 +140,7 @@ npm run dev
 4. Test connection
 5. Save
 
-Available providers include Anthropic, OpenAI, Gemini, OpenRouter, Bedrock, Ollama, Groq, xAI/Grok through either API key or SuperGrok browser OAuth, Kimi, plus compatible gateways such as OpenCode Zen, Google Vertex, Google Antigravity, Google Gemini CLI, Z.AI, GLM, Vercel AI Gateway, Cerebras, Mistral, GitHub Copilot, Qwen Portal, MiniMax, Xiaomi MiMo, Venice AI, Synthetic, Kimi Code, and custom OpenAI- or Anthropic-compatible endpoints. OpenRouter model selection includes `openrouter/pareto-code` and `openrouter/pareto-code:nitro` for coding-score-based model routing.
+Available providers include Anthropic, OpenAI, Gemini, OpenRouter, Bedrock, Ollama, Groq, xAI/Grok through either API key or SuperGrok browser OAuth, Kimi, Hermes Model Proxy, Hermes Agent, plus compatible gateways such as OpenCode Zen, Google Vertex, Google Antigravity, Google Gemini CLI, Z.AI, GLM, Vercel AI Gateway, Cerebras, Mistral, GitHub Copilot, Qwen Portal, MiniMax, Xiaomi MiMo, Venice AI, Synthetic, Kimi Code, and custom OpenAI- or Anthropic-compatible endpoints. OpenRouter model selection includes `openrouter/pareto-code` and `openrouter/pareto-code:nitro` for coding-score-based model routing. Hermes Model Proxy keeps NeoWorker's local tool ownership; Hermes Agent is an external Agent Runtime.
 
 ### 3. Set Up Messaging Channels
 

@@ -416,6 +416,8 @@ Open **Settings** > **LLM**:
 | xAI (Grok API) | Enter API key in Settings |
 | xAI Grok OAuth | Sign in with Grok to use an active SuperGrok subscription; defaults to `grok-4.3` |
 | Kimi (Moonshot) | Enter API key in Settings |
+| Hermes Model Proxy | Start `hermes proxy start --provider nous` or `xai`, then choose Hermes Model Proxy and refresh models |
+| Hermes Agent | Use only when Hermes should own its Agent Loop and native tools as an external runtime |
 
 Prompt caching is enabled by default on supported Anthropic and GPT-style routes. NeoWorker automatically keeps stable session prompt sections cacheable and dynamic turn context uncached, so follow-ups can reuse the provider-side prefix without caching the clock, recall, or one-off guidance.
 
