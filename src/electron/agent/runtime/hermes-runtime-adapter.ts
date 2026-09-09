@@ -119,8 +119,9 @@ export class HermesRuntimeAdapter {
 
   prompt(text: string, signal?: AbortSignal): Promise<HermesPromptResult> {
     if (this.activePrompt) return Promise.reject(new HermesAcpError("A Hermes prompt is already running", "SESSION_BUSY"));
-    this.cancelRequested = false;
-    this.paused = false;
+    const prePaused = this.paused;
+    this.cancelRequested = prePaused;
+    if (!prePaused) this.paused = false;
     const run = async () => {
       const checkpoint = await this.connect();
       if (this.cancelRequested) return { assistantText: "", stopReason: "cancelled", sessionId: checkpoint.sessionId };
