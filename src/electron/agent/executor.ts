@@ -9413,11 +9413,35 @@ ${transcript}
 
   /** Construct the explicitly opted-in Hermes ACP runtime for this task. */
   createHermesRuntimeAdapter(checkpoint?: HermesSessionCheckpoint): HermesRuntimeAdapter {
+    // Recover the handle even when the previous executor/process failed before
+    // prompt() returned. Never create a fresh conversation over an invalid
+    // persisted checkpoint: the old session may already have run tools.
+    const savedCheckpoint = checkpoint ?? this.hermesCheckpoint ?? this.daemon
+      .getTaskEvents(this.task.id, { types: ["hermes_runtime_checkpoint"], limit: 1 })
+      .at(-1)?.payload;
+    if (savedCheckpoint !== undefined) {
+      if (
+        !savedCheckpoint ||
+        savedCheckpoint.schema !== "neoworker_hermes_acp_v1" ||
+        typeof savedCheckpoint.sessionId !== "string" || !savedCheckpoint.sessionId.trim() ||
+        savedCheckpoint.cwd !== this.workspace.path ||
+        typeof savedCheckpoint.agentVersion !== "string"
+      ) {
+        throw new Error("Cannot restore Hermes: invalid checkpoint or workspace mismatch");
+      }
+      this.hermesCheckpoint = {
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: savedCheckpoint.sessionId,
+        cwd: savedCheckpoint.cwd,
+        agentVersion: savedCheckpoint.agentVersion,
+      };
+    }
     const options: HermesRuntimeOptions = {
       cwd: this.workspace.path,
-      checkpoint,
+      checkpoint: this.hermesCheckpoint,
       onCheckpoint: async (saved) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_checkpoint", saved);
+        this.hermesCheckpoint = { ...saved };
       },
       onUpdate: (update) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);
