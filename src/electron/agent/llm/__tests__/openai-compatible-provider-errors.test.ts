@@ -4,13 +4,16 @@ import {
   OpenAICompatibleProviderError,
 } from "../openai-compatible-provider";
 
-function createProvider(): OpenAICompatibleProvider {
+function createProvider(
+  extra: Partial<ConstructorParameters<typeof OpenAICompatibleProvider>[0]> = {},
+): OpenAICompatibleProvider {
   return new OpenAICompatibleProvider({
     type: "deepseek",
     providerName: "DeepSeek",
     apiKey: "test-key",
     baseUrl: "https://api.deepseek.example/v1",
     defaultModel: "deepseek-chat",
+    ...extra,
   });
 }
 
@@ -29,6 +32,34 @@ afterEach(() => {
 });
 
 describe("OpenAICompatibleProvider error metadata", () => {
+  it("bounds connection tests when a local gateway never responds", async () => {
+    const fetchMock = vi.fn((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createProvider({ auxiliaryRequestTimeoutMs: 10 }).testConnection();
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timed out|aborted/i);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/chat/completions"),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("bounds model discovery when a local gateway never responds", async () => {
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      }),
+    ));
+
+    await expect(createProvider({ auxiliaryRequestTimeoutMs: 10 }).getAvailableModels())
+      .rejects.toMatchObject({ message: expect.stringMatching(/timed out|aborted|Failed to refresh/i) });
+  });
+
   it("parses streamed Hermes text and fragmented tool calls", async () => {
     const sse = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
     const frames = [

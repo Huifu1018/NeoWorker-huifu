@@ -12,6 +12,7 @@ import {
 } from "./prompt-cache";
 
 const OPENCODE_GO_KIMI_MAX_COMPLETION_TOKENS = 32_768;
+const DEFAULT_AUX_REQUEST_TIMEOUT_MS = 15_000;
 
 const RETRYABLE_HTTP_STATUSES = new Set([
   408, 409, 425, 429, 500, 502, 503, 504, 507, 522, 523, 524,
@@ -132,6 +133,8 @@ export interface OpenAICompatibleProviderOptions {
   /** Undefined uses provider/model capability inference. */
   supportsImages?: boolean;
   extraHeaders?: Record<string, string>;
+  /** Timeout for connection tests and model discovery requests. */
+  auxiliaryRequestTimeoutMs?: number;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -144,6 +147,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private providerName: string;
   private supportsImagesOverride?: boolean;
   private extraHeaders?: Record<string, string>;
+  private auxiliaryRequestTimeoutMs: number;
 
   constructor(options: OpenAICompatibleProviderOptions) {
     this.type = options.type;
@@ -155,6 +159,26 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.providerName = options.providerName;
     this.supportsImagesOverride = options.supportsImages;
     this.extraHeaders = options.extraHeaders;
+    this.auxiliaryRequestTimeoutMs = Number.isFinite(options.auxiliaryRequestTimeoutMs) &&
+      (options.auxiliaryRequestTimeoutMs as number) > 0
+      ? Math.floor(options.auxiliaryRequestTimeoutMs as number)
+      : DEFAULT_AUX_REQUEST_TIMEOUT_MS;
+  }
+
+  private async fetchAuxiliary(
+    input: string,
+    init: RequestInit,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error(`${this.providerName} auxiliary request timed out`)),
+      this.auxiliaryRequestTimeoutMs,
+    );
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private normalizeModelForEndpoint(model: string): string {
@@ -534,7 +558,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
 
-      const response = await fetch(this.chatCompletionsUrl, {
+      const response = await this.fetchAuxiliary(this.chatCompletionsUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -570,7 +594,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
 
-      const response = await fetch(this.modelsUrl, {
+      const response = await this.fetchAuxiliary(this.modelsUrl, {
         headers,
       });
 
