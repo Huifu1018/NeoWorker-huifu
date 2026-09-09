@@ -41041,8 +41041,11 @@ Return ONLY a JSON object:
         return;
       }
 
+      // An application restart can leave the active step marked in_progress.
+      // Treat it as resumable work; considering only pending steps would
+      // incorrectly finalize a task whose current step was interrupted.
       const pendingSteps = this.plan.steps.filter(
-        (s) => s.status === "pending",
+        (s) => s.status === "pending" || s.status === "in_progress",
       );
       if (pendingSteps.length === 0) {
         if (this.finalCandidateNeedsUserInput()) {

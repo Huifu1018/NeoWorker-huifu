@@ -2666,6 +2666,30 @@ Recommendation: update docs/automation.md because scheduled task docs are stale.
     expect(executor.daemon.completeTask).not.toHaveBeenCalled();
   });
 
+  it("resumes an in-progress plan step after an application restart", async () => {
+    const executor = createExecuteHarness({
+      title: "Interrupted task",
+      prompt: "Continue the workspace task",
+      lastOutput: "",
+    }) as Any;
+    executor.plan = {
+      description: "Plan",
+      steps: [{ id: "1", description: "Run the interrupted command", status: "in_progress" }],
+    };
+    executor.appendConversationHistory = vi.fn();
+    executor.emitEvent = vi.fn();
+    executor.finalCandidateNeedsUserInput = vi.fn().mockReturnValue(false);
+    executor.buildResultSummary = vi.fn().mockReturnValue("resumed");
+    executor.finalizeTaskWithFallback = vi.fn();
+    executor.applyRuntimeTaskProjectionToTask = vi.fn().mockReturnValue({});
+    executor.executePlan = vi.fn(async () => undefined);
+
+    await executor.resumeAfterInterruptionUnlocked();
+
+    expect(executor.executePlan).toHaveBeenCalledOnce();
+    expect(executor.finalizeTaskWithFallback).toHaveBeenCalledWith("resumed");
+  });
+
   it("pauses interruption resume when the final candidate is still a required-input request", async () => {
     const executor = createExecuteHarness({
       title: "You track a fast-moving technical field.",
