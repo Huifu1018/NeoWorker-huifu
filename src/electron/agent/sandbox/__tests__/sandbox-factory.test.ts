@@ -172,5 +172,9 @@ describe("Windows restricted runner", () => {
       exitCode: 0,
       stdout: "one\ntwo\n",
     });
+    await expect(sandbox.execute("cat missing.txt || echo fallback", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "fallback\n",
+    });
   });
 });

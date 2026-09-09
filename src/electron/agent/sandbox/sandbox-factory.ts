@@ -406,8 +406,19 @@ function parseWindowsRestrictedSequence(command: string): WindowsRestrictedComma
       quote = char;
       continue;
     }
-    if (char === "\r" || char === "\n" || char === "|" || char === "<" || char === "^") {
+    if (char === "\r" || char === "\n" || char === "<" || char === "^") {
       return null;
+    }
+    if (char === "|") {
+      if (command[index + 1] !== "|") return null;
+      const text = command.slice(start, index).trim();
+      if (!text) return null;
+      parts.push({ command: text, operator: pendingOperator });
+      pendingOperator = "||";
+      start = index + 2;
+      index += 1;
+      hasOperator = true;
+      continue;
     }
     if (char === ";") {
       const text = command.slice(start, index).trim();
