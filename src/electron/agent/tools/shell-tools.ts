@@ -9,7 +9,7 @@ import {
   ShellSessionManager,
   isLikelyInteractiveCommand,
 } from "./shell-session-manager";
-import { createSandbox } from "../sandbox/sandbox-factory";
+import { createSandbox, decodeProcessOutput } from "../sandbox/sandbox-factory";
 import { loadPolicies, type AdminPolicies } from "../../admin/policies";
 import { createLogger } from "../../utils/logger";
 
@@ -1429,7 +1429,7 @@ export class ShellTools {
       child.stdout.on("data", (data: Buffer) => {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
-          : data.toString("utf-8");
+          : decodeProcessOutput(data);
         const chunk = this.sanitizeCommandOutput(raw);
         stdout += chunk;
         // Emit live output
@@ -1444,7 +1444,7 @@ export class ShellTools {
       child.stderr.on("data", (data: Buffer) => {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
-          : data.toString("utf-8");
+          : decodeProcessOutput(data);
         const chunk = this.sanitizeCommandOutput(raw);
         stderr += chunk;
         // Emit live output

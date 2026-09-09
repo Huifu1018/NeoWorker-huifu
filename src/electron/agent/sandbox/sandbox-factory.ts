@@ -806,7 +806,7 @@ function terminateWindowsProcessTree(child: ChildProcess): void {
  * with GBK only when UTF-8 produced replacement characters. Unix output keeps
  * Node's normal UTF-8 behavior.
  */
-function decodeProcessOutput(data: Buffer): string {
+export function decodeProcessOutput(data: Buffer): string {
   const utf8 = data.toString("utf8");
   if (process.platform !== "win32" || !utf8.includes("\uFFFD")) return utf8;
   try {
