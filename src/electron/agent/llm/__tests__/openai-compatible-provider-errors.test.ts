@@ -68,6 +68,23 @@ describe("OpenAICompatibleProvider error metadata", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("explains how to recover when the Hermes Model Proxy is offline", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(Object.assign(new Error("fetch failed"), { code: "ECONNREFUSED" })));
+    const provider = createProvider({
+      type: "hermes-proxy",
+      providerName: "Hermes Model Proxy",
+      apiKey: "",
+      baseUrl: "http://127.0.0.1:8645/v1",
+      defaultModel: "proxy-model",
+    });
+
+    await expect(provider.createMessage({ ...createRequest(), model: "proxy-model" })).rejects.toMatchObject({
+      code: "ECONNREFUSED",
+      message: expect.stringContaining("hermes proxy start"),
+      retryable: true,
+    });
+  });
+
   it("bounds model discovery when a local gateway never responds", async () => {
     vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {

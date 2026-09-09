@@ -205,6 +205,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     return trimmed;
   }
 
+  private getTransportRecoveryHint(): string {
+    if (this.type !== "hermes-proxy") return "";
+    return " Start Hermes Model Proxy with `hermes auth add nous` (or `xai`) and `hermes proxy start --provider nous` (or `xai`).";
+  }
+
   private isKimiK2Model(model: string): boolean {
     const normalized = model.toLowerCase().trim();
     const bareModel = normalized.includes("/")
@@ -533,7 +538,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         const code = getTransportErrorCode(error);
         const malformedToolArguments = code === "MALFORMED_TOOL_ARGUMENTS";
         error = new OpenAICompatibleProviderError(
-          `${this.providerName} API request failed: ${error?.message || "Unknown transport error"}`,
+          `${this.providerName} API request failed: ${error?.message || "Unknown transport error"}${this.getTransportRecoveryHint()}`,
           {
             providerName: this.providerName,
             code: code || "TRANSPORT_ERROR",
