@@ -26,7 +26,7 @@
 - `release/NeoWorker-0.1.8-3-arm64.dmg`
 - `release/NeoWorker-0.1.8-3-arm64-mac.zip`
 
-以上 macOS 包于 2026-09-09 15:55 重新生成，包含提交 72086c6 的 Provider 辅助请求超时修复，并再次通过 DMG smoke。对应 Windows 安装器可从 GitHub Actions run 34326486221 的 `NeoWorker-0.1.8-3-windows-x64` artifact 下载。
+以上 macOS 包于 2026-09-09 16:20 重新生成，包含提交 26b6c09 的 Provider 辅助请求和响应解析超时修复，并再次通过 DMG smoke。对应 Windows 最新验证已由 GitHub Actions run 34328566273 针对同一提交启动，完成后可从其 `NeoWorker-0.1.8-3-windows-x64` artifact 下载。
 
 该包为 unsigned/ad hoc 签名测试包。OfficeCLI 下载源不可用时使用了仓库支持的 `NEOWORKER_SKIP_OFFICECLI=1`，不影响 Hermes Runtime 和 Electron 主程序验证。
 
