@@ -16,6 +16,7 @@
 | Windows x64 安装包 | 通过 | GitHub Actions run 34319024080：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Hermes 暂停恢复 | 通过专项测试 | checkpoint 保留、session 恢复和未知副作用不重放 |
+| 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 
 ## 安装包
 
