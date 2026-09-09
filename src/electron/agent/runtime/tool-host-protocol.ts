@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ToolResultEnvelopeStatus } from "../../../shared/types";
 import type { ToolExecutionCoordinator, CoordinatedToolExecutionResult } from "./ToolExecutionCoordinator";
 import type { ToolInvocationContext } from "./ToolInvocationContext";
+import { stableJsonStringify } from "../../utils/json-utils";
 
 /** Versioned boundary between an agent runtime and NeoWorker's local tools. */
 export const TOOL_HOST_SCHEMA_VERSION = "neoworker_tool_host_v1" as const;
@@ -30,6 +31,20 @@ export interface ToolHostExecution {
   outcome: CoordinatedToolExecutionResult;
 }
 
+interface CachedToolExecution {
+  fingerprint: string;
+  promise: Promise<CoordinatedToolExecutionResult>;
+}
+
+export class ToolHostRequestConflictError extends Error {
+  readonly code = "TOOL_CALL_ID_CONFLICT";
+
+  constructor(toolCallId: string) {
+    super(`Tool call ${toolCallId} was retransmitted with different tool or input`);
+    this.name = "ToolHostRequestConflictError";
+  }
+}
+
 function requiredId(value: unknown, label: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new Error(`Tool host ${label} is required`);
@@ -47,12 +62,12 @@ function normalizeRequest(request: ToolHostRequest): ToolHostRequest {
 }
 
 /**
- * Host-owned tool boundary used by NeoWorker's native runtime and Gateway
+ * Host-owned tool boundary used by NeoWorker's native runtime and model-only
  * providers. The coordinator remains the single place that applies approval,
  * sandbox, timeout, logging and bounded-result policy.
  */
 export class NeoWorkerToolHost {
-  private readonly inFlightOrCompleted = new Map<string, Promise<CoordinatedToolExecutionResult>>();
+  private readonly inFlightOrCompleted = new Map<string, CachedToolExecution>();
 
   constructor(private readonly coordinator: ToolExecutionCoordinator) {}
 
@@ -66,7 +81,19 @@ export class NeoWorkerToolHost {
     // Each transport attempt keeps its own requestId; callers correlate
     // retries by the stable toolCallId.
     const executionKey = `${context.taskId}:${normalized.toolCallId}`;
-    let outcomePromise = this.inFlightOrCompleted.get(executionKey);
+    const fingerprint = createHash("sha256")
+      .update(
+        `${normalized.toolName}\n${String(stableJsonStringify(normalized.input, { sortKeys: true, maxOutputChars: 500_000 }))}`,
+      )
+      .digest("hex");
+    const cached = this.inFlightOrCompleted.get(executionKey);
+    if (cached && cached.fingerprint !== fingerprint) {
+      // A stable toolCallId is an idempotency key. Reusing it for another
+      // operation would make a transport retry indistinguishable from a new
+      // side effect, so fail closed instead of returning the old result.
+      throw new ToolHostRequestConflictError(normalized.toolCallId);
+    }
+    let outcomePromise = cached?.promise;
     if (!outcomePromise) {
       outcomePromise = this.coordinator.executeTool(
         normalized.toolName,
@@ -74,14 +101,9 @@ export class NeoWorkerToolHost {
         context,
         normalized.toolCallId,
       );
-      this.inFlightOrCompleted.set(executionKey, outcomePromise);
-      void outcomePromise.catch(() => {
-        // Do not poison a key if an adapter-level exception escapes the
-        // coordinator; a later transport retry may safely attempt the call.
-        if (this.inFlightOrCompleted.get(executionKey) === outcomePromise) {
-          this.inFlightOrCompleted.delete(executionKey);
-        }
-      });
+      // Keep rejected promises too. Once a side-effecting coordinator call
+      // has started, its final state is unknown; automatic replay is unsafe.
+      this.inFlightOrCompleted.set(executionKey, { fingerprint, promise: outcomePromise });
     }
     const outcome = await outcomePromise;
     const error = outcome.error

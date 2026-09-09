@@ -26,7 +26,7 @@
 
 1. Renderer 既有类型和快照失败需要单独清理，不能用全量 Vitest 结果判断 Hermes Runtime 成败。
 2. 本地 Hermes ACP 可执行文件可用，但 Hermes ACP 0.18.0 的内置 `hermes-acp` toolset 仍直接执行其原生文件和终端工具；ACP 协议没有把这些调用回调给 NeoWorker 的字段。
-3. 因此当前推荐的宿主权限路径是 Hermes OpenAI-compatible Gateway：Hermes 负责模型入口，NeoWorker `SessionRuntime`、`ToolRegistry`、审批、Numbat 沙箱、Shell 生命周期和任务日志负责本地副作用。
+3. 因此当前推荐的宿主权限路径是 Hermes Model Proxy（8645）：Hermes 只负责凭据转发和模型入口，NeoWorker `SessionRuntime`、`ToolRegistry`、审批、Numbat 沙箱、Shell 生命周期和任务日志负责本地副作用。Hermes API Server（8642）和 ACP 属于外部 Agent Runtime，不满足这一所有权结论。
 
 ## 比较规则
 

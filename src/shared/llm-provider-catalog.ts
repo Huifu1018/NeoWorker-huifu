@@ -29,7 +29,19 @@ export const CUSTOM_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     apiKeyPlaceholder: "Leave blank for local Hermes",
     apiKeyOptional: true,
     description:
-      "Local Hermes Gateway using the OpenAI-compatible API. NeoWorker keeps tool execution and shell approvals local.",
+      "Hermes API Server runs its own agent and tools. Its local operations are not controlled by NeoWorker's Tool Host. Use Hermes Model Proxy for NeoWorker-hosted tools.",
+  },
+  {
+    id: "hermes-proxy",
+    name: "Hermes Model Proxy",
+    compatibility: "openai",
+    baseUrl: "http://127.0.0.1:8645/v1",
+    defaultModel: "",
+    apiKeyLabel: "API Key (optional)",
+    apiKeyPlaceholder: "Leave blank for local Hermes proxy",
+    apiKeyOptional: true,
+    description:
+      "Start hermes proxy, then select a model returned by Refresh Models. This model-only proxy preserves tool calls for NeoWorker to execute. Hermes v0.18 supports Nous and xAI OAuth upstreams.",
   },
   {
     id: "opencode",

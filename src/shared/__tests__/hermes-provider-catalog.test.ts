@@ -19,4 +19,17 @@ describe("Hermes Agent provider", () => {
       name: "Hermes Agent",
     });
   });
+
+  it("keeps the API Server and model-only proxy entries distinct", () => {
+    const gateway = CUSTOM_PROVIDER_CATALOG.find((entry) => entry.id === "hermes");
+    const proxy = CUSTOM_PROVIDER_CATALOG.find((entry) => entry.id === "hermes-proxy");
+    expect(gateway?.description).toMatch(/own agent and tools/i);
+    expect(proxy).toMatchObject({
+      name: "Hermes Model Proxy",
+      baseUrl: "http://127.0.0.1:8645/v1",
+      apiKeyOptional: true,
+      defaultModel: "",
+    });
+    expect(proxy?.description).toMatch(/model-only proxy/i);
+  });
 });

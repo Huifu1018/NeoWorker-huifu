@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   NeoWorkerToolHost,
+  ToolHostRequestConflictError,
   TOOL_HOST_SCHEMA_VERSION,
   createToolHostRequest,
 } from "../tool-host-protocol";
@@ -98,5 +99,31 @@ describe("NeoWorker tool host protocol", () => {
     expect(a.response.requestId).toBe(first.requestId);
     expect(b.response.requestId).toBe(second.requestId);
     expect(a.outcome).toBe(b.outcome);
+  });
+
+  it("rejects reuse of a toolCallId with different input", async () => {
+    const outcome = {
+      result: { success: true }, durationMs: 1, resultJson: "{}",
+      envelope: { toolUseId: "call-1", toolName: "write_file", status: "success" as const,
+        modelPayload: "{}", userSummary: "write_file completed", structuredData: { success: true },
+        evidence: [], retryable: false },
+    };
+    const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
+    const host = new NeoWorkerToolHost(coordinator);
+    const first = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "a" } });
+    const conflicting = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "b" } });
+    await host.execute(first, context);
+    await expect(host.execute(conflicting, context)).rejects.toBeInstanceOf(ToolHostRequestConflictError);
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a rejected side-effect promise fail-closed on retransmission", async () => {
+    const failure = new Error("transport lost after dispatch");
+    const coordinator = { executeTool: vi.fn().mockRejectedValue(failure) } as Any;
+    const host = new NeoWorkerToolHost(coordinator);
+    const request = createToolHostRequest({ taskId: "task-1", toolName: "run_command", toolCallId: "call-1", input: { command: "echo hi" } });
+    await expect(host.execute(request, context)).rejects.toThrow("transport lost");
+    await expect(host.execute({ ...request, requestId: "retry" }, context)).rejects.toThrow("transport lost");
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
   });
 });
