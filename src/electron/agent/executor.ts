@@ -4582,6 +4582,10 @@ export class TaskExecutor {
     return this.getAcpxExternalRuntimeConfig() !== null;
   }
 
+  private isHermesExternalRuntimeTask(): boolean {
+    return this.getAcpxExternalRuntimeConfig()?.agent === "hermes";
+  }
+
   private getAcpxRuntimeAgentDisplayName(): string {
     const runtime = this.getAcpxExternalRuntimeConfig();
     return getAcpxAgentDisplayName(runtime?.agent || "codex");
@@ -4675,8 +4679,16 @@ export class TaskExecutor {
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", { message: "Delegating task to Hermes Agent Runtime" });
     try {
+      // A pause can race with runtime construction. Mark the adapter before
+      // prompting so it creates/persists a checkpoint but never starts tools.
+      if (this.paused) await runtime.pause();
       const result = await runtime.prompt(initialPrompt || this.getContractPrompt() || "");
       this.hermesCheckpoint = runtime.getCheckpoint();
+      if (this.paused && result.stopReason === "cancelled") {
+        this.daemon.updateTaskStatus(this.task.id, "paused");
+        this.emitEvent("task_paused", { message: "Paused - Hermes session checkpoint saved" });
+        return;
+      }
       const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
       if (assistantText) {
         this.lastAssistantOutput = assistantText;
@@ -46161,6 +46173,34 @@ Return ONLY a JSON object:
    */
   async pause(): Promise<void> {
     this.paused = true;
+    if (this.isHermesExternalRuntimeTask()) {
+      this.daemon.updateTaskStatus(this.task.id, "paused");
+      this.emitEvent("task_paused", { message: "Pausing Hermes session" });
+      await this.hermesRuntimeAdapter?.pause();
+    }
+  }
+
+  private async resumeHermesAfterPause(): Promise<void> {
+    const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
+    this.hermesRuntimeAdapter = runtime;
+    this.daemon.updateTaskStatus(this.task.id, "executing");
+    this.emitEvent("executing", { message: "Resuming Hermes session from checkpoint" });
+    try {
+      const result = await runtime.prompt(
+        "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.",
+      );
+      this.hermesCheckpoint = runtime.getCheckpoint();
+      const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
+      if (assistantText) {
+        this.lastAssistantOutput = assistantText;
+        this.lastAssistantText = assistantText;
+        this.lastNonVerificationOutput = assistantText;
+      }
+      this.finalizeTaskBestEffort(assistantText || "Hermes Agent resumed without a final assistant message.", "hermes runtime resumed");
+    } finally {
+      this.hermesRuntimeAdapter = null;
+      runtime.close();
+    }
   }
 
   /**
@@ -46168,6 +46208,11 @@ Return ONLY a JSON object:
    */
   async resume(): Promise<void> {
     await this.getLifecycleMutex().runExclusive(async () => {
+      if (this.isHermesExternalRuntimeTask() && this.paused && !this.waitingForUserInput) {
+        this.paused = false;
+        await this.resumeHermesAfterPause();
+        return;
+      }
       this.paused = false;
       if (this.waitingForUserInput) {
         // Resume implies the user acknowledged any workspace preflight warning.

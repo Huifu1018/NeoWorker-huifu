@@ -40,6 +40,49 @@ function adapter(instance: TaskExecutor) {
 }
 
 describe("Executor Hermes recovery", () => {
+  it("propagates desktop pause to the active Hermes adapter", async () => {
+    const pause = vi.fn(async () => undefined);
+    const events: unknown[] = [];
+    const instance = executor([]) as Any;
+    instance.task = { id: "pause-hermes" };
+    instance.getAcpxExternalRuntimeConfig = () => ({ agent: "hermes" });
+    instance.hermesRuntimeAdapter = { pause };
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.emitEvent = vi.fn((type: string, payload: unknown) => events.push({ type, payload }));
+    await TaskExecutor.prototype.pause.call(instance);
+    expect(instance.paused).toBe(true);
+    expect(pause).toHaveBeenCalledOnce();
+    expect(instance.daemon.updateTaskStatus).toHaveBeenCalledWith("pause-hermes", "paused");
+    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "task_paused" })]));
+  });
+
+  it("resumes Hermes from the persisted checkpoint through the executor lifecycle", async () => {
+    const events: unknown[] = [];
+    const runtime = {
+      prompt: vi.fn(async () => ({ assistantText: "continued", stopReason: "end_turn", sessionId: "session-1" })),
+      getCheckpoint: vi.fn(() => ({ schema: "neoworker_hermes_acp_v1", sessionId: "session-1", cwd, agentVersion: "fixture" })),
+      close: vi.fn(),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "resume-hermes" };
+    instance.paused = true;
+    instance.waitingForUserInput = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = runtime.getCheckpoint();
+    instance.getAcpxExternalRuntimeConfig = () => ({ agent: "hermes" });
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.getLifecycleMutex = () => ({ runExclusive: (fn: () => Promise<void>) => fn() });
+    instance.emitEvent = vi.fn((type: string, payload: unknown) => events.push({ type, payload }));
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    await TaskExecutor.prototype.resume.call(instance);
+    expect(runtime.prompt).toHaveBeenCalledWith(expect.stringContaining("last checkpoint"));
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith("continued", "hermes runtime resumed");
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it("restores a persisted session after executor recreation instead of creating a conversation", async () => {
     fixtureTransport();
     const events: Array<{ payload: unknown }> = [];
