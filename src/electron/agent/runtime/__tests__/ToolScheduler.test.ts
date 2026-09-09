@@ -264,6 +264,56 @@ describe("ToolScheduler", () => {
     expect(outcome.toolResults[1]?.is_error).toBe(true);
   });
 
+  it("does not dispatch queued parallel calls after cancellation", async () => {
+    const scheduler = new ToolScheduler();
+    let keepRunning = true;
+    const dispatched: string[] = [];
+    const ran: string[] = [];
+    const run = vi.fn(async (id: string) => {
+      ran.push(`run:${id}`);
+      await new Promise((resolve) => setTimeout(resolve, 3));
+      return { resultJson: id };
+    });
+    const calls = Array.from({ length: 6 }, (_, index) => ({
+      index,
+      toolUse: { type: "tool_use" as const, id: String(index + 1), name: "read_file", input: { path: `${index}.txt` } },
+    }));
+
+    const outcome = await scheduler.executeBatch({
+      calls,
+      maxParallel: 2,
+      shouldContinue: () => keepRunning,
+      prepareCall: async (call) => ({
+        status: "scheduled" as const,
+        call: {
+          ...call,
+          toolName: "read_file",
+          input: call.toolUse.input,
+          spec: { concurrencyClass: "read_parallel" as const, readOnly: true, idempotent: true },
+          onDispatched: () => {
+            dispatched.push(`dispatch:${call.toolUse.id}`);
+            if (dispatched.length === 2) keepRunning = false;
+          },
+          run: async () => run(call.toolUse.id),
+          finalize: async (raw) => ({
+            toolResult: {
+              type: "tool_result" as const,
+              tool_use_id: call.toolUse.id,
+              content: raw.resultJson || "cancelled",
+              ...(raw.metadata?.cancelled ? { is_error: true } : {}),
+            },
+          }),
+        },
+      }),
+    });
+
+    expect(dispatched).toEqual(["dispatch:1", "dispatch:2"]);
+    expect(ran).toEqual(["run:1", "run:2"]);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(outcome.toolResults).toHaveLength(6);
+    expect(outcome.toolResults.slice(2).every((result) => result.is_error)).toBe(true);
+  });
+
   it("invalidates cached reads across a mutation", async () => {
     const scheduler = new ToolScheduler();
     let file = "before";

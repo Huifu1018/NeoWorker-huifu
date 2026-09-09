@@ -149,10 +149,6 @@ export class ToolScheduler {
         readResultCache.clear();
       }
 
-      for (const call of batchCalls) {
-        await call.onDispatched?.();
-      }
-
       const rawOutcomes =
         batch.mode === "parallel"
           ? await this.runParallelBatch(batch, params.maxParallel, params.shouldContinue, readResultCache, params.onCacheHit)
@@ -298,6 +294,11 @@ export class ToolScheduler {
         },
       };
     }
+    // Mark a call as dispatched only after it has passed the cancellation
+    // gate. In a parallel batch, queued calls can become cancelled while an
+    // earlier worker is running; those calls must not inflate tool counters or
+    // emit a misleading "started" event.
+    await call.onDispatched?.();
     const executeOnce = async (): Promise<ToolScheduleRawExecutionOutcome> => {
       try {
         return await call.run();
