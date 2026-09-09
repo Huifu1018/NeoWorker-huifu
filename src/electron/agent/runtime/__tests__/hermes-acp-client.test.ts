@@ -65,7 +65,7 @@ describe("Hermes ACP subprocess transport", () => {
   });
   it("rejects a missing executable and permits a subsequent start", async () => {
     const c = new HermesAcpClient(); cleanup.push(() => c.stop());
-    await expect(c.start({...options,command:'/nonexistent/neoworker-hermes-test'})).rejects.toMatchObject({code:'ENOENT'});
+    await expect(c.start({...options,command:'/nonexistent/neoworker-hermes-test'})).rejects.toMatchObject({code:'HERMES_UNAVAILABLE'});
     await c.start(options);
     expect(await c.initialize()).toMatchObject({protocolVersion:1});
   });

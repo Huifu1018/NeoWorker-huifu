@@ -76,7 +76,20 @@ export class HermesAcpClient {
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => { child.off("spawn", ready); child.off("error", failed); };
       const ready = () => { cleanup(); resolve(); };
-      const failed = (error: Error) => { cleanup(); reject(error); };
+      const failed = (error: Error) => {
+        cleanup();
+        // Normalize launcher failures so the executor can distinguish a missing
+        // Hermes installation from a protocol or task failure and apply its
+        // configured fallback policy.
+        const code = (error as NodeJS.ErrnoException).code;
+        reject(new HermesAcpError(
+          code === "ENOENT"
+            ? `Hermes executable not found: ${options.command || "hermes"}`
+            : `Failed to start Hermes ACP: ${error.message}`,
+          code === "ENOENT" ? "HERMES_UNAVAILABLE" : "PROCESS_SPAWN_FAILED",
+          { cause: error.message, errno: code },
+        ));
+      };
       child.once("spawn", ready);
       child.once("error", failed);
     });
