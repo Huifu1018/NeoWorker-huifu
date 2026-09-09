@@ -2,6 +2,8 @@
 
 更新时间：2026-09-09。
 
+阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
+
 ## 当前已验证范围
 
 | 项目 | 结果 | 证据 |
