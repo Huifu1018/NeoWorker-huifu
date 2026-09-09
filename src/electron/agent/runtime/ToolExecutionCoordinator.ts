@@ -87,15 +87,21 @@ export class ToolExecutionCoordinator {
       const errorMessage = String((error as { message?: string })?.message || error || "Tool execution failed");
       const cancelled = context.signal?.aborted === true || /cancel|abort/i.test(errorMessage);
       const timedOut = /timed? ?out|timeout/i.test(errorMessage);
-      const recovery = await context.workspaceRecovery?.({
-        toolName,
-        input,
-        errorMessage: String((error as { message?: string })?.message || error || ""),
-        toolTimeoutMs,
-        stepId: context.stepId,
-        targetPaths: context.targetPaths,
-        followUp: context.followUp,
-      });
+      // Cancellation is a terminal control-flow decision. Do not enter path
+      // recovery after an abort: recovery can perform filesystem probes or
+      // retry a tool, which makes cancellation slow and may repeat a side
+      // effect after the caller has already asked us to stop.
+      const recovery = cancelled
+        ? undefined
+        : await context.workspaceRecovery?.({
+            toolName,
+            input,
+            errorMessage: String((error as { message?: string })?.message || error || ""),
+            toolTimeoutMs,
+            stepId: context.stepId,
+            targetPaths: context.targetPaths,
+            followUp: context.followUp,
+          });
       if (recovery?.recovered) {
         const recoveredResult = recovery.result;
         const recoveredReminder = this.getModelReminder(recoveredResult);

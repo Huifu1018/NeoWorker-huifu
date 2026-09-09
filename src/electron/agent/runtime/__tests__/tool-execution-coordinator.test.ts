@@ -66,4 +66,27 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === expected)?.payload)
       .toMatchObject({ toolCallId: "call-error", error: error.message });
   });
+
+  it("does not start workspace recovery after cancellation", async () => {
+    const events: Any[] = [];
+    const recovery = vi.fn(async () => ({
+      recovered: true,
+      result: { success: true, value: "unexpected-replay" },
+    }));
+    const { coordinator } = coordinatorFor(undefined, new Error("request cancelled"));
+    const controller = new AbortController();
+    controller.abort();
+
+    const output = await coordinator.executeTool(
+      "run_command",
+      { command: "long-running-command" },
+      lifecycleContext(events, { signal: controller.signal, workspaceRecovery: recovery }),
+      "call-cancelled",
+    );
+
+    expect(recovery).not.toHaveBeenCalled();
+    expect(output.envelope.status).toBe("error");
+    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
+      .toMatchObject({ toolCallId: "call-cancelled" });
+  });
 });
