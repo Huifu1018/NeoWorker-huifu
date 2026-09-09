@@ -15,6 +15,7 @@ import {
   isMacOSSandboxAvailable,
   resetMacOSSandboxCache,
   WindowsRestrictedSandbox,
+  createProcessOutputDecoder,
   _testUtils,
 } from "../sandbox-factory";
 
@@ -263,6 +264,13 @@ describe("Windows restricted runner", () => {
     const result = await resultPromise;
     expect(result.stdout).toBe("1234567890\n[Output truncated]");
     expect(result.stdout.match(/Output truncated/g)).toHaveLength(1);
+  });
+
+  it("keeps UTF-8 characters intact when bytes cross output chunks", () => {
+    const decoder = createProcessOutputDecoder("win32");
+    expect(decoder.push(Buffer.from([0xe4]))).toBe("");
+    expect(decoder.push(Buffer.from([0xb8, 0xad]))).toBe("中");
+    expect(decoder.end()).toBe("");
   });
 
   it("rejects workspace paths that resolve through an outside symlink", async () => {

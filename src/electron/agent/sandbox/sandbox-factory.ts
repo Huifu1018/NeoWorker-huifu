@@ -14,6 +14,7 @@ import { Workspace } from "../../../shared/types";
 import { MacOSSandbox } from "./macos-sandbox";
 import { DockerSandbox } from "./docker-sandbox";
 import { spawn, type ChildProcess } from "child_process";
+import { StringDecoder } from "string_decoder";
 import * as os from "os";
 import * as path from "path";
 import { realpathSync } from "fs";
@@ -813,10 +814,11 @@ function spawnDirectProcess(
       terminateWindowsProcessTree(child);
       child.kill();
     }, options.timeout);
-    const append = (target: "stdout" | "stderr", data: Buffer) => {
+    const stdoutDecoder = createProcessOutputDecoder(process.platform);
+    const stderrDecoder = createProcessOutputDecoder(process.platform);
+    const appendValue = (target: "stdout" | "stderr", value: string) => {
       const alreadyTruncated = target === "stdout" ? stdoutTruncated : stderrTruncated;
       if (alreadyTruncated) return;
-      const value = decodeProcessOutput(data);
       const current = target === "stdout" ? stdout : stderr;
       const remaining = options.maxOutputSize - current.length;
       const next = current.length + value.length <= options.maxOutputSize
@@ -829,6 +831,9 @@ function spawnDirectProcess(
       if (target === "stdout") stdout = next;
       else stderr = next;
     };
+    const append = (target: "stdout" | "stderr", data: Buffer) => {
+      appendValue(target, (target === "stdout" ? stdoutDecoder : stderrDecoder).push(data));
+    };
     child.stdout?.on("data", (data: Buffer) => append("stdout", data));
     child.stderr?.on("data", (data: Buffer) => append("stderr", data));
     child.on("error", (error) => {
@@ -837,6 +842,10 @@ function spawnDirectProcess(
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeoutHandle);
+      const stdoutTail = stdoutDecoder.end();
+      const stderrTail = stderrDecoder.end();
+      if (stdoutTail) appendValue("stdout", stdoutTail);
+      if (stderrTail) appendValue("stderr", stderrTail);
       const error = signal ? `Process terminated by signal ${signal}` : undefined;
       resolve({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
     });
@@ -873,6 +882,81 @@ export function decodeProcessOutput(data: Buffer): string {
   } catch {
     return utf8;
   }
+}
+
+/** Decode process output without corrupting UTF-8 sequences split across chunks. */
+export function createProcessOutputDecoder(platform: NodeJS.Platform = process.platform): {
+  push(data: Buffer): string;
+  end(): string;
+} {
+  const utf8 = new StringDecoder("utf8");
+  if (platform !== "win32") return { push: (data) => utf8.write(data), end: () => utf8.end() };
+
+  let mode: "undecided" | "utf8" | "gbk" = "undecided";
+  let pending: Buffer[] = [];
+  const hasIncompleteUtf8Tail = (data: Buffer): boolean => {
+    let continuationBytes = 0;
+    for (let index = data.length - 1; index >= 0 && continuationBytes < 3; index -= 1) {
+      const byte = data[index];
+      if ((byte & 0xc0) !== 0x80) {
+        const expected = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+        return expected > continuationBytes + 1;
+      }
+      continuationBytes += 1;
+    }
+    return false;
+  };
+  const decodeGbkPending = (flush = false): string => {
+    const combined = Buffer.concat(pending);
+    try {
+      const value = new TextDecoder("gbk", { fatal: true }).decode(combined);
+      pending = [];
+      return value;
+    } catch {
+      if (!flush) return "";
+      pending = [];
+      return new TextDecoder("gbk").decode(combined);
+    }
+  };
+  const decide = (data: Buffer): string => {
+    pending.push(data);
+    const combined = Buffer.concat(pending);
+    const text = combined.toString("utf8");
+    if (text.includes("\uFFFD") && !hasIncompleteUtf8Tail(combined)) {
+      mode = "gbk";
+      return decodeGbkPending();
+    }
+    try {
+      // Fatal decoding distinguishes an incomplete UTF-8 sequence from a
+      // Windows code-page byte. Keep incomplete sequences buffered.
+      const valid = new TextDecoder("utf-8", { fatal: true }).decode(combined);
+      mode = "utf8";
+      pending = [];
+      return utf8.write(combined) || valid;
+    } catch {
+      return "";
+    }
+  };
+  return {
+    push(data) {
+      if (mode === "gbk") {
+        pending.push(data);
+        return decodeGbkPending();
+      }
+      if (mode === "utf8") return utf8.write(data);
+      return decide(data);
+    },
+    end() {
+      if (mode === "gbk") return decodeGbkPending(true);
+      if (mode === "utf8") return utf8.end();
+      if (pending.length === 0) return "";
+      const combined = Buffer.concat(pending);
+      pending = [];
+      const text = combined.toString("utf8");
+      if (text.includes("\uFFFD")) return new TextDecoder("gbk").decode(combined);
+      return utf8.end(combined);
+    },
+  };
 }
 
 /**

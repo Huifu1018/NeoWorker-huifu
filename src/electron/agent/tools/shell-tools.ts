@@ -9,7 +9,7 @@ import {
   ShellSessionManager,
   isLikelyInteractiveCommand,
 } from "./shell-session-manager";
-import { createSandbox, decodeProcessOutput } from "../sandbox/sandbox-factory";
+import { createSandbox, createProcessOutputDecoder } from "../sandbox/sandbox-factory";
 import { loadPolicies, type AdminPolicies } from "../../admin/policies";
 import { createLogger } from "../../utils/logger";
 
@@ -1455,6 +1455,8 @@ export class ShellTools {
 
       // Store reference to active process for stdin support
       this.activeProcess = child;
+      const stdoutDecoder = createProcessOutputDecoder(process.platform);
+      const stderrDecoder = createProcessOutputDecoder(process.platform);
 
       // Set timeout
       const timeoutId = setTimeout(() => {
@@ -1478,7 +1480,7 @@ export class ShellTools {
       child.stdout.on("data", (data: Buffer) => {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
-          : decodeProcessOutput(data);
+          : stdoutDecoder.push(data);
         const chunk = appendBoundedOutput("stdout", this.sanitizeCommandOutput(raw));
         if (!chunk) return;
         // Emit live output
@@ -1493,7 +1495,7 @@ export class ShellTools {
       child.stderr.on("data", (data: Buffer) => {
         const raw = isCliAgentCommand
           ? stripScriptControlCodes(data.toString("utf-8"))
-          : decodeProcessOutput(data);
+          : stderrDecoder.push(data);
         const chunk = appendBoundedOutput("stderr", this.sanitizeCommandOutput(raw));
         if (!chunk) return;
         // Emit live output
@@ -1505,6 +1507,16 @@ export class ShellTools {
       });
 
       child.on("close", (code: number | null) => {
+        const stdoutTail = isCliAgentCommand ? "" : stdoutDecoder.end();
+        const stderrTail = isCliAgentCommand ? "" : stderrDecoder.end();
+        if (stdoutTail) {
+          const chunk = appendBoundedOutput("stdout", this.sanitizeCommandOutput(stdoutTail));
+          if (chunk) this.daemon.logEvent(this.taskId, "command_output", { command, type: "stdout", output: chunk });
+        }
+        if (stderrTail) {
+          const chunk = appendBoundedOutput("stderr", this.sanitizeCommandOutput(stderrTail));
+          if (chunk) this.daemon.logEvent(this.taskId, "command_output", { command, type: "stderr", output: chunk });
+        }
         clearTimeout(timeoutId);
         this.activeProcess = null; // Clear active process reference
         // Clear any pending escalation timeouts to prevent killing reused PIDs
