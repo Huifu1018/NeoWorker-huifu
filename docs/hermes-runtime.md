@@ -3,13 +3,13 @@
 NeoWorker has two Hermes integration layers:
 
 - **Hermes Agent provider** sends model requests to a local Hermes OpenAI-compatible Gateway (`http://127.0.0.1:8642/v1`). The normal NeoWorker `SessionRuntime`, `ToolRegistry`, approval policy, sandbox, and Shell executor remain in control.
-- **Hermes ACP session adapter** (`HermesAcpClient` and `HermesRuntimeAdapter`) can start a real `hermes acp` process, persist an ACP session handle, stream `session/update` events, cancel a prompt, and restore a session. It is an integration seam and test harness while tool mediation is being completed.
+- **Hermes ACP session adapter** (`HermesAcpClient` and `HermesRuntimeAdapter`) can start a real `hermes acp` process, persist an ACP session handle, stream `session/update` events, cancel a prompt, and restore a session. It is available for explicitly selected external-runtime tasks.
 
-The ACP adapter is not enabled for ordinary NeoWorker tasks yet. Hermes owns its tool execution; the integration must configure and verify its execution backend before production use. ACP permission callbacks do not cover every operation and are not a sandbox. A pinned-source adapter remains a viable implementation path.
+The ACP adapter is opt-in through the task's external runtime configuration; ordinary NeoWorker tasks continue to use the native execution path. Hermes owns tool execution for ACP tasks, while NeoWorker mediates permission requests and records runtime events. ACP permission callbacks do not cover every operation and are not a sandbox. A pinned-source adapter remains a viable implementation path.
 
 `HermesRuntimeOptions.onPermissionRequest` receives the operation details, offered options, and an AbortSignal. Return the selected option ID or null. `HermesPermissionBridge` validates the active session and options and dismisses on timeout, cancellation or handler failure. Generic `onRequest` callbacks cannot approve permission requests. The host must wire this handler to its task approval service and close pending UI when the signal aborts. This wiring is not implemented yet.
 
-The daemon now exposes `createHermesPermissionHandler(taskId)`, the intended injection point for an ACP task. It delegates to the existing `requestApproval` path, keeping workspace rules, persisted approval actions, and UI events centralized. Production task selection still needs to pass this handler when constructing the ACP adapter.
+The daemon exposes `createHermesPermissionHandler(taskId)`, which delegates to the existing `requestApproval` path and keeps workspace rules, persisted approval actions, and UI events centralized. The production executor passes this handler when constructing the ACP adapter.
 
 For current evidence, outstanding requirements and package freshness, see [hermes-test-report.md](hermes-test-report.md).
 
