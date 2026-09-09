@@ -39152,6 +39152,12 @@ Return ONLY a JSON object:
                   : undefined,
             );
 
+            // A tool may already have changed the workspace before the next
+            // model turn starts. Persist the paired assistant/tool transcript
+            // now so a process restart can resume from the completed side
+            // effect instead of asking the model to replay it.
+            this.saveConversationSnapshot();
+
             if (simpleImageGenerationStopAfterTool) {
               if (this.simpleImageGenerationCompleted) {
                 step.status = "completed";
