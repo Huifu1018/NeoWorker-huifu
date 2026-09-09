@@ -11,6 +11,12 @@ The ACP adapter is opt-in through the task's external runtime configuration; ord
 
 The daemon exposes `createHermesPermissionHandler(taskId)`, which delegates to the existing `requestApproval` path and keeps workspace rules, persisted approval actions, and UI events centralized. The production executor passes this handler when constructing the ACP adapter. Permission requests are therefore routed through NeoWorker's approval service rather than a generic callback. ACP-native tool execution is not yet equivalent to the NeoWorker Tool Host: filesystem, Shell, sandbox and task-log ownership still require a host bridge before the full plan gate is met.
 
+## ACP Tool Host boundary
+
+Hermes Agent v0.18.0's ACP `session/new` contract accepts `mcpServers`, but its server creates each session with the built-in `hermes-acp` toolset. That toolset includes native `terminal`, `read_file`, `write_file`, `patch`, and `process` tools. The current ACP contract has no request field for replacing that toolset or forwarding native tool calls to the client. Registering a NeoWorker MCP server therefore adds tools but does not, by itself, transfer ownership of those side effects.
+
+Until Hermes exposes a supported toolset override or client-side tool-call callback, NeoWorker keeps ACP Hermes tasks explicitly opt-in and records this boundary as an open integration item. The safe host-owned alternative is the Hermes OpenAI-compatible Gateway provider, where NeoWorker's existing SessionRuntime and ToolRegistry remain the model's tool host.
+
 Tool results sent back to the model are capped at 200,000 characters. The full structured result remains available to task logs and evidence, while the model receives a valid truncated payload with an explicit marker.
 
 For current evidence, outstanding requirements and package freshness, see [hermes-test-report.md](hermes-test-report.md).
