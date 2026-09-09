@@ -177,6 +177,35 @@ jobs:
         if: steps.changes.outputs.agent != 'true'
         run: echo "No agent-path changes detected. Skipping targeted eval gate."
 
+  windows-agent-runtime:
+    name: Windows Agent Runtime
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build Electron main process
+        run: npm run build:electron
+
+      - name: Run Windows execution-chain tests
+        run: >-
+          npx vitest run
+          src/electron/agent/sandbox/__tests__/sandbox-factory.test.ts
+          src/electron/agent/sandbox/__tests__/windows-package-manager-launch.test.ts
+          src/electron/agent/tools/__tests__/shell-tools.test.ts
+          src/electron/agent/runtime/__tests__/tool-host-protocol.test.ts
+          src/electron/agent/runtime/__tests__/ToolScheduler.test.ts
+          src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
