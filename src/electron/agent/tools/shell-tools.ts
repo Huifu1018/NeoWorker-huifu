@@ -317,7 +317,22 @@ function resolveShellForCommandExecution(): string {
 }
 
 function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefined): string {
-  if (platform === "win32") return envPath || "";
+  if (platform === "win32") {
+    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    const delimiter = ";";
+    const inheritedPaths = String(envPath || "")
+      .split(delimiter)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const systemPaths = [
+      path.win32.join(systemRoot, "System32"),
+      path.win32.join(systemRoot, "System32", "Wbem"),
+      path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
+      "C:\\Program Files\\PowerShell\\7",
+      path.win32.join(process.env.APPDATA || "", "npm"),
+    ].filter(Boolean);
+    return Array.from(new Set([...systemPaths, ...inheritedPaths])).join(delimiter);
+  }
 
   const basePaths = [
     ...(platform === "darwin" ? ["/opt/homebrew/bin", "/opt/homebrew/sbin"] : []),

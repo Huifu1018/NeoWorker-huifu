@@ -339,6 +339,17 @@ describe("ShellTools Integration", () => {
       ]);
       expect(built.indexOf("/opt/homebrew/bin")).toBe(built.lastIndexOf("/opt/homebrew/bin"));
     });
+
+    it("keeps Windows system tools available when the inherited PATH is incomplete", () => {
+      const built = buildSafeShellPath("win32", "C:\\workspace\\node_modules\\.bin");
+      expect(built.split(";")).toEqual(expect.arrayContaining([
+        "C:\\Windows\\System32",
+        "C:\\Windows\\System32\\Wbem",
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+        "C:\\Program Files\\PowerShell\\7",
+        "C:\\workspace\\node_modules\\.bin",
+      ]));
+    });
   });
 
   describe("Windows shell argument routing", () => {
