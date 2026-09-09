@@ -20,6 +20,7 @@ import {
   normalizeSystemBlocks,
 } from "./prompt-cache";
 import { createLogger } from "../../utils/logger";
+import { assertNormalizedTurnTranscript } from "../runtime/turn-transcript-normalizer";
 
 /**
  * Anthropic API provider implementation
@@ -59,6 +60,16 @@ export class AnthropicProvider implements LLMProvider {
   async createMessage(request: LLMRequest): Promise<LLMResponse> {
     const tools = request.tools ? this.convertTools(request.tools) : undefined;
     const model = normalizeAnthropicModelId(request.model);
+    // Snapshots can contain an interrupted tool round. Normalize once before
+    // every native Anthropic request so orphaned or incomplete tool messages
+    // cannot make the provider reject an otherwise resumable task.
+    const normalizedRequest: LLMRequest = {
+      ...request,
+      messages: assertNormalizedTurnTranscript(
+        request.messages,
+        (message) => logger.warn(message),
+      ),
+    };
     const requestedPromptCache =
       request.promptCache?.mode === "disabled"
         ? undefined
@@ -73,7 +84,7 @@ export class AnthropicProvider implements LLMProvider {
       logger.debug(`Calling API with model: ${model}`);
 
       const response = await this.createWithPromptCache(
-        request,
+        normalizedRequest,
         effectivePromptCache,
         tools,
       );
@@ -94,7 +105,7 @@ export class AnthropicProvider implements LLMProvider {
         );
 
         const fallbackResponse = await this.createWithPromptCache(
-          request,
+          normalizedRequest,
           { ...effectivePromptCache, mode: "anthropic_explicit" },
           tools,
         );
@@ -115,7 +126,7 @@ export class AnthropicProvider implements LLMProvider {
           },
         );
         const streamedResponse = await this.createWithStreaming(
-          request,
+          normalizedRequest,
           effectivePromptCache,
           tools,
         );

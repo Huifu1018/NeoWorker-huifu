@@ -100,6 +100,59 @@ describe("AnthropicProvider", () => {
     );
   });
 
+  it("sanitizes interrupted tool rounds restored from a snapshot", async () => {
+    const provider = new AnthropicProvider({
+      type: "anthropic",
+      model: "claude-sonnet-4-6",
+      anthropicApiKey: "sk-ant-api-test",
+    });
+
+    await provider.createMessage({
+      ...makeRequest(),
+      messages: [
+        {
+          role: "user",
+          content: "Continue the interrupted task",
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call-interrupted",
+              name: "run_command",
+              input: { command: "echo hello" },
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "stale-call",
+              content: "stale result",
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: "Resuming from the checkpoint.",
+        },
+      ],
+    });
+
+    expect(anthropicCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messages: [
+          { role: "user", content: "Continue the interrupted task" },
+          { role: "assistant", content: "Resuming from the checkpoint." },
+        ],
+      }),
+      undefined,
+    );
+  });
+
   it("tests the configured Claude model instead of the retired Haiku 3.5 health check", async () => {
     const provider = new AnthropicProvider({
       type: "anthropic",
