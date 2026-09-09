@@ -8,6 +8,7 @@ describe("AgentDaemon.handleTransientTaskFailure recovery", () => {
   });
 
   afterEach(() => {
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -36,6 +37,7 @@ describe("AgentDaemon.handleTransientTaskFailure recovery", () => {
       releaseComputerUseSession: vi.fn(),
       isTransientRetryErrorMessage: () => true,
     } as Any;
+    Object.setPrototypeOf(daemonLike, AgentDaemon.prototype);
 
     expect(
       AgentDaemon.prototype.handleTransientTaskFailure.call(
@@ -99,6 +101,7 @@ describe("AgentDaemon.handleTransientTaskFailure recovery", () => {
         /^Transient provider error\.\s*Retry\s+\d+\/\d+\s+in\s+\d+s\./i.test(message.trim()),
     } as Any;
 
+    Object.setPrototypeOf(daemonLike, AgentDaemon.prototype);
     const scheduled = AgentDaemon.prototype.handleTransientTaskFailure.call(
       daemonLike,
       taskId,
@@ -158,6 +161,7 @@ describe("AgentDaemon.handleTransientTaskFailure recovery", () => {
         /^Transient provider error\.\s*Retry\s+\d+\/\d+\s+in\s+\d+s\./i.test(message.trim()),
     } as Any;
 
+    Object.setPrototypeOf(daemonLike, AgentDaemon.prototype);
     const scheduled = AgentDaemon.prototype.handleTransientTaskFailure.call(
       daemonLike,
       taskId,

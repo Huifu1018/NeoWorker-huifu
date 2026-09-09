@@ -1612,7 +1612,8 @@ export class AgentDaemon extends EventEmitter {
       );
       for (const task of staleTransientRetryTasks) {
         this.taskRepo.update(task.id, { status: "queued" });
-        this.logEvent(task.id, "task_queued", {
+        // Preserve the original task_queued event's retry deadline and count.
+        this.logEvent(task.id, "log", {
           reason: "transient_retry_recovered",
           message:
             "Recovered stale transient-retry state after restart. Task re-queued automatically.",
@@ -1620,8 +1621,41 @@ export class AgentDaemon extends EventEmitter {
       }
     }
 
-    // Find queued tasks from database for queue recovery
+    // Find queued tasks from database for queue recovery. A queued task may be
+    // waiting for a persisted transient-retry backoff; keep it out of the
+    // immediate queue and restore its timer below.
     const queuedTasks = this.taskRepo.findByStatus("queued");
+    const recoveredRetryTasks: Array<{ task: Task; retryAt: number }> = [];
+    const readyQueuedTasks: Task[] = [];
+    for (const task of queuedTasks) {
+      if (!this.isTransientRetryErrorMessage(task.error)) {
+        readyQueuedTasks.push(task);
+        continue;
+      }
+      const retryEvent = this.getTaskEvents(task.id, {
+        // A newer lifecycle event supersedes an old retry schedule, including
+        // a manual start or a fresh follow-up after a completed run.
+        types: ["task_queued", "task_dequeued", "task_paused", "task_resumed",
+          "task_completed", "task_cancelled", "task_status"],
+        limit: 1,
+      }).at(-1);
+      const payload = retryEvent?.payload as Any;
+      if (
+        retryEvent && this.isLegacyEventType(retryEvent, "task_queued") &&
+        payload?.reason === "transient_retry" &&
+        typeof payload.retryAt === "number" &&
+        Number.isFinite(payload.retryAt) &&
+        Number.isSafeInteger(payload.retryCount) &&
+        payload.retryCount > 0 && payload.retryCount <= this.maxTaskRetries
+      ) {
+        this.retryCounts.set(task.id, payload.retryCount);
+        if (payload.retryAt > Date.now()) {
+          recoveredRetryTasks.push({ task, retryAt: payload.retryAt });
+          continue;
+        }
+      }
+      readyQueuedTasks.push(task);
+    }
 
     // Find tasks that were gracefully interrupted (app shutdown while running).
     // These have a conversation snapshot saved and can be resumed.
@@ -1700,7 +1734,14 @@ export class AgentDaemon extends EventEmitter {
     }
 
     // Initialize queue with queued tasks
-    await this.queueManager.initialize(queuedTasks, []);
+    await this.queueManager.initialize(readyQueuedTasks, []);
+
+    for (const recovered of recoveredRetryTasks) {
+      this.schedulePendingTransientRetry(
+        recovered.task.id,
+        Math.max(0, recovered.retryAt - Date.now()),
+      );
+    }
 
     // Resume all resumable tasks after a short delay to let the rest of the app
     // (IPC handlers, tray, cron, UI) finish initializing first.
@@ -4902,6 +4943,9 @@ export class AgentDaemon extends EventEmitter {
     reason: string,
     delayMs?: number,
   ): boolean {
+    // Duplicate error delivery while a retry is waiting does not consume a
+    // second attempt or change its persisted deadline.
+    if (this.pendingRetries.has(taskId)) return true;
     const currentCount = this.retryCounts.get(taskId) ?? 0;
     const nextCount = currentCount + 1;
     if (nextCount > this.maxTaskRetries) {
@@ -4918,10 +4962,6 @@ export class AgentDaemon extends EventEmitter {
 
     this.retryCounts.set(taskId, nextCount);
 
-    if (this.pendingRetries.has(taskId)) {
-      return true;
-    }
-
     // Mark as queued with a helpful message
     const retrySeconds = Math.ceil(effectiveDelayMs / 1000);
     const queuedError = `Transient provider error. Retry ${nextCount}/${this.maxTaskRetries} in ${retrySeconds}s.`;
@@ -4932,6 +4972,9 @@ export class AgentDaemon extends EventEmitter {
 
     this.logEvent(taskId, "task_queued", {
       reason: "transient_retry",
+      retryCount: nextCount,
+      delayMs: effectiveDelayMs,
+      retryAt: Date.now() + effectiveDelayMs,
       message: `⏳ Temporary provider error. Retrying ${nextCount}/${this.maxTaskRetries} in ${retrySeconds}s.`,
     });
 
@@ -4944,6 +4987,12 @@ export class AgentDaemon extends EventEmitter {
     this.activeTasks.delete(taskId);
     this.finishQueueSlot(taskId);
 
+    this.schedulePendingTransientRetry(taskId, effectiveDelayMs);
+    return true;
+  }
+
+  private schedulePendingTransientRetry(taskId: string, delayMs: number): void {
+    if (this.pendingRetries.has(taskId)) return;
     const handle = setTimeout(async () => {
       this.pendingRetries.delete(taskId);
       const task = this.taskRepo.findById(taskId);
@@ -4951,6 +5000,9 @@ export class AgentDaemon extends EventEmitter {
         this.retryCounts.delete(taskId);
         return;
       }
+      // Never rewrite the state of a task that already has a live owner.
+      if (this.activeTasks.has(taskId) || this.queueManager.isRunning(taskId) ||
+          this.queueManager.isQueued(taskId)) return;
       if (
         task.status === "executing" &&
         this.isTransientRetryErrorMessage(task.error)
@@ -4963,18 +5015,14 @@ export class AgentDaemon extends EventEmitter {
       const refreshedTask = this.taskRepo.findById(taskId);
       const taskToStart = refreshedTask || task;
       if (taskToStart.status !== "queued") return;
-      if (
-        this.activeTasks.has(taskId) ||
-        this.queueManager.isRunning(taskId) ||
-        this.queueManager.isQueued(taskId)
-      ) {
-        return;
+      try {
+        await this.startTask(taskToStart);
+      } catch (error) {
+        this.failTask(taskId, `Failed to start scheduled retry: ${error instanceof Error ? error.message : String(error)}`);
       }
-      await this.startTask(taskToStart);
-    }, effectiveDelayMs);
+    }, delayMs);
 
     this.pendingRetries.set(taskId, handle);
-    return true;
   }
 
   getTransientRetryCount(taskId: string): number {
@@ -13009,6 +13057,11 @@ export class AgentDaemon extends EventEmitter {
   async shutdown(): Promise<void> {
     log.info("Shutting down agent daemon...");
     this.orchestrationGraphEngine.stop();
+
+    // Deadlines remain persisted in task_queued events for the next daemon.
+    // In-memory timers must not start work while this daemon is shutting down.
+    for (const handle of this.pendingRetries.values()) clearTimeout(handle);
+    this.pendingRetries.clear();
 
     // Clear the cleanup interval
     if (this.cleanupIntervalHandle) {
