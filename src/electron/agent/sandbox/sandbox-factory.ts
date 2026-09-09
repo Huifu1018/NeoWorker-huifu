@@ -16,6 +16,7 @@ import { DockerSandbox } from "./docker-sandbox";
 import { spawn, type ChildProcess } from "child_process";
 import * as os from "os";
 import * as path from "path";
+import { realpathSync } from "fs";
 import { promises as fs } from "fs";
 import { createSecureTempFile } from "./security-utils";
 
@@ -259,8 +260,7 @@ export class WindowsRestrictedSandbox extends NoSandbox {
     const cwd = options.cwd || this.workspacePath();
     const resolvedCwd = path.resolve(cwd);
     const workspaceRoot = path.resolve(this.workspacePath());
-    const relativeCwd = path.relative(workspaceRoot, resolvedCwd);
-    if (relativeCwd.startsWith("..") || path.isAbsolute(relativeCwd)) {
+    if (!isPathWithinWorkspace(workspaceRoot, resolvedCwd)) {
       return {
         exitCode: 1,
         stdout: "",
@@ -397,6 +397,30 @@ const WINDOWS_CODE_EXECUTION_FLAGS = new Set([
 
 function normalizeWindowsExecutable(value: string): string {
   return value.replace(/^['"]|['"]$/g, "");
+}
+
+/** Resolve an existing ancestor when a new output path does not exist yet. */
+function resolveCanonicalPath(value: string): string {
+  const original = path.resolve(value);
+  let candidate = original;
+  while (true) {
+    try {
+      const canonical = realpathSync.native(candidate);
+      const suffix = path.relative(candidate, original);
+      return suffix ? path.resolve(canonical, suffix) : canonical;
+    } catch {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return original;
+      candidate = parent;
+    }
+  }
+}
+
+function isPathWithinWorkspace(workspaceRoot: string, candidate: string): boolean {
+  const root = resolveCanonicalPath(workspaceRoot);
+  const resolved = resolveCanonicalPath(candidate);
+  const relative = path.relative(root, resolved);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function tokenizeDirectWindowsCommand(command: string): string[] | null {
@@ -537,8 +561,7 @@ async function executeWindowsRestrictedSequence(
         };
       } else {
         const nextCwd = path.resolve(cwd, tokens[0]);
-        const relative = path.relative(sandbox.getWorkspacePath(), nextCwd);
-        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        if (!isPathWithinWorkspace(sandbox.getWorkspacePath(), nextCwd)) {
           previous = {
             exitCode: 1,
             stdout: "",
@@ -573,8 +596,7 @@ async function executeWindowsRestrictedSequence(
         previous = await sandbox.execute(redirect.command, [], { ...options, cwd });
         if (previous.exitCode === 0 && redirect.target) {
           const target = path.resolve(cwd, redirect.target);
-          const relative = path.relative(sandbox.getWorkspacePath(), target);
-          if (relative.startsWith("..") || path.isAbsolute(relative)) {
+          if (!isPathWithinWorkspace(sandbox.getWorkspacePath(), target)) {
             previous = {
               exitCode: 1,
               stdout: "",
@@ -646,8 +668,7 @@ async function executeWindowsWorkspaceBuiltin(
   const fail = (message: string) => result("", message, 1);
   const safePath = (value: string): string | null => {
     const resolved = path.resolve(cwd, value || ".");
-    const relative = path.relative(workspaceRoot, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    if (!isPathWithinWorkspace(workspaceRoot, resolved)) return null;
     return resolved;
   };
   const isFlag = (arg: string): boolean =>

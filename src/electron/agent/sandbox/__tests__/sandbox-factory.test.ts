@@ -1,6 +1,9 @@
 import { EventEmitter } from "events";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ChildProcess } from "child_process";
+import { mkdtemp, rm, symlink, writeFile } from "fs/promises";
+import * as os from "os";
+import * as path from "path";
 
 const spawnMock = vi.hoisted(() => vi.fn());
 
@@ -221,6 +224,30 @@ describe("Windows restricted runner", () => {
       ["install", "--ignore-scripts"],
       expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
     );
+  });
+
+  it("rejects workspace paths that resolve through an outside symlink", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "neoworker-win-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "neoworker-outside-"));
+    try {
+      await writeFile(path.join(outside, "secret.txt"), "secret\n", "utf8");
+      await symlink(outside, path.join(root, "link"), "dir");
+      const sandbox = new WindowsRestrictedSandbox({
+        id: "workspace",
+        name: "Workspace",
+        path: root,
+        createdAt: Date.now(),
+        permissions: { read: true, write: true, delete: true, network: false, shell: true },
+      });
+
+      await expect(sandbox.execute("cat", ["link/secret.txt"], { cwd: root })).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: "Path escapes the active workspace.",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("passes only explicitly requested environment variables", async () => {
