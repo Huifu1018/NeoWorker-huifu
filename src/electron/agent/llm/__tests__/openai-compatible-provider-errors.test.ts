@@ -49,6 +49,25 @@ describe("OpenAICompatibleProvider error metadata", () => {
     );
   });
 
+  it("fails closed for an external Hermes Agent endpoint", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new OpenAICompatibleProvider({
+      type: "hermes",
+      providerName: "Hermes Agent",
+      apiKey: "",
+      baseUrl: "http://127.0.0.1:8642/v1",
+      defaultModel: "hermes-agent",
+      externalAgentRuntime: true,
+    });
+
+    await expect(provider.createMessage(createRequest())).rejects.toMatchObject({
+      code: "EXTERNAL_AGENT_RUNTIME",
+      retryable: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("bounds model discovery when a local gateway never responds", async () => {
     vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {

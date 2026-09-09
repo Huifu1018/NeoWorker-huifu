@@ -135,6 +135,11 @@ export interface OpenAICompatibleProviderOptions {
   extraHeaders?: Record<string, string>;
   /** Timeout for connection tests and model discovery requests. */
   auxiliaryRequestTimeoutMs?: number;
+  /**
+   * This endpoint owns its own agent loop and local tools. Reject native
+   * NeoWorker turns instead of silently handing side effects to the endpoint.
+   */
+  externalAgentRuntime?: boolean;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -148,6 +153,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private supportsImagesOverride?: boolean;
   private extraHeaders?: Record<string, string>;
   private auxiliaryRequestTimeoutMs: number;
+  private externalAgentRuntime: boolean;
 
   constructor(options: OpenAICompatibleProviderOptions) {
     this.type = options.type;
@@ -163,6 +169,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       (options.auxiliaryRequestTimeoutMs as number) > 0
       ? Math.floor(options.auxiliaryRequestTimeoutMs as number)
       : DEFAULT_AUX_REQUEST_TIMEOUT_MS;
+    this.externalAgentRuntime = options.externalAgentRuntime === true;
   }
 
   private async withAuxiliaryTimeout<T>(
@@ -437,6 +444,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
     );
 
     try {
+      if (this.externalAgentRuntime) {
+        throw new OpenAICompatibleProviderError(
+          `${this.providerName} is an external Agent Runtime and cannot be used as NeoWorker's model-only endpoint. Select Hermes Model Proxy or use the Hermes ACP runtime.`,
+          {
+            providerName: this.providerName,
+            code: "EXTERNAL_AGENT_RUNTIME",
+            retryable: false,
+          },
+        );
+      }
       const tools = request.tools
         ? toOpenAICompatibleTools(request.tools, this.getToolOptions(model))
         : undefined;

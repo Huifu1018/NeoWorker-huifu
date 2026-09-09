@@ -550,6 +550,7 @@ function createCustomProvider(
       baseUrl,
       defaultModel: model,
       supportsImages: config.providerSupportsImages,
+      externalAgentRuntime: resolvedType === "hermes",
     });
   }
 
