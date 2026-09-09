@@ -1315,10 +1315,10 @@ export class ShellTools {
     // /usr/local/codex-backup or variables that contain the word.
     const isCliAgentCommand = /(?:^|[;&|])\s*(?:codex|claude)\b/.test(command);
 
+    const requestedEnv = options?.env || {};
     const safeEnv: Record<string, string> =
       process.platform === "win32"
         ? {
-            PATH: buildSafeShellPath(process.platform, process.env.PATH),
             USERPROFILE: process.env.USERPROFILE || "",
             USERNAME: process.env.USERNAME || "",
             HOMEDRIVE: process.env.HOMEDRIVE || "C:",
@@ -1327,18 +1327,21 @@ export class ShellTools {
             TMP: process.env.TMP || process.env.TEMP || "C:\\Windows\\Temp",
             SystemRoot: process.env.SystemRoot || "C:\\Windows",
             COMSPEC: process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
-            ...options?.env,
+            ...requestedEnv,
+            // Keep Windows system and PowerShell directories available even
+            // when a caller supplies a task-specific PATH.
+            PATH: buildSafeShellPath(process.platform, requestedEnv.PATH || process.env.PATH),
           }
         : {
             // Essential system variables only (Unix/macOS)
-            PATH: buildSafeShellPath(process.platform, process.env.PATH),
             HOME: process.env.HOME || "",
             USER: process.env.USER || "",
             SHELL: resolvedShell,
             LANG: process.env.LANG || "en_US.UTF-8",
             TERM: process.env.TERM || "xterm-256color",
             TMPDIR: process.env.TMPDIR || "/tmp",
-            ...options?.env,
+            ...requestedEnv,
+            PATH: buildSafeShellPath(process.platform, requestedEnv.PATH || process.env.PATH),
           };
 
     // Forward auth keys and runtime config for CLI agent commands.
