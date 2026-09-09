@@ -131,6 +131,7 @@ import {
   type HermesRuntimeOptions,
   type HermesSessionCheckpoint,
 } from "./runtime/hermes-runtime-adapter";
+import { HermesAcpError } from "./runtime/hermes-acp-client";
 import {
   buildWorkerRolePrompt,
   resolveWorkerRoleKind,
@@ -30883,7 +30884,11 @@ You are continuing a previous conversation. The context from the previous conver
           }
           return;
         } catch (error) {
-          if (error instanceof AcpxRuntimeUnavailableError) {
+          if (
+            error instanceof AcpxRuntimeUnavailableError ||
+            (error instanceof HermesAcpError &&
+              ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
+          ) {
             const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
             if (this.getAcpxExternalRuntimeConfig()?.agent === "claude") {
               throw new Error(
@@ -42888,7 +42893,11 @@ Return ONLY a JSON object:
         );
         return;
       } catch (error) {
-        if (error instanceof AcpxRuntimeUnavailableError) {
+        if (
+          error instanceof AcpxRuntimeUnavailableError ||
+          (error instanceof HermesAcpError &&
+            ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
+        ) {
           const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
           if (this.getAcpxExternalRuntimeConfig()?.agent === "claude") {
             throw new Error(
