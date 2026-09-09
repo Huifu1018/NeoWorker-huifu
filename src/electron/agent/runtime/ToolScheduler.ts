@@ -6,6 +6,7 @@ import {
   type RuntimeToolSchedulerSpec,
   type ToolExecutionScopeKey,
 } from "./runtime-tool-scheduler-spec";
+import { stableJsonStringify } from "../../utils/json-utils";
 
 export interface SchedulableToolCall {
   index: number;
@@ -102,6 +103,7 @@ export class ToolScheduler {
     const toolResultSlots = new Map<number, LLMToolResult>();
     const reports: ToolScheduleCallReport[] = [];
     const batches: ScheduledToolBatch[] = [];
+    const readResultCache = new Map<string, Promise<ToolScheduleRawExecutionOutcome>>();
 
     let cursor = 0;
     while (cursor < entries.length) {
@@ -149,8 +151,8 @@ export class ToolScheduler {
 
       const rawOutcomes =
         batch.mode === "parallel"
-          ? await this.runParallelBatch(batch, params.maxParallel, params.shouldContinue)
-          : await this.runSerialBatch(batch, params.shouldContinue);
+          ? await this.runParallelBatch(batch, params.maxParallel, params.shouldContinue, readResultCache)
+          : await this.runSerialBatch(batch, params.shouldContinue, readResultCache);
 
       for (let index = 0; index < batch.calls.length; index += 1) {
         const call = batch.calls[index]!;
@@ -270,10 +272,11 @@ export class ToolScheduler {
   private async runSerialBatch(
     batch: ScheduledToolBatch,
     shouldContinue?: () => boolean,
+    readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
   ): Promise<ToolScheduleRawExecutionOutcome[]> {
     const outcomes: ToolScheduleRawExecutionOutcome[] = [];
     for (const call of batch.calls) {
-      outcomes.push(await this.runCall(call, shouldContinue));
+      outcomes.push(await this.runCall(call, shouldContinue, readResultCache));
     }
     return outcomes;
   }
@@ -282,6 +285,7 @@ export class ToolScheduler {
     batch: ScheduledToolBatch,
     maxParallel = batch.calls.length,
     shouldContinue?: () => boolean,
+    readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
   ): Promise<ToolScheduleRawExecutionOutcome[]> {
     const outcomes = new Array<ToolScheduleRawExecutionOutcome>(batch.calls.length);
     const concurrency = Math.min(
@@ -300,6 +304,7 @@ export class ToolScheduler {
         outcomes[nextIndex] = await this.runCall(
           batch.calls[nextIndex]!,
           shouldContinue,
+          readResultCache,
         );
       }
     };
@@ -311,6 +316,7 @@ export class ToolScheduler {
   private async runCall(
     call: PreparedSchedulableToolCall,
     shouldContinue?: () => boolean,
+    readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
   ): Promise<ToolScheduleRawExecutionOutcome> {
     if (shouldContinue && !shouldContinue()) {
       return {
@@ -320,15 +326,47 @@ export class ToolScheduler {
         },
       };
     }
+    const executeOnce = async (): Promise<ToolScheduleRawExecutionOutcome> => {
+      try {
+        return await call.run();
+      } catch (error) {
+        return {
+          error,
+          metadata: {
+            uncaught: true,
+          },
+        };
+      }
+    };
+    const cacheKey = this.getReadCacheKey(call);
+    if (!cacheKey || !readResultCache) return executeOnce();
+    const cached = readResultCache.get(cacheKey);
+    if (cached) {
+      const outcome = await cached;
+      if (!outcome.error && outcome.result?.success !== false) {
+        return {
+          ...outcome,
+          metadata: { cacheHit: true },
+        };
+      }
+      return executeOnce();
+    }
+    const pending = executeOnce();
+    readResultCache.set(cacheKey, pending);
+    const outcome = await pending;
+    if (outcome.error || outcome.result?.success === false) {
+      readResultCache.delete(cacheKey);
+    }
+    return outcome;
+  }
+
+  private getReadCacheKey(call: PreparedSchedulableToolCall): string | null {
+    if (call.spec.concurrencyClass !== "read_parallel" || !call.spec.idempotent) return null;
     try {
-      return await call.run();
-    } catch (error) {
-      return {
-        error,
-        metadata: {
-          uncaught: true,
-        },
-      };
+      const serialized = stableJsonStringify([call.toolName, call.input], { sortKeys: true, maxOutputChars: 0 });
+      return serialized.length <= 200_000 ? serialized : null;
+    } catch {
+      return null;
     }
   }
 }

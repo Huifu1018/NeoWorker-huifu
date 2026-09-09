@@ -19,6 +19,7 @@
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
 | Windows x64 安装包 | 延后 | 需要 Windows runner 和安装后 smoke；当前不把旧构建结果当作本轮交付证据 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
+| 只读工具重复调用 | 通过专项验证 | 同一批次内对规范化输入的 `read_parallel + idempotent` 调用复用成功结果；失败、写入和 Shell 调用不缓存 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 已接通；checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | NeoWorker Tool Host 协议 | 通过专项测试 | `neoworker_tool_host_v1` 固定 requestId/toolCallId/schemaVersion/status/result/error；模型分派的原生工具调用统一经过审批、沙箱、超时、日志和结果边界；重复 toolCallId 不重复执行副作用 |

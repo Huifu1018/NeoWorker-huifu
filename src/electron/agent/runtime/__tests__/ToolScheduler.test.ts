@@ -161,6 +161,41 @@ describe("ToolScheduler", () => {
     expect(effectOrder).toEqual(["read_file", "read_file"]);
   });
 
+  it("reuses one successful result for duplicate idempotent reads", async () => {
+    const scheduler = new ToolScheduler();
+    const runSpy = vi.fn(async () => ({ result: { value: "same" }, resultJson: "same" }));
+
+    const outcome = await scheduler.executeBatch({
+      calls: [
+        { index: 0, toolUse: { type: "tool_use", id: "1", name: "read_file", input: { path: "a.txt" } } },
+        { index: 1, toolUse: { type: "tool_use", id: "2", name: "read_file", input: { path: "a.txt" } } },
+      ],
+      maxParallel: 2,
+      prepareCall: async (call) => ({
+        status: "scheduled",
+        call: {
+          ...call,
+          toolName: call.toolUse.name,
+          input: call.toolUse.input,
+          spec: { concurrencyClass: "read_parallel", readOnly: true, idempotent: true },
+          run: runSpy,
+          finalize: async (rawOutcome) => ({
+            toolResult: {
+              type: "tool_result",
+              tool_use_id: call.toolUse.id,
+              content: String(rawOutcome.resultJson || ""),
+            },
+            metadata: rawOutcome.metadata,
+          }),
+        },
+      }),
+    });
+
+    expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(outcome.toolResults.map((result) => result.tool_use_id)).toEqual(["1", "2"]);
+    expect(outcome.callReports[1]?.metadata).toEqual({ cacheHit: true });
+  });
+
   it("marks queued calls cancelled instead of launching them after cancellation", async () => {
     const scheduler = new ToolScheduler();
     let keepRunning = true;
