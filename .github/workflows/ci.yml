@@ -204,6 +204,7 @@ jobs:
           src/electron/agent/tools/__tests__/shell-tools.test.ts
           src/electron/agent/runtime/__tests__/tool-host-protocol.test.ts
           src/electron/agent/runtime/__tests__/ToolScheduler.test.ts
+          src/electron/agent/runtime/__tests__/hermes-fault-injection.test.ts
           src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
 
   build:
