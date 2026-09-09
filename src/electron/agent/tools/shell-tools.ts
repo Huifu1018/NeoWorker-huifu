@@ -290,19 +290,7 @@ function isDirectApplyPatchInvocation(command: string, depth = 0): boolean {
 
 function resolveShellForCommandExecution(): string {
   if (process.platform === "win32") {
-    // Prefer PowerShell 7+ (pwsh), then Windows PowerShell, then cmd.exe
-    const pwshPath = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
-    if (existsSync(pwshPath)) return pwshPath;
-    const systemRoot = process.env.SystemRoot || "C:\\Windows";
-    const powershellPath = path.join(
-      systemRoot,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    if (existsSync(powershellPath)) return powershellPath;
-    return process.env.COMSPEC || "cmd.exe";
+    return resolveWindowsShellExecutable(process.env, existsSync);
   }
 
   const envShell = process.env.SHELL;
@@ -314,6 +302,34 @@ function resolveShellForCommandExecution(): string {
 
   // Last resort: fall back to whatever is set (even if it doesn't exist).
   return envShell || "/bin/sh";
+}
+
+/**
+ * Probe Windows interpreters before spawning. Packaged Electron processes can
+ * have a reduced PATH, so fixed system locations are checked first and then
+ * each PATH entry is probed explicitly. The caller can inject a probe in
+ * tests without changing the production selection order.
+ */
+export function resolveWindowsShellExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  probe: (filePath: string) => boolean = existsSync,
+): string {
+  const systemRoot = env.SystemRoot || "C:\\Windows";
+  const fixedCandidates = [
+    path.win32.join("C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
+    path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+  ];
+  const pathCandidates = ["pwsh.exe", "powershell.exe", "cmd.exe"];
+  const pathEntries = String(env.PATH || "")
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const candidate of [...fixedCandidates, ...pathEntries.flatMap((entry) =>
+    pathCandidates.map((name) => path.win32.join(entry, name)),
+  )]) {
+    if (probe(candidate)) return candidate;
+  }
+  return env.COMSPEC || "cmd.exe";
 }
 
 function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefined): string {
@@ -1635,4 +1651,5 @@ export const _testUtils = {
   buildSafeShellPath,
   getShellArgs,
   prepareWindowsCommand,
+  resolveWindowsShellExecutable,
 };

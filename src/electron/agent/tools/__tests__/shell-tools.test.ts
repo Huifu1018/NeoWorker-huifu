@@ -16,6 +16,7 @@ const {
   buildSafeShellPath,
   getShellArgs,
   prepareWindowsCommand,
+  resolveWindowsShellExecutable,
   isSandboxRuntimeFailure,
   buildEmptyCommandFailureMessage,
 } =
@@ -353,6 +354,32 @@ describe("ShellTools Integration", () => {
   });
 
   describe("Windows shell argument routing", () => {
+    it("probes fixed locations and PATH before falling back to COMSPEC", () => {
+      const probes: string[] = [];
+      const env = {
+        SystemRoot: "D:\\Windows",
+        PATH: "D:\\Tools;D:\\Other",
+        COMSPEC: "D:\\Windows\\System32\\cmd.exe",
+      };
+      const resolved = resolveWindowsShellExecutable(env, (candidate) => {
+        probes.push(candidate);
+        return candidate === "D:\\Tools\\pwsh.exe";
+      });
+      expect(resolved).toBe("D:\\Tools\\pwsh.exe");
+      expect(probes).toEqual([
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "D:\\Tools\\pwsh.exe",
+      ]);
+    });
+
+    it("falls back to COMSPEC when no interpreter is available", () => {
+      expect(resolveWindowsShellExecutable(
+        { PATH: "", COMSPEC: "D:\\Windows\\System32\\cmd.exe" },
+        () => false,
+      )).toBe("D:\\Windows\\System32\\cmd.exe");
+    });
+
     it("uses PowerShell's non-profile command mode", () => {
       expect(getShellArgs("C:\\Program Files\\PowerShell\\7\\pwsh.exe", "Write-Output ok", "win32"))
         .toEqual(["-NoProfile", "-Command", "Write-Output ok"]);
