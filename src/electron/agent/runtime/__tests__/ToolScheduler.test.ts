@@ -164,6 +164,7 @@ describe("ToolScheduler", () => {
   it("reuses one successful result for duplicate idempotent reads", async () => {
     const scheduler = new ToolScheduler();
     const runSpy = vi.fn(async () => ({ result: { value: "same" }, resultJson: "same" }));
+    const cacheHitSpy = vi.fn();
 
     const outcome = await scheduler.executeBatch({
       calls: [
@@ -171,6 +172,7 @@ describe("ToolScheduler", () => {
         { index: 1, toolUse: { type: "tool_use", id: "2", name: "read_file", input: { path: "a.txt" } } },
       ],
       maxParallel: 2,
+      onCacheHit: cacheHitSpy,
       prepareCall: async (call) => ({
         status: "scheduled",
         call: {
@@ -192,6 +194,8 @@ describe("ToolScheduler", () => {
     });
 
     expect(runSpy).toHaveBeenCalledTimes(1);
+    expect(cacheHitSpy).toHaveBeenCalledTimes(1);
+    expect(cacheHitSpy.mock.calls[0]?.[0].toolUse.id).toBe("2");
     expect(outcome.toolResults.map((result) => result.tool_use_id)).toEqual(["1", "2"]);
     expect(outcome.callReports[1]?.metadata).toEqual({ cacheHit: true });
   });
@@ -258,5 +262,40 @@ describe("ToolScheduler", () => {
     ]);
     expect(outcome.toolResults.map((entry) => entry.tool_use_id)).toEqual(["1", "2"]);
     expect(outcome.toolResults[1]?.is_error).toBe(true);
+  });
+
+  it("invalidates cached reads across a mutation", async () => {
+    const scheduler = new ToolScheduler();
+    let file = "before";
+    const reads = vi.fn(() => file);
+    const outcome = await scheduler.executeBatch({
+      calls: ["read_file", "write_file", "read_file"].map((name, index) => ({
+        index,
+        toolUse: { type: "tool_use" as const, id: String(index), name, input: { path: "a.txt" } },
+      })),
+      prepareCall: (call) => ({
+        status: "scheduled",
+        call: {
+          ...call,
+          toolName: call.toolUse.name,
+          input: call.toolUse.input,
+          spec: call.toolUse.name === "read_file"
+            ? { concurrencyClass: "read_parallel", readOnly: true, idempotent: true }
+            : { concurrencyClass: "exclusive", readOnly: false, idempotent: false },
+          run: async () => {
+            if (call.toolUse.name === "write_file") {
+              file = "after";
+              return { resultJson: "written" };
+            }
+            return { resultJson: reads() };
+          },
+          finalize: (raw) => ({ toolResult: {
+            type: "tool_result", tool_use_id: call.toolUse.id, content: raw.resultJson || "",
+          } }),
+        },
+      }),
+    });
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(outcome.toolResults.map((result) => result.content)).toEqual(["before", "written", "after"]);
   });
 });

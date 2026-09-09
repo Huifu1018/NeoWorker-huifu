@@ -97,6 +97,7 @@ import { ToolRegistry } from "./tools/registry";
 import { ToolBatchExecutor } from "./runtime/tool-batch-executor";
 import {
   ToolScheduler,
+  type PreparedSchedulableToolCall,
   type ToolScheduleCallReport,
 } from "./runtime/ToolScheduler";
 import { ToolExecutionCoordinator } from "./runtime/ToolExecutionCoordinator";
@@ -3948,6 +3949,7 @@ export class TaskExecutor {
       })),
       maxParallel: this.toolBatchParallelMax,
       shouldContinue: () => !this.cancelled && !this.taskCompleted,
+      onCacheHit: (call) => this.recordToolCacheHit(call),
       summarizeBatch: (_batch, reports) =>
         this.summarizeToolBatch(params.phase, reports, params.assistantText),
       prepareCall: async (scheduledCall) => {
@@ -3972,7 +3974,8 @@ export class TaskExecutor {
               };
             },
             finalize: async (rawOutcome) => {
-              const correlation = rawOutcome.metadata?.correlation as Any;
+              const correlation =
+                (rawOutcome.metadata?.correlation as Any) || job.correlation;
               const toolName = String(
                 rawOutcome.metadata?.toolName || job.toolName,
               );
@@ -7823,6 +7826,18 @@ ${transcript}
       this.toolScheduler = new ToolScheduler();
     }
     return this.toolScheduler;
+  }
+
+  private recordToolCacheHit(call: PreparedSchedulableToolCall): void {
+    this.emitEvent("log", {
+      metric: "tool_lifecycle",
+      taskId: this.task.id,
+      tool: call.toolName,
+      toolCallId: call.toolUse.id,
+      status: "result",
+      cached: true,
+      durationMs: 0,
+    });
   }
 
   private getSchedulerSpecForTool(toolName: string, input: Any) {
@@ -35607,6 +35622,7 @@ Return ONLY a JSON object:
                       ? this.toolBatchParallelMax
                       : 1,
                   shouldContinue: () => !this.cancelled && !this.taskCompleted,
+                  onCacheHit: (call) => this.recordToolCacheHit(call),
                   summarizeBatch: (_batch, reports) =>
                     this.summarizeToolBatch(
                       "step",
@@ -44126,6 +44142,7 @@ Return ONLY a JSON object:
                       ? this.toolBatchParallelMax
                       : 1,
                   shouldContinue: () => !this.cancelled && !this.taskCompleted,
+                  onCacheHit: (call) => this.recordToolCacheHit(call),
                   summarizeBatch: (_batch, reports) =>
                     this.summarizeToolBatch(
                       "follow_up",

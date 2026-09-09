@@ -1,10 +1,8 @@
 import type { RuntimeToolConcurrencyClass } from "../../../shared/types";
 import type { LLMToolResult, LLMToolUse } from "../llm/types";
-import {
-  resolveToolExecutionScopeKeys,
-  serializeToolExecutionScopeKey,
-  type RuntimeToolSchedulerSpec,
-  type ToolExecutionScopeKey,
+import type {
+  RuntimeToolSchedulerSpec,
+  ToolExecutionScopeKey,
 } from "./runtime-tool-scheduler-spec";
 import { stableJsonStringify } from "../../utils/json-utils";
 
@@ -78,6 +76,7 @@ export interface ToolSchedulerExecuteBatchParams {
   calls: SchedulableToolCall[];
   maxParallel?: number;
   shouldContinue?: () => boolean;
+  onCacheHit?: (call: PreparedSchedulableToolCall) => void;
   summarizeBatch?: (
     batch: ScheduledToolBatch,
     reports: ToolScheduleCallReport[],
@@ -109,6 +108,7 @@ export class ToolScheduler {
     while (cursor < entries.length) {
       const current = entries[cursor]!;
       if (current.status === "immediate") {
+        readResultCache.clear();
         toolResultSlots.set(current.call.index, current.outcome.toolResult);
         reports.push({
           call: current.call,
@@ -145,14 +145,18 @@ export class ToolScheduler {
       };
       batches.push(batch);
 
+      if (batch.calls.some((call) => !call.spec.readOnly || call.spec.concurrencyClass !== "read_parallel")) {
+        readResultCache.clear();
+      }
+
       for (const call of batchCalls) {
         await call.onDispatched?.();
       }
 
       const rawOutcomes =
         batch.mode === "parallel"
-          ? await this.runParallelBatch(batch, params.maxParallel, params.shouldContinue, readResultCache)
-          : await this.runSerialBatch(batch, params.shouldContinue, readResultCache);
+          ? await this.runParallelBatch(batch, params.maxParallel, params.shouldContinue, readResultCache, params.onCacheHit)
+          : await this.runSerialBatch(batch, params.shouldContinue, readResultCache, params.onCacheHit);
 
       for (let index = 0; index < batch.calls.length; index += 1) {
         const call = batch.calls[index]!;
@@ -208,12 +212,7 @@ export class ToolScheduler {
   ): "parallel" | "serial" {
     if (
       call.spec.concurrencyClass === "read_parallel" &&
-      call.spec.idempotent
-    ) {
-      return "parallel";
-    }
-    if (
-      call.spec.concurrencyClass === "side_effect_parallel" &&
+      call.spec.readOnly &&
       call.spec.idempotent
     ) {
       return "parallel";
@@ -229,54 +228,24 @@ export class ToolScheduler {
     if (!base) return false;
     if (
       base.spec.concurrencyClass !== candidate.spec.concurrencyClass ||
+      !candidate.spec.readOnly ||
       !candidate.spec.idempotent
     ) {
       return false;
     }
 
-    if (candidate.spec.concurrencyClass === "read_parallel") {
-      return true;
-    }
-
-    if (candidate.spec.concurrencyClass !== "side_effect_parallel") {
-      return false;
-    }
-
-    const seenScopeKeys = new Set<string>();
-    for (const call of currentBatch) {
-      for (const scopeKey of this.getScopeKeys(call)) {
-        seenScopeKeys.add(serializeToolExecutionScopeKey(scopeKey));
-      }
-    }
-    for (const scopeKey of this.getScopeKeys(candidate)) {
-      if (seenScopeKeys.has(serializeToolExecutionScopeKey(scopeKey))) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  private getScopeKeys(
-    call: PreparedSchedulableToolCall,
-  ): ToolExecutionScopeKey[] {
-    if (Array.isArray(call.scopeKeys)) {
-      return call.scopeKeys;
-    }
-    return resolveToolExecutionScopeKeys({
-      spec: call.spec,
-      toolName: call.toolName,
-      input: call.input,
-    });
+    return candidate.spec.concurrencyClass === "read_parallel";
   }
 
   private async runSerialBatch(
     batch: ScheduledToolBatch,
     shouldContinue?: () => boolean,
     readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
+    onCacheHit?: (call: PreparedSchedulableToolCall) => void,
   ): Promise<ToolScheduleRawExecutionOutcome[]> {
     const outcomes: ToolScheduleRawExecutionOutcome[] = [];
     for (const call of batch.calls) {
-      outcomes.push(await this.runCall(call, shouldContinue, readResultCache));
+      outcomes.push(await this.runCall(call, shouldContinue, readResultCache, onCacheHit));
     }
     return outcomes;
   }
@@ -286,6 +255,7 @@ export class ToolScheduler {
     maxParallel = batch.calls.length,
     shouldContinue?: () => boolean,
     readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
+    onCacheHit?: (call: PreparedSchedulableToolCall) => void,
   ): Promise<ToolScheduleRawExecutionOutcome[]> {
     const outcomes = new Array<ToolScheduleRawExecutionOutcome>(batch.calls.length);
     const concurrency = Math.min(
@@ -305,6 +275,7 @@ export class ToolScheduler {
           batch.calls[nextIndex]!,
           shouldContinue,
           readResultCache,
+          onCacheHit,
         );
       }
     };
@@ -317,6 +288,7 @@ export class ToolScheduler {
     call: PreparedSchedulableToolCall,
     shouldContinue?: () => boolean,
     readResultCache?: Map<string, Promise<ToolScheduleRawExecutionOutcome>>,
+    onCacheHit?: (call: PreparedSchedulableToolCall) => void,
   ): Promise<ToolScheduleRawExecutionOutcome> {
     if (shouldContinue && !shouldContinue()) {
       return {
@@ -343,7 +315,14 @@ export class ToolScheduler {
     const cached = readResultCache.get(cacheKey);
     if (cached) {
       const outcome = await cached;
+      if (shouldContinue && !shouldContinue()) {
+        return {
+          error: new Error("Tool execution cancelled"),
+          metadata: { cancelled: true },
+        };
+      }
       if (!outcome.error && outcome.result?.success !== false) {
+        onCacheHit?.(call);
         return {
           ...outcome,
           metadata: { cacheHit: true },
@@ -361,7 +340,7 @@ export class ToolScheduler {
   }
 
   private getReadCacheKey(call: PreparedSchedulableToolCall): string | null {
-    if (call.spec.concurrencyClass !== "read_parallel" || !call.spec.idempotent) return null;
+    if (call.spec.concurrencyClass !== "read_parallel" || !call.spec.readOnly || !call.spec.idempotent) return null;
     try {
       const serialized = stableJsonStringify([call.toolName, call.input], { sortKeys: true, maxOutputChars: 0 });
       return serialized.length <= 200_000 ? serialized : null;
