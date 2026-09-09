@@ -801,6 +801,8 @@ function spawnDirectProcess(
     let timedOut = false;
     let stdoutTruncated = false;
     let stderrTruncated = false;
+    let settled = false;
+    let drainTimeout: ReturnType<typeof setTimeout> | undefined;
     const child = spawn(executable, args, {
       cwd: options.cwd,
       env: options.env,
@@ -808,12 +810,30 @@ function spawnDirectProcess(
       stdio: ["pipe", "pipe", "pipe"],
     });
     options.onProcess?.(child);
-    const timeoutHandle = setTimeout(() => {
+    const timeoutHandle = setTimeout(async () => {
       timedOut = true;
       killed = true;
-      terminateWindowsProcessTree(child);
+      // taskkill must enumerate descendants while the parent still exists.
+      // Killing the parent immediately after spawning taskkill races that
+      // enumeration and can orphan workers holding stdout/stderr open.
+      await terminateWindowsProcessTree(child);
+      if (settled) return;
       child.kill();
+      drainTimeout = setTimeout(() => {
+        // A failed tree kill or inherited pipe must not defeat the hard timeout.
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish({ exitCode: 1, stdout, stderr, killed, timedOut, error: "PROCESS_TIMEOUT" });
+      }, 1_000);
     }, options.timeout);
+    const finish = (result: SandboxResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      if (drainTimeout) clearTimeout(drainTimeout);
+      resolve(result);
+    };
     const stdoutDecoder = createProcessOutputDecoder(process.platform);
     const stderrDecoder = createProcessOutputDecoder(process.platform);
     const appendValue = (target: "stdout" | "stderr", value: string) => {
@@ -837,8 +857,7 @@ function spawnDirectProcess(
     child.stdout?.on("data", (data: Buffer) => append("stdout", data));
     child.stderr?.on("data", (data: Buffer) => append("stderr", data));
     child.on("error", (error) => {
-      clearTimeout(timeoutHandle);
-      resolve({ exitCode: 1, stdout, stderr: error.message, killed, timedOut, error: error.message });
+      finish({ exitCode: 1, stdout, stderr: error.message, killed, timedOut, error: error.message });
     });
     child.on("close", (code, signal) => {
       clearTimeout(timeoutHandle);
@@ -846,15 +865,21 @@ function spawnDirectProcess(
       const stderrTail = stderrDecoder.end();
       if (stdoutTail) appendValue("stdout", stdoutTail);
       if (stderrTail) appendValue("stderr", stderrTail);
-      const error = signal ? `Process terminated by signal ${signal}` : undefined;
-      resolve({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
+      const error = timedOut ? "PROCESS_TIMEOUT" : signal ? `Process terminated by signal ${signal}` : undefined;
+      finish({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
     });
   });
 }
 
-function terminateWindowsProcessTree(child: ChildProcess): void {
+async function terminateWindowsProcessTree(child: ChildProcess): Promise<void> {
   if (process.platform !== "win32" || !child.pid) return;
-  try {
+  await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    try {
     // taskkill is invoked directly, never through a shell, and /T covers
     // interpreters that spawned workers (npm, Python, office helpers, etc.).
     const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
@@ -862,10 +887,17 @@ function terminateWindowsProcessTree(child: ChildProcess): void {
       windowsHide: true,
       shell: false,
     });
-    killer.on("error", () => undefined);
-  } catch {
-    // The root child.kill() call remains the fallback when taskkill is absent.
-  }
+      killer.once("close", done);
+      killer.once("error", done);
+      timer = setTimeout(() => {
+        killer.kill();
+        done();
+      }, 1_500);
+    } catch {
+      // The caller still kills the root and bounds pipe drainage.
+      done();
+    }
+  });
 }
 
 /**

@@ -5,6 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as path from "node:path";
+import * as os from "node:os";
 import { _testUtils } from "../shell-tools";
 
 const {
@@ -293,16 +295,18 @@ describe("ShellTools Integration", () => {
   // They require more complex mocking of the daemon and workspace
 
   describe("cwd resolution", () => {
+    const workspace = path.join(os.tmpdir(), "workspace");
     it("resolves relative cwd values against the workspace path", () => {
-      expect(resolveCommandCwd("/tmp/workspace", "todo-app")).toBe("/tmp/workspace/todo-app");
+      expect(resolveCommandCwd(workspace, "todo-app")).toBe(path.join(workspace, "todo-app"));
     });
 
     it("keeps absolute cwd values unchanged", () => {
-      expect(resolveCommandCwd("/tmp/workspace", "/tmp/other")).toBe("/tmp/other");
+      const absolute = path.join(os.tmpdir(), "other");
+      expect(resolveCommandCwd(workspace, absolute)).toBe(absolute);
     });
 
     it("maps dot cwd to the workspace path", () => {
-      expect(resolveCommandCwd("/tmp/workspace", ".")).toBe("/tmp/workspace");
+      expect(resolveCommandCwd(workspace, ".")).toBe(workspace);
     });
   });
 

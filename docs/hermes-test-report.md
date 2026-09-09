@@ -18,7 +18,7 @@
 | Windows runner 执行链 | 已加入 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上执行 Electron 构建与 Hermes/Tool Host/Shell 专项测试，不提前打包 |
 | 长任务与故障注入 | 通过专项验证 | `hermes-fault-injection.test.ts` 验证 32 项只读任务受并发上限约束、失败读取不污染缓存、副作用调用即使请求并发也保持串行 |
 | 普通 CI 打包门禁 | 已收紧 | push/PR 只执行编译和执行链验证；仅手动 `workflow_dispatch` 才运行打包步骤，且矩阵打包依赖 Windows 执行链 job 通过 |
-| CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；既有 Renderer 全量类型检查继续输出报告但不阻断运行时交付 |
+| CI 类型检查门禁 | 严格执行 | Electron、Daemon、CLI 与 Renderer 全量 TypeScript 检查均作为 CI 门禁；当前 Renderer 既有错误仍需单独清理 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
 | Windows x64 安装包 | 延后 | 需要 Windows runner 和安装后 smoke；当前不把旧构建结果当作本轮交付证据 |
@@ -29,6 +29,7 @@
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |
 | 调度取消边界 | 通过专项验证 | 并行队列中未获得执行资格的调用不会触发派发事件、工具计数或“已启动”日志 |
+| Windows 实机执行场景 | 已加入 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 已接通；checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | 本机 Hermes Model Proxy | 环境未就绪 | `hermes proxy status` 显示 Nous Portal/xAI OAuth 均未登录；8645 当前返回 502，待登录后执行真实多步文件/Shell 验证 |

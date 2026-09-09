@@ -104,11 +104,7 @@ jobs:
           npm run build:daemon
           npm run build:cli
 
-      - name: Run renderer type check (baseline)
-        # The renderer currently carries pre-existing errors outside the
-        # Electron agent/runtime change set. Keep the full report visible while
-        # making the runtime checks above the strict delivery gate.
-        continue-on-error: true
+      - name: Run renderer type check
         run: npm run type-check
 
   test:
@@ -211,11 +207,13 @@ jobs:
           npx vitest run
           src/electron/agent/sandbox/__tests__/sandbox-factory.test.ts
           src/electron/agent/sandbox/__tests__/windows-package-manager-launch.test.ts
+          src/electron/agent/sandbox/__tests__/windows-process.integration.test.ts
           src/electron/agent/tools/__tests__/shell-tools.test.ts
           src/electron/agent/runtime/__tests__/tool-host-protocol.test.ts
           src/electron/agent/runtime/__tests__/ToolScheduler.test.ts
           src/electron/agent/runtime/__tests__/hermes-fault-injection.test.ts
           src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
+          src/electron/agent/runtime/__tests__/tool-execution-coordinator.test.ts
 
   build:
     name: Build (${{ matrix.os }})

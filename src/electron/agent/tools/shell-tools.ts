@@ -360,10 +360,10 @@ function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefin
     "/sbin",
   ];
   const inheritedPaths = String(envPath || "")
-    .split(path.delimiter)
+    .split(":")
     .map((entry) => entry.trim())
     .filter(Boolean);
-  return Array.from(new Set([...basePaths, ...inheritedPaths])).join(path.delimiter);
+  return Array.from(new Set([...basePaths, ...inheritedPaths])).join(":");
 }
 
 /**

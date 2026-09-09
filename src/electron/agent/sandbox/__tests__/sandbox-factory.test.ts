@@ -5,6 +5,8 @@ import { mkdtemp, rm, symlink, writeFile } from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
+const workspacePath = path.join(os.tmpdir(), "neoworker-fixture-workspace");
+
 const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock("child_process", () => ({
@@ -136,18 +138,19 @@ describe("Windows restricted runner", () => {
 
   afterEach(() => {
     platformSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it("rejects shell operators instead of invoking cmd.exe", async () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
-    await expect(sandbox.execute("python script.py & whoami", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("python script.py & whoami", [], { cwd: workspacePath })).resolves.toMatchObject({
       error: "WINDOWS_RESTRICTED_SHELL_SYNTAX",
       exitCode: 1,
     });
@@ -157,16 +160,16 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
-    await expect(sandbox.execute("powershell.exe -Command whoami", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("powershell.exe -Command whoami", [], { cwd: workspacePath })).resolves.toMatchObject({
       error: "WINDOWS_RESTRICTED_NESTED_SHELL",
       exitCode: 1,
     });
-    await expect(sandbox.execute("python -c print(1)", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("python -c print(1)", [], { cwd: workspacePath })).resolves.toMatchObject({
       error: "WINDOWS_RESTRICTED_INLINE_CODE",
       exitCode: 1,
     });
@@ -176,24 +179,24 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
-    await expect(sandbox.execute("pwd", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("pwd", [], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
-      stdout: "/tmp/workspace\n",
+      stdout: `${workspacePath}\n`,
     });
-    await expect(sandbox.execute("echo validation", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("echo validation", [], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
       stdout: "validation\n",
     });
-    await expect(sandbox.execute("echo one && echo two", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("echo one && echo two", [], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
       stdout: "one\ntwo\n",
     });
-    await expect(sandbox.execute("cat missing.txt || echo fallback", [], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("cat missing.txt || echo fallback", [], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
       stdout: "fallback\n",
     });
@@ -204,19 +207,19 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
-    await expect(sandbox.execute("python", ["workspace files\\script.py"], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("python", ["workspace files\\script.py"], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
       stdout: "ok\n",
     });
     expect(spawnMock).toHaveBeenCalledWith(
       "python",
       ["workspace files\\script.py"],
-      expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
+      expect.objectContaining({ shell: false, cwd: workspacePath }),
     );
   });
 
@@ -225,18 +228,18 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
     await expect(sandbox.execute("npm.exe", ["install", "--ignore-scripts"], {
-      cwd: "/tmp/workspace",
+      cwd: workspacePath,
     })).resolves.toMatchObject({ exitCode: 0, stdout: "installed\n" });
     expect(spawnMock).toHaveBeenCalledWith(
       "npm.exe",
       ["install", "--ignore-scripts"],
-      expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
+      expect.objectContaining({ shell: false, cwd: workspacePath }),
     );
   });
 
@@ -246,13 +249,13 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
     const resultPromise = sandbox.execute("python", ["script.py"], {
-      cwd: "/tmp/workspace",
+      cwd: workspacePath,
       timeout: 1_000,
       maxOutputSize: 10,
     });
@@ -305,12 +308,12 @@ describe("Windows restricted runner", () => {
       const sandbox = new WindowsRestrictedSandbox({
         id: "workspace",
         name: "Workspace",
-        path: "/tmp/workspace",
+        path: workspacePath,
         createdAt: Date.now(),
         permissions: { read: true, write: true, delete: true, network: false, shell: true },
       });
       await expect(sandbox.execute("python", ["script.py"], {
-        cwd: "/tmp/workspace",
+        cwd: workspacePath,
         envPassthrough: ["NEOWORKER_TEST_ENV", "bad-name"],
       })).resolves.toMatchObject({ exitCode: 0 });
       expect(spawnMock).toHaveBeenCalledWith(
@@ -333,13 +336,13 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
 
     await expect(sandbox.execute("python", ["script.py"], {
-      cwd: "/tmp/workspace",
+      cwd: workspacePath,
       env: {
         NEO_WORKER_MODE: "hermes-proxy",
         PATH: "C:\\attacker",
@@ -357,7 +360,7 @@ describe("Windows restricted runner", () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
@@ -367,7 +370,7 @@ describe("Windows restricted runner", () => {
       queueMicrotask(() => process.emit("close", 0, null));
       return process;
     });
-    await expect(sandbox.execute("python", ["script.py"], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+    await expect(sandbox.execute("python", ["script.py"], { cwd: workspacePath })).resolves.toMatchObject({
       exitCode: 0,
       stdout: "中",
     });
@@ -376,16 +379,17 @@ describe("Windows restricted runner", () => {
   it("terminates the Windows process tree when a direct command times out", async () => {
     vi.useFakeTimers();
     const child = makeChildProcess({ stayOpen: true, pid: 4321 });
-    spawnMock.mockReturnValueOnce(child);
+    const killer = makeChildProcess({ stayOpen: true });
+    spawnMock.mockReturnValueOnce(child).mockReturnValueOnce(killer);
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
       name: "Workspace",
-      path: "/tmp/workspace",
+      path: workspacePath,
       createdAt: Date.now(),
       permissions: { read: true, write: true, delete: true, network: false, shell: true },
     });
     const resultPromise = sandbox.execute("python", ["script.py"], {
-      cwd: "/tmp/workspace",
+      cwd: workspacePath,
       timeout: 25,
     });
     await vi.advanceTimersByTimeAsync(25);
@@ -394,7 +398,10 @@ describe("Windows restricted runner", () => {
       ["/PID", "4321", "/T", "/F"],
       expect.objectContaining({ shell: false, windowsHide: true }),
     );
-    expect(child.kill).toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+    killer.emit("close", 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(child.kill).toHaveBeenCalledTimes(1);
     child.emit("close", null, "SIGTERM");
     await expect(resultPromise).resolves.toMatchObject({ timedOut: true, killed: true });
   });
