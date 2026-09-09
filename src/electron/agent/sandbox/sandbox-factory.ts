@@ -269,8 +269,12 @@ export class WindowsRestrictedSandbox extends NoSandbox {
       };
     }
 
-    const commandLine = args.length > 0 ? [command, ...args].join(" ") : command;
-    const tokens = tokenizeDirectWindowsCommand(commandLine);
+    // When callers already provide an argv array, preserve each argument as
+    // one token. Re-joining and re-tokenizing would split valid Windows paths
+    // such as "workspace files\\script.py" at their spaces.
+    const tokens = args.length > 0
+      ? [normalizeWindowsExecutable(command), ...args]
+      : tokenizeDirectWindowsCommand(command);
     if (!tokens || tokens.length === 0) {
       return {
         exitCode: 1,

@@ -177,4 +177,25 @@ describe("Windows restricted runner", () => {
       stdout: "fallback\n",
     });
   });
+
+  it("preserves direct-process argv entries containing spaces", async () => {
+    spawnMock.mockImplementationOnce(() => makeChildProcess({ stdout: "ok\n" }));
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("python", ["workspace files\\script.py"], { cwd: "/tmp/workspace" })).resolves.toMatchObject({
+      exitCode: 0,
+      stdout: "ok\n",
+    });
+    expect(spawnMock).toHaveBeenCalledWith(
+      "python",
+      ["workspace files\\script.py"],
+      expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
+    );
+  });
 });
