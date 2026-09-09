@@ -996,4 +996,51 @@ describe("LLMProviderFactory custom provider config resolution", () => {
       "glm-4.5-air",
     ]);
   });
+
+  it("routes Hermes Model Proxy through the host-owned OpenAI tool-call path", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: "",
+            tool_calls: [{
+              id: "call_proxy_1",
+              type: "function",
+              function: { name: "run_command", arguments: '{"command":"echo hi"}' },
+            }],
+          },
+          finish_reason: "tool_calls",
+        }],
+      }),
+    } as Response);
+
+    const provider = LLMProviderFactory.createProviderFromConfig({
+      type: "hermes-proxy",
+      model: "proxy-model",
+    } as Any);
+
+    const response = await provider.createMessage({
+      model: "proxy-model",
+      system: "Use NeoWorker tools.",
+      maxTokens: 256,
+      messages: [{ role: "user", content: "Run the command" }],
+      tools: [{
+        name: "run_command",
+        description: "Run a shell command",
+        input_schema: { type: "object", properties: { command: { type: "string" } } },
+      }],
+    });
+
+    expect(response.stopReason).toBe("tool_use");
+    expect(response.content).toContainEqual(expect.objectContaining({
+      type: "tool_use",
+      id: "call_proxy_1",
+      name: "run_command",
+    }));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:8645/v1/chat/completions",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });
