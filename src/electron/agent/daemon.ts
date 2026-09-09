@@ -6540,12 +6540,14 @@ export class AgentDaemon extends EventEmitter {
       }
     }
 
-    // Drop internal metric telemetry from timeline persistence/rendering.
-    // These high-frequency events are not user-facing and can overwhelm UI/event stores.
+    // Drop high-frequency telemetry from timeline persistence/rendering. The
+    // Tool Host lifecycle is durable execution state, however: it is used to
+    // decide whether a side effect may be replayed after restart.
     if (
       type === "log" &&
       typeof payloadObj.metric === "string" &&
-      payloadObj.metric.trim().length > 0
+      payloadObj.metric.trim().length > 0 &&
+      payloadObj.metric !== "tool_host_lifecycle"
     ) {
       return;
     }
@@ -9465,6 +9467,10 @@ export class AgentDaemon extends EventEmitter {
       return this.eventRepo.findRecentByTaskId(taskId, limit);
     }
     return this.eventRepo.findByTaskId(taskId);
+  }
+
+  getLatestToolHostLifecycle(taskId: string, toolCallId: string): TaskEvent | null {
+    return this.eventRepo.findLatestToolHostLifecycle(taskId, toolCallId);
   }
 
   /**

@@ -44,6 +44,13 @@ const SUMMARY_FIELD_NAMES = new Set([
   "summary",
   "title",
   "tool",
+  "metric",
+  "requestId",
+  "toolCallId",
+  "idempotencyKey",
+  "fingerprint",
+  "schemaVersion",
+  "responseStatus",
   "type",
   "url",
 ]);

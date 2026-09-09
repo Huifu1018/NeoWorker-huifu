@@ -2330,6 +2330,34 @@ export class TaskEventRepository {
   }
 
   /**
+   * Load one durable Tool Host lifecycle record without materializing the
+   * complete task transcript. This query is intentionally keyed by both the
+   * task and stable toolCallId so long tasks can still fail closed after a
+   * restart when the event is far outside the usual history window.
+   */
+  findLatestToolHostLifecycle(
+    taskId: string,
+    toolCallId: string,
+  ): TaskEvent | null {
+    const normalizedTaskId = typeof taskId === "string" ? taskId.trim() : "";
+    const normalizedToolCallId =
+      typeof toolCallId === "string" ? toolCallId.trim() : "";
+    if (!normalizedTaskId || !normalizedToolCallId) return null;
+    const row = this.db
+      .prepare(`
+        SELECT * FROM task_events
+        WHERE task_id = ?
+          AND COALESCE(legacy_type, type) = 'log'
+          AND json_extract(payload, '$.metric') = 'tool_host_lifecycle'
+          AND json_extract(payload, '$.toolCallId') = ?
+        ORDER BY COALESCE(seq, timestamp) DESC, timestamp DESC, id DESC
+        LIMIT 1
+      `)
+      .get(normalizedTaskId, normalizedToolCallId) as Any;
+    return row ? this.mapRowsToEvents([row]).events[0] ?? null : null;
+  }
+
+  /**
    * Return exactly the latest lifecycle state for every step in a persisted
    * plan. Resume must not use a generic tail limit here: a noisy task can emit
    * hundreds of retry lifecycle events for later steps and push the completed

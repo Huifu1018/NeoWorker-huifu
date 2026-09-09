@@ -71,6 +71,26 @@ describe("AgentDaemon.logEvent artifact normalization", () => {
     expect(timelineEvent.legacyType).toBe("task_completed");
   });
 
+  it("persists Tool Host lifecycle metrics needed for restart idempotency", () => {
+    const daemonLike = createDaemonLike();
+
+    AgentDaemon.prototype.logEvent.call(daemonLike, "task-1", "log", {
+      metric: "tool_host_lifecycle",
+      toolCallId: "call-1",
+      fingerprint: "abc",
+      status: "response",
+      outcome: { result: { success: true } },
+    });
+
+    expect(daemonLike.persistTimelineEvent).toHaveBeenCalledTimes(1);
+    const [timelineEvent] = (daemonLike.persistTimelineEvent as Any).mock.calls[0];
+    expect(timelineEvent.payload).toMatchObject({
+      metric: "tool_host_lifecycle",
+      toolCallId: "call-1",
+      status: "response",
+    });
+  });
+
   it("does not reopen a timeline stage for post-completion events", () => {
     const daemonLike = createDaemonLike({ status: "completed" });
 

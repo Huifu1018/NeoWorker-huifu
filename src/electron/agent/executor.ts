@@ -12407,10 +12407,11 @@ ${transcript}
   private loadPersistedToolHostRecord(
     toolCallId: string,
   ): PersistedToolHostRecord | undefined {
-    const events = this.daemon.getTaskEvents(this.task.id, {
-      types: ["log"],
-      limit: 200,
-    });
+    const latestPersisted = this.daemon.getLatestToolHostLifecycle(
+      this.task.id,
+      toolCallId,
+    );
+    const events = latestPersisted ? [latestPersisted] : [];
     const lifecycle = events
       .map((event) => event.payload as Record<string, unknown> | undefined)
       .filter(

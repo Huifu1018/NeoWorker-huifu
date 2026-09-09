@@ -42,6 +42,21 @@ class FakeReplayDb {
 
   private selectRows(sql: string, args: unknown[]): ReplayRow[] {
     const taskId = String(args[0] ?? "");
+    if (sql.includes("tool_host_lifecycle")) {
+      const toolCallId = String(args[1] ?? "");
+      return this.rows
+        .filter((row) => row.task_id === taskId)
+        .filter((row) => {
+          try {
+            const payload = JSON.parse(row.payload) as Any;
+            return payload.metric === "tool_host_lifecycle" && payload.toolCallId === toolCallId;
+          } catch {
+            return false;
+          }
+        })
+        .sort((a, b) => b.seq - a.seq || b.timestamp - a.timestamp || b.id.localeCompare(a.id))
+        .slice(0, 1);
+    }
     const isPlanStepStateQuery = sql.includes("AND step_id IN");
     if (isPlanStepStateQuery) {
       const planOrder = Number(args[1]) || 0;
@@ -209,6 +224,28 @@ describe("TaskEventRepository bounded replay queries", () => {
 
     expect(events.map((event) => event.id)).toEqual(["file-2"]);
     expect(db.preparedSqls.at(-1)).toContain("LIMIT ?");
+  });
+
+  it("loads a Tool Host lifecycle record directly after a noisy long task", () => {
+    insert("host-request", 1, "log", {
+      metric: "tool_host_lifecycle",
+      toolCallId: "call-1",
+      status: "request",
+    });
+    for (let index = 2; index <= 401; index += 1) {
+      insert(`noise-${index}`, index, "command_output", { output: "noise" });
+    }
+    insert("host-response", 402, "log", {
+      metric: "tool_host_lifecycle",
+      toolCallId: "call-1",
+      status: "response",
+      outcome: { result: { success: true } },
+    });
+
+    expect(repo.findLatestToolHostLifecycle("task-1", "call-1")?.id).toBe("host-response");
+    const query = db.preparedSqls.find((sql) => sql.includes("tool_host_lifecycle"));
+    expect(query).toContain("json_extract(payload, '$.toolCallId')");
+    expect(query).toContain("LIMIT 1");
   });
 
   it("restores all 12 plan steps after more than 900 later lifecycle events", () => {
