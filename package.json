@@ -56,7 +56,7 @@
     "build:healthkit-bridge": "node scripts/build_healthkit_bridge.mjs",
     "build:location-helper-macos": "node scripts/build_location_helper_macos.mjs",
     "build:location-helpers": "node scripts/copy_location_helpers.mjs",
-    "build": "npm run clean:dist && npm run build:react && npm run build:healthkit-bridge && npm run build:location-helper-macos && npm run build:location-helpers && concurrently -n electron,daemon,cli \"npm run build:electron\" \"npm run build:daemon\" \"npm run build:cli\"",
+    "build": "npm run clean:dist && npm run build:react && npm run build:healthkit-bridge && npm run build:location-helper-macos && npm run build:location-helpers && npm run build:electron && npm run build:daemon && npm run build:cli",
     "build:with-numbat": "npm run numbat:build && npm run build",
     "numbat:build": "node scripts/build_numbat_runtime.mjs",
     "numbat:verify": "node scripts/build_numbat_runtime.mjs --verify-only",
