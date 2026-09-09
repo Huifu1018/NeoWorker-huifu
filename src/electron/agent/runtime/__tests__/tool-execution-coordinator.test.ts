@@ -89,4 +89,28 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
       .toMatchObject({ toolCallId: "call-cancelled" });
   });
+
+  it("discards a recovery result when cancellation races with recovery", async () => {
+    const events: Any[] = [];
+    const controller = new AbortController();
+    const recovery = vi.fn(async () => {
+      controller.abort();
+      await Promise.resolve();
+      return { recovered: true, result: { success: true, value: "late" } };
+    });
+    const { coordinator } = coordinatorFor(undefined, new Error("workspace boundary failure"));
+
+    const output = await coordinator.executeTool(
+      "read_file",
+      { path: "/outside/workspace/file.txt" },
+      lifecycleContext(events, { signal: controller.signal, workspaceRecovery: recovery }),
+      "call-race",
+    );
+
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(output.envelope.status).toBe("error");
+    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
+      .toMatchObject({ toolCallId: "call-race" });
+    expect(events.some((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "result" && event.payload.recovered)).toBe(false);
+  });
 });
