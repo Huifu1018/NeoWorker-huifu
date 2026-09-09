@@ -81,7 +81,7 @@ describe("OpenAICompatibleProvider error metadata", () => {
     await expect(provider.createMessage({ ...createRequest(), model: "proxy-model" })).rejects.toMatchObject({
       code: "ECONNREFUSED",
       message: expect.stringContaining("hermes proxy start"),
-      retryable: true,
+      retryable: false,
     });
   });
 

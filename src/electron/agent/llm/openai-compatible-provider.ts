@@ -537,6 +537,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (!(error instanceof OpenAICompatibleProviderError)) {
         const code = getTransportErrorCode(error);
         const malformedToolArguments = code === "MALFORMED_TOOL_ARGUMENTS";
+        const localHermesProxyOffline =
+          this.type === "hermes-proxy" &&
+          (code === "ECONNREFUSED" || code === "ERR_CONNECTION_REFUSED");
         error = new OpenAICompatibleProviderError(
           `${this.providerName} API request failed: ${error?.message || "Unknown transport error"}${this.getTransportRecoveryHint()}`,
           {
@@ -546,9 +549,10 @@ export class OpenAICompatibleProvider implements LLMProvider {
             // they are not transport errors. Preserve their structured
             // retryability instead of accidentally turning them terminal.
             retryable:
-              error?.retryable === true ||
-              malformedToolArguments ||
-              isRetryableTransportError(error),
+              !localHermesProxyOffline &&
+              (error?.retryable === true ||
+                malformedToolArguments ||
+                isRetryableTransportError(error)),
             ...(malformedToolArguments
               ? { retryKind: "malformed_response" as const }
               : {}),
