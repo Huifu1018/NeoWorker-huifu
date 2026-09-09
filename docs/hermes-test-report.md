@@ -10,6 +10,7 @@
 | Hermes ACP 传输 | 通过 | ACP 子进程 fixture：24 项测试通过，含首字节超时 |
 | Hermes 权限桥接 | 通过 | 会话校验、选项校验、取消和超时测试通过 |
 | Hermes Provider | 通过 | Provider catalog 与 OpenAI 兼容入口测试通过 |
+| Provider 辅助请求超时 | 通过 | 连接测试与模型刷新默认 15 秒超时；超时不会无限阻塞 Electron |
 | Windows Shell 路由 | 通过单元验证 | PowerShell/cmd 参数、UTF-8 编码、路径处理测试通过 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | macOS ARM64 安装包 | 通过 | DMG smoke、ad hoc 签名和 app.asar 内容检查通过 |
