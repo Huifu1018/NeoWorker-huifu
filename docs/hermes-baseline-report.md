@@ -8,7 +8,7 @@
 
 | 项目 | 值 |
 | --- | --- |
-| Git 提交 | `6c53139` |
+| Git 提交 | `cabc322` |
 | Node.js | `v24.13.1` |
 | npm | `11.8.0` |
 | Hermes | `v0.18.0`（本机已安装） |
@@ -18,9 +18,9 @@
 ## 当前结果
 
 - `npm run type-check`：退出码 2，共记录 305 个 `TS` 错误。主要集中在 `UsageInsightsPanel.tsx` 的可空数据、Renderer 类型漂移、缺失背景 SVG、UI density 导出和少量测试类型断言。
-- `npm test`：843 个测试文件中 783 通过、59 失败、1 个跳过；8425 个测试中 8257 通过、163 失败、3 个跳过、2 个 todo。执行耗时约 61 秒（含测试环境初始化）。
+- `npm test -- --run`：846 个测试文件中 786 通过、59 失败、1 个跳过；8473 个测试中 8305 通过、163 失败、3 个跳过、2 个 todo。执行耗时约 55 秒（含测试环境初始化）。
 - Hermes/NeoWorker 专项回归：6 个测试文件、106 项测试通过，覆盖 ACP 通信与首字节/总时限、权限桥接、暂停恢复、Provider 辅助请求超时、Windows Shell 和 `neoworker_tool_host_v1`。
-- Electron、Daemon、CLI 编译均通过；macOS ARM64 unsigned/ad hoc DMG smoke 通过；Windows x64 GitHub Actions 安装器、密钥扫描、安装 smoke 和 artifact 上传通过。
+- Electron 编译通过；安装包构建按计划延后，当前不把历史 DMG/Windows artifact 作为本轮交付证据。
 
 ## 已识别的基线问题分类
 
