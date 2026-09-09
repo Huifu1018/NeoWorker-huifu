@@ -3,6 +3,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
+import { listPackage } from "@electron/asar";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -270,6 +271,27 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
   );
 }
 
+/**
+ * Verify that the application archive contains the host-owned Hermes bridge
+ * and execution boundary. Checking the archive itself catches packaging
+ * regressions where TypeScript builds pass but tree-shaking or an incorrect
+ * files pattern drops the runtime modules from the shipped desktop app.
+ */
+function validatePackagedNeoWorkerRuntime(asarPath) {
+  const entries = new Set(listPackage(asarPath));
+  const required = [
+    "dist/electron/agent/runtime/hermes-runtime-adapter.js",
+    "dist/electron/agent/runtime/hermes-acp-client.js",
+    "dist/electron/agent/runtime/tool-host-protocol.js",
+    "dist/electron/agent/runtime/ToolExecutionCoordinator.js",
+    "dist/electron/agent/sandbox/sandbox-factory.js",
+  ];
+  const missing = required.filter((entry) => !entries.has(entry));
+  if (missing.length > 0) {
+    throw new Error(`Packaged app.asar is missing Hermes/Tool Host runtime files: ${missing.join(", ")}`);
+  }
+}
+
 async function walkDirs(dir, predicate, maxDepth = 3) {
   const results = [];
   async function visit(current, depth) {
@@ -432,6 +454,7 @@ async function smokeMac({ releaseDir, expectedVersion, allowUnsigned }) {
 
     const executablePath = path.join(appPath, "Contents", "MacOS", executableName);
     await fs.access(executablePath, fsConstants.X_OK);
+    validatePackagedNeoWorkerRuntime(path.join(appPath, "Contents", "Resources", "app.asar"));
     await validateNumbatRuntime(
       path.join(appPath, "Contents", "Resources"),
       `darwin-${process.arch}`,
@@ -567,6 +590,7 @@ Write-Output $item.VersionInfo.ProductVersion
       path.join(path.dirname(appExe), "resources"),
       `win32-${process.arch}`,
     );
+    validatePackagedNeoWorkerRuntime(path.join(path.dirname(appExe), "resources", "app.asar"));
 
     if (!skipLaunch) {
       let spawnError = null;

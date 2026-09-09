@@ -209,7 +209,7 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: [secret-scan, lint-and-typecheck, test]
+    needs: [secret-scan, lint-and-typecheck, test, windows-agent-runtime]
     strategy:
       fail-fast: false
       matrix:
@@ -232,6 +232,7 @@ jobs:
         run: npm run build
 
       - name: Prepare package.json for electron-builder
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           node -e "
@@ -249,11 +250,13 @@ jobs:
           "
 
       - name: Package application
+        if: github.event_name == 'workflow_dispatch'
         run: npm run package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v6
         with:
           name: NeoWorker-${{ matrix.os }}
