@@ -88,6 +88,18 @@ export class NeoWorkerToolHost {
         `${normalized.toolName}\n${String(stableJsonStringify(normalized.input, { sortKeys: true, maxOutputChars: 500_000 }))}`,
       )
       .digest("hex");
+    const emitHostLifecycle = (status: "request" | "deduplicated" | "response", extra: Record<string, unknown> = {}) => {
+      context.emitEvent?.("log", {
+        metric: "tool_host_lifecycle",
+        requestId: normalized.requestId,
+        toolCallId: normalized.toolCallId,
+        tool: normalized.toolName,
+        idempotencyKey: executionKey,
+        status,
+        ...extra,
+      });
+    };
+    emitHostLifecycle("request", { schemaVersion: normalized.schemaVersion });
     const cached = this.inFlightOrCompleted.get(executionKey);
     if (cached && cached.fingerprint !== fingerprint) {
       // A stable toolCallId is an idempotency key. Reusing it for another
@@ -96,6 +108,7 @@ export class NeoWorkerToolHost {
       throw new ToolHostRequestConflictError(normalized.toolCallId);
     }
     let outcomePromise = cached?.promise;
+    if (cached) emitHostLifecycle("deduplicated");
     if (!outcomePromise) {
       outcomePromise = this.coordinator.executeTool(
         normalized.toolName,
@@ -116,6 +129,10 @@ export class NeoWorkerToolHost {
             : {}),
         }
       : undefined;
+    emitHostLifecycle("response", {
+      responseStatus: outcome.envelope.status,
+      durationMs: outcome.durationMs,
+    });
     return {
       outcome,
       response: {

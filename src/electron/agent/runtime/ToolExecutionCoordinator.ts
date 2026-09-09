@@ -30,6 +30,16 @@ export class ToolExecutionCoordinator {
     const startedAt = Date.now();
     const toolTimeoutMs = context.timeoutMsResolver?.(toolName, input) ?? 30_000;
     const stopHeartbeat = context.beginHeartbeat?.(toolName, toolTimeoutMs, input);
+    const emitLifecycle = (status: "running" | "result" | "failed" | "timed_out" | "cancelled", extra: Record<string, unknown> = {}) => {
+      context.emitEvent?.("log", {
+        metric: "tool_lifecycle",
+        tool: toolName,
+        toolCallId: toolUseId,
+        status,
+        ...extra,
+      });
+    };
+    emitLifecycle("running", { timeoutMs: toolTimeoutMs });
 
     try {
       const executionWithRuntime = await this.toolRegistry.executeToolWithRuntime(toolName, input, {
@@ -54,6 +64,11 @@ export class ToolExecutionCoordinator {
         modelReminder,
         userSummary: `${toolName} ${result?.success === false ? "failed" : "completed"}`,
       });
+      const succeeded = result?.success !== false;
+      emitLifecycle(succeeded ? "result" : "failed", {
+        durationMs: Date.now() - startedAt,
+        ...(succeeded ? {} : { error: this.getResultError(result) }),
+      });
       context.emitEvent?.("log", {
         metric: "tool_runtime_trace",
         tool: toolName,
@@ -69,6 +84,9 @@ export class ToolExecutionCoordinator {
         envelope,
       };
     } catch (error) {
+      const errorMessage = String((error as { message?: string })?.message || error || "Tool execution failed");
+      const cancelled = context.signal?.aborted === true || /cancel|abort/i.test(errorMessage);
+      const timedOut = /timed? ?out|timeout/i.test(errorMessage);
       const recovery = await context.workspaceRecovery?.({
         toolName,
         input,
@@ -89,6 +107,10 @@ export class ToolExecutionCoordinator {
           modelReminder: recoveredReminder,
           userSummary: `${toolName} recovered and completed`,
         });
+        emitLifecycle("result", {
+          durationMs: Date.now() - startedAt,
+          recovered: true,
+        });
         return {
           result: recoveredResult,
           durationMs: Date.now() - startedAt,
@@ -103,6 +125,10 @@ export class ToolExecutionCoordinator {
         error,
         retryable: false,
         userSummary: `${toolName} failed`,
+      });
+      emitLifecycle(cancelled ? "cancelled" : timedOut ? "timed_out" : "failed", {
+        durationMs: Date.now() - startedAt,
+        error: errorMessage,
       });
       context.emitEvent?.("log", {
         metric: "tool_runtime_trace",
@@ -121,5 +147,12 @@ export class ToolExecutionCoordinator {
         stopHeartbeat();
       }
     }
+  }
+
+  private getResultError(result: unknown): string | undefined {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+    const value = (result as { error?: unknown; message?: unknown }).error ??
+      (result as { message?: unknown }).message;
+    return typeof value === "string" && value.trim() ? value.trim() : undefined;
   }
 }

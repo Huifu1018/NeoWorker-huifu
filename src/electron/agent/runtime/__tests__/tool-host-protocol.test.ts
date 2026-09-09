@@ -142,4 +142,30 @@ describe("NeoWorker tool host protocol", () => {
     await host.execute(second, { taskId: "task", phase: "step" });
     expect(coordinator.executeTool).toHaveBeenCalledTimes(2);
   });
+
+  it("records request, deduplication, and response lifecycle metadata", async () => {
+    const outcome = {
+      result: { success: true }, durationMs: 4, resultJson: "{}",
+      envelope: { toolUseId: "call-1", toolName: "read_file", status: "success" as const,
+        modelPayload: "{}", userSummary: "read_file completed", structuredData: { success: true },
+        evidence: [], retryable: false },
+    };
+    const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
+    const events: Any[] = [];
+    const host = new NeoWorkerToolHost(coordinator);
+    const request = createToolHostRequest({ taskId: "task-1", toolName: "read_file", toolCallId: "call-1", input: {} });
+    const executionContext = { ...context, emitEvent: vi.fn((type, payload) => events.push({ type, payload })) };
+    await host.execute(request, executionContext);
+    await host.execute({ ...request, requestId: "retry-request" }, executionContext);
+    const lifecycle = events.filter((event) => event.payload.metric === "tool_host_lifecycle");
+    expect(lifecycle.map((event) => event.payload.status)).toEqual([
+      "request", "response", "request", "deduplicated", "response",
+    ]);
+    expect(lifecycle[0].payload).toMatchObject({
+      requestId: request.requestId,
+      toolCallId: "call-1",
+      idempotencyKey: '["task-1","call-1"]',
+      schemaVersion: TOOL_HOST_SCHEMA_VERSION,
+    });
+  });
 });
