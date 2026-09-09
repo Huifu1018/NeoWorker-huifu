@@ -721,15 +721,6 @@ export class ShellTools {
         );
       }
 
-      if (options.env && Object.keys(options.env).length > 0) {
-        this.daemon.logEvent(this.taskId, "tool_warning", {
-          tool: "run_command",
-          message:
-            "Custom command environment variables are not forwarded to sandboxed shell execution.",
-          envKeys: Object.keys(options.env),
-        });
-      }
-
       this.daemon.logEvent(this.taskId, "command_output", {
         command,
         cwd: options.cwd,
@@ -765,6 +756,7 @@ export class ShellTools {
         timeout: options.timeout,
         maxOutputSize: MAX_OUTPUT_SIZE,
         allowNetwork: allowShellNetwork,
+        env: options.env,
         onProcess: (process) => {
           this.activeProcess = process;
         },

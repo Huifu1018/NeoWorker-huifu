@@ -42,6 +42,8 @@ export interface SandboxOptions {
   allowedWritePaths?: string[];
   /** Environment variables to pass through */
   envPassthrough?: string[];
+  /** Explicit task-scoped environment variables. Sensitive host variables are never inherited implicitly. */
+  env?: Record<string, string>;
   /** Called with the backing process once the sandbox starts it. */
   onProcess?: (process: ChildProcess) => void;
 }
@@ -326,6 +328,11 @@ export class WindowsRestrictedSandbox extends NoSandbox {
       COMSPEC: process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
       OFFICECLI_RESIDENT_FLUSH: "each",
     };
+    for (const [key, value] of Object.entries(options.env || {})) {
+      if (isSafeEnvironmentKey(key) && !WINDOWS_PROTECTED_ENV_KEYS.has(key.toUpperCase())) {
+        env[key] = String(value);
+      }
+    }
     for (const key of options.envPassthrough || []) {
       // Only copy explicitly requested, well-formed names that exist in the
       // parent environment. Never allow an option to inject a new value.
@@ -350,6 +357,19 @@ export class WindowsRestrictedSandbox extends NoSandbox {
   getWorkspacePath(): string {
     return this.workspace.path;
   }
+}
+
+const WINDOWS_PROTECTED_ENV_KEYS = new Set([
+  "PATH",
+  "PATHEXT",
+  "COMSPEC",
+  "SYSTEMROOT",
+  "WINDIR",
+  "USERPROFILE",
+]);
+
+export function isSafeEnvironmentKey(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 const WINDOWS_SHELL_EXECUTABLES = new Set([

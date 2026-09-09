@@ -14,7 +14,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { Workspace } from "../../../shared/types";
-import { ISandbox, SandboxType, SandboxOptions, SandboxResult } from "./sandbox-factory";
+import { ISandbox, SandboxType, SandboxOptions, SandboxResult, isSafeEnvironmentKey } from "./sandbox-factory";
 
 /**
  * Docker sandbox configuration
@@ -54,8 +54,16 @@ const DEFAULT_OPTIONS: Required<SandboxOptions> = {
   allowedReadPaths: [],
   allowedWritePaths: [],
   envPassthrough: ["LANG", "TERM"],
+  env: {},
   onProcess: () => undefined,
 };
+
+const PROTECTED_CONTAINER_ENV_KEYS = new Set([
+  "PATH",
+  "HOME",
+  "SHELL",
+  "PWD",
+]);
 
 const PROTECTED_WORKSPACE_WRITE_RELATIVE_PATHS = [
   ".git",
@@ -414,6 +422,15 @@ export class DockerSandbox implements ISandbox {
     // Add custom environment
     for (const [key, value] of Object.entries(this.config.env)) {
       args.push("-e", `${key}=${value}`);
+    }
+
+    // Add only explicitly supplied, well-formed task variables. They are
+    // intentionally separate from envPassthrough so host secrets are never
+    // copied into the container implicitly.
+    for (const [key, value] of Object.entries(options.env || {})) {
+      if (isSafeEnvironmentKey(key) && !PROTECTED_CONTAINER_ENV_KEYS.has(key.toUpperCase())) {
+        args.push("-e", `${key}=${String(value)}`);
+      }
     }
 
     // User mapping (run as current user to avoid permission issues)

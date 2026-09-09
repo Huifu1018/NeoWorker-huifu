@@ -13,7 +13,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import { Workspace } from "../../../shared/types";
-import { ISandbox, SandboxType, SandboxOptions, SandboxResult } from "./sandbox-factory";
+import { ISandbox, SandboxType, SandboxOptions, SandboxResult, isSafeEnvironmentKey } from "./sandbox-factory";
 import {
   createSecureTempFile,
   escapeSandboxProfileString,
@@ -31,6 +31,7 @@ const DEFAULT_OPTIONS: Required<SandboxOptions> = {
   allowedReadPaths: [],
   allowedWritePaths: [],
   envPassthrough: ["PATH", "HOME", "USER", "SHELL", "LANG", "TERM", "TMPDIR"],
+  env: {},
   onProcess: () => undefined,
 };
 
@@ -41,6 +42,8 @@ const MACOS_RUNTIME_READ_PATHS = [
   "/private/etc/ssl",
   "/etc/ssl",
 ];
+
+const PROTECTED_MACOS_ENV_KEYS = new Set(["PATH", "HOME", "SHELL", "TMPDIR"]);
 
 function getBundledRuntimeReadPaths(): string[] {
   const resourcesRoot =
@@ -134,7 +137,7 @@ export class MacOSSandbox implements ISandbox {
     }
 
     // Build minimal, safe environment
-    const env = this.buildSafeEnvironment(opts.envPassthrough);
+    const env = this.buildSafeEnvironment(opts.envPassthrough, opts.env);
 
     let proc: ChildProcess;
     const spawnOptions: SpawnOptions = {
@@ -410,7 +413,10 @@ export class MacOSSandbox implements ISandbox {
   /**
    * Build a minimal, safe environment for command execution
    */
-  private buildSafeEnvironment(passthrough: string[]): Record<string, string | undefined> {
+  private buildSafeEnvironment(
+    passthrough: string[],
+    explicit?: Record<string, string>,
+  ): Record<string, string | undefined> {
     const safeEnv: Record<string, string | undefined> = {};
 
     for (const key of passthrough) {
@@ -435,6 +441,18 @@ export class MacOSSandbox implements ISandbox {
       "/usr/sbin",
       "/sbin",
     ].join(":");
+
+    // Allow task-scoped variables without inheriting the host environment.
+    // Keep the fixed runtime variables above authoritative so a task cannot
+    // redirect executable lookup or the sandbox's system paths.
+    for (const [key, value] of Object.entries(explicit || {})) {
+      if (
+        isSafeEnvironmentKey(key) &&
+        !PROTECTED_MACOS_ENV_KEYS.has(key.toUpperCase())
+      ) {
+        safeEnv[key] = String(value);
+      }
+    }
 
     return safeEnv;
   }

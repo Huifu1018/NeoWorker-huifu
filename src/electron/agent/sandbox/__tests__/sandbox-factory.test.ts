@@ -234,6 +234,31 @@ describe("Windows restricted runner", () => {
     }
   });
 
+  it("passes task-scoped environment values without allowing protected overrides", async () => {
+    spawnMock.mockImplementationOnce(() => makeChildProcess({ stdout: "ok\n" }));
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+
+    await expect(sandbox.execute("python", ["script.py"], {
+      cwd: "/tmp/workspace",
+      env: {
+        NEO_WORKER_MODE: "hermes-proxy",
+        PATH: "C:\\attacker",
+        "bad-name": "ignored",
+      },
+    })).resolves.toMatchObject({ exitCode: 0 });
+
+    const spawnOptions = spawnMock.mock.calls.at(-1)?.[2] as { env?: Record<string, string> };
+    expect(spawnOptions.env).toMatchObject({ NEO_WORKER_MODE: "hermes-proxy" });
+    expect(spawnOptions.env?.PATH).not.toBe("C:\\attacker");
+    expect(spawnOptions.env).not.toHaveProperty("bad-name");
+  });
+
   it("decodes common Windows code-page output when UTF-8 is invalid", async () => {
     const sandbox = new WindowsRestrictedSandbox({
       id: "workspace",
