@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前交付提交：`519bf0a`（`Huifu1018/NeoWorker-huifu`）。
+更新时间：2026-09-10。当前交付提交：`e9055c9`（`Huifu1018/NeoWorker-huifu`）。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
