@@ -12,6 +12,7 @@
 | Hermes Provider | 通过 | Provider catalog 与 OpenAI 兼容入口测试通过 |
 | Provider 辅助请求超时 | 通过 | 连接测试与模型刷新默认 15 秒超时；超时不会无限阻塞 Electron |
 | Windows Shell 路由 | 通过单元验证 | PowerShell/cmd 参数、UTF-8 编码、路径处理测试通过 |
+| Windows Shell 环境继承 | 通过单元验证 | 自定义环境变量不再覆盖系统 PATH；PowerShell 原生命令统一使用 UTF-8 编码 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | macOS ARM64 安装包 | 通过 | DMG smoke、ad hoc 签名和 app.asar 内容检查通过 |
 | Windows x64 安装包 | 通过 | GitHub Actions run 34326486221（提交 96666ff）：构建、密钥检查、安装后 smoke 和构件上传全部通过 |
