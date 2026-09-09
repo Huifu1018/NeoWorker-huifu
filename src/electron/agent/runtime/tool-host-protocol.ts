@@ -52,6 +52,8 @@ function normalizeRequest(request: ToolHostRequest): ToolHostRequest {
  * sandbox, timeout, logging and bounded-result policy.
  */
 export class NeoWorkerToolHost {
+  private readonly inFlightOrCompleted = new Map<string, Promise<CoordinatedToolExecutionResult>>();
+
   constructor(private readonly coordinator: ToolExecutionCoordinator) {}
 
   async execute(
@@ -59,12 +61,29 @@ export class NeoWorkerToolHost {
     context: ToolInvocationContext,
   ): Promise<ToolHostExecution> {
     const normalized = normalizeRequest(request);
-    const outcome = await this.coordinator.executeTool(
-      normalized.toolName,
-      normalized.input,
-      context,
-      normalized.toolCallId,
-    );
+    // A model may resend the same tool call after a transport timeout. Keep
+    // one promise per task/toolCallId so a side effect is never executed twice.
+    // Each transport attempt keeps its own requestId; callers correlate
+    // retries by the stable toolCallId.
+    const executionKey = `${context.taskId}:${normalized.toolCallId}`;
+    let outcomePromise = this.inFlightOrCompleted.get(executionKey);
+    if (!outcomePromise) {
+      outcomePromise = this.coordinator.executeTool(
+        normalized.toolName,
+        normalized.input,
+        context,
+        normalized.toolCallId,
+      );
+      this.inFlightOrCompleted.set(executionKey, outcomePromise);
+      void outcomePromise.catch(() => {
+        // Do not poison a key if an adapter-level exception escapes the
+        // coordinator; a later transport retry may safely attempt the call.
+        if (this.inFlightOrCompleted.get(executionKey) === outcomePromise) {
+          this.inFlightOrCompleted.delete(executionKey);
+        }
+      });
+    }
+    const outcome = await outcomePromise;
     const error = outcome.error
       ? {
           message: String((outcome.error as { message?: unknown })?.message || outcome.error),

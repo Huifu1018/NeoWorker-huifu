@@ -3801,6 +3801,7 @@ export class TaskExecutor {
             content.name,
             content.input,
             toolTimeoutMs,
+            content.id,
           );
           result = coordinated.result;
           envelope = coordinated.envelope;
@@ -12306,6 +12307,7 @@ ${transcript}
     toolName: string,
     input: unknown,
     toolTimeoutMs: number,
+    toolCallId?: string,
   ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>>> {
     const effectiveInput = this.preparePresentationWorkflowToolInput(
       toolName,
@@ -12335,7 +12337,7 @@ ${transcript}
       const toolHostRequest = createToolHostRequest({
         taskId: this.task.id,
         toolName,
-        toolCallId: `${toolName}:${Date.now()}`,
+        ...(toolCallId ? { toolCallId } : {}),
         input: effectiveInput as Any,
       });
       const coordinated = await withTimeout(
@@ -36616,6 +36618,7 @@ Return ONLY a JSON object:
                                   content.name,
                                   content.input,
                                   toolTimeoutMs,
+                                  content.id,
                                 );
                               result = coordinated.result;
                               runtimeEnvelope = coordinated.envelope;
@@ -38461,6 +38464,7 @@ Return ONLY a JSON object:
                   content.name,
                   content.input,
                   toolTimeoutMs,
+                  content.id,
                 );
                 result = coordinated.result;
                 runtimeEnvelope = coordinated.envelope;
@@ -44628,6 +44632,7 @@ Return ONLY a JSON object:
                                   content.name,
                                   content.input,
                                   toolTimeoutMs,
+                                  content.id,
                                 );
                               result = coordinated.result;
                               runtimeEnvelope = coordinated.envelope;

@@ -65,4 +65,38 @@ describe("NeoWorker tool host protocol", () => {
     }, context)).rejects.toThrow("Unsupported tool host schema");
     expect(coordinator.executeTool).not.toHaveBeenCalled();
   });
+
+  it("deduplicates a repeated toolCallId while preserving each requestId", async () => {
+    let resolve!: (value: Any) => void;
+    const pending = new Promise((done) => { resolve = done; });
+    const outcome = {
+      result: { success: true },
+      durationMs: 1,
+      resultJson: "{}",
+      envelope: {
+        toolUseId: "call-1",
+        toolName: "write_file",
+        status: "success" as const,
+        modelPayload: "{}",
+        userSummary: "write_file completed",
+        structuredData: { success: true },
+        evidence: [],
+        retryable: false,
+      },
+    };
+    const coordinator = {
+      executeTool: vi.fn().mockImplementation(async () => { await pending; return outcome; }),
+    } as Any;
+    const host = new NeoWorkerToolHost(coordinator);
+    const first = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "a" } });
+    const second = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "a" } });
+    const firstResult = host.execute(first, context);
+    const secondResult = host.execute(second, context);
+    resolve(outcome);
+    const [a, b] = await Promise.all([firstResult, secondResult]);
+    expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
+    expect(a.response.requestId).toBe(first.requestId);
+    expect(b.response.requestId).toBe(second.requestId);
+    expect(a.outcome).toBe(b.outcome);
+  });
 });
