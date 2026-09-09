@@ -137,6 +137,10 @@ import {
   resolveWorkerRoleKind,
 } from "./runtime/worker-role-registry";
 import { enrichToolEventPayload } from "./runtime/tool-event-enrichment";
+import {
+  NeoWorkerToolHost,
+  createToolHostRequest,
+} from "./runtime/tool-host-protocol";
 import { resolveSkillSlashAlias } from "./skill-slash-aliases";
 import {
   buildCanonicalTaskIntentQuery,
@@ -926,6 +930,7 @@ export class TaskExecutor {
   private toolScheduler!: ToolScheduler;
   private toolBatchSummaryGenerator = createToolBatchSummaryGenerator();
   private toolExecutionCoordinator!: ToolExecutionCoordinator;
+  private toolHost!: NeoWorkerToolHost;
   private streamingToolExecutor: StreamingToolExecutor | null = null;
   private deferredToolCatalog: DeferredToolCatalog | null = null;
   private toolSearchService: ToolSearchService | null = null;
@@ -9377,6 +9382,7 @@ ${transcript}
     this.toolExecutionCoordinator = new ToolExecutionCoordinator(
       this.toolRegistry,
     );
+    this.toolHost = new NeoWorkerToolHost(this.toolExecutionCoordinator);
     this.deferredToolCatalog = new DeferredToolCatalog(
       this.toolRegistry.getTools(),
     );
@@ -12326,10 +12332,15 @@ ${transcript}
     }
 
     try {
+      const toolHostRequest = createToolHostRequest({
+        taskId: this.task.id,
+        toolName,
+        toolCallId: `${toolName}:${Date.now()}`,
+        input: effectiveInput as Any,
+      });
       const coordinated = await withTimeout(
-        this.toolExecutionCoordinator.executeTool(
-          toolName,
-          effectiveInput as Any,
+        this.toolHost.execute(
+          toolHostRequest,
           {
             taskId: this.task.id,
             stepId: this.currentStepId || undefined,
@@ -12354,8 +12365,7 @@ ${transcript}
                 ...(args.followUp ? { followUp: args.followUp } : {}),
               }),
           },
-          `${toolName}:${Date.now()}`,
-        ),
+        ).then((execution) => execution.outcome),
         toolTimeoutMs,
         `Tool ${toolName}`,
         () => toolAbort.abort(),
