@@ -9,6 +9,8 @@ export interface HermesAcpClientOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
+  /** Maximum time before the first response frame arrives. */
+  firstByteTimeoutMs?: number;
   maxFrameBytes?: number;
 }
 export interface AcpRequestOptions { timeoutMs?: number; signal?: AbortSignal }
@@ -24,6 +26,7 @@ export class HermesAcpError extends Error {
 interface PendingRequest {
   resolve(value: unknown): void;
   reject(error: Error): void;
+  firstByte(): void;
 }
 interface Connection {
   child: ChildProcessWithoutNullStreams;
@@ -32,6 +35,7 @@ interface Connection {
   decoder: StringDecoder;
   buffer: string;
   timeoutMs: number;
+  firstByteTimeoutMs: number;
   maxFrameBytes: number;
   closed: boolean;
 }
@@ -62,6 +66,7 @@ export class HermesAcpClient {
     const conn: Connection = {
       child, pending: new Map(), inbound: new Map(), decoder: new StringDecoder("utf8"),
       buffer: "", closed: false, timeoutMs: options.timeoutMs ?? 120_000,
+      firstByteTimeoutMs: options.firstByteTimeoutMs ?? 30_000,
       maxFrameBytes: options.maxFrameBytes ?? 8 * 1024 * 1024,
     };
     this.connection = conn;
@@ -102,31 +107,40 @@ export class HermesAcpClient {
     if (opts.signal?.aborted) return Promise.reject(new HermesAcpError("Hermes ACP request cancelled", "CANCELLED"));
     const timeoutMs = opts.timeoutMs ?? conn.timeoutMs;
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return Promise.reject(new Error("Invalid ACP request timeout"));
+    if (!Number.isFinite(conn.firstByteTimeoutMs) || conn.firstByteTimeoutMs <= 0) {
+      return Promise.reject(new Error("Invalid ACP first-byte timeout"));
+    }
     const id = String(++this.sequence);
     return new Promise<T>((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
+        clearTimeout(firstByteTimer);
         opts.signal?.removeEventListener("abort", aborted);
         conn.pending.delete(id);
       };
-      const interrupt = (code: "CANCELLED" | "REQUEST_TIMEOUT") => {
+      const interrupt = (code: "CANCELLED" | "REQUEST_TIMEOUT" | "FIRST_BYTE_TIMEOUT") => {
         if (!conn.pending.has(id)) return;
         if (method === "session/prompt" && typeof params.sessionId === "string") {
           this.send(conn, { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: params.sessionId } });
         }
         // Prompt side effects may still be in flight. Close this transport
         // and require explicit session recovery. Never resubmit a prompt.
-        const failure = new HermesAcpError(`Hermes ACP ${method} ${code === "CANCELLED" ? "cancelled" : "timed out"}`, code);
+        const failure = new HermesAcpError(
+          `Hermes ACP ${method} ${code === "CANCELLED" ? "cancelled" : code === "FIRST_BYTE_TIMEOUT" ? "timed out before first response" : "timed out"}`,
+          code,
+        );
         const pending = conn.pending.get(id)!;
         pending.reject(failure);
         this.close(conn, failure);
       };
       const aborted = () => interrupt("CANCELLED");
       const timer = setTimeout(() => interrupt("REQUEST_TIMEOUT"), timeoutMs);
+      const firstByteTimer = setTimeout(() => interrupt("FIRST_BYTE_TIMEOUT"), conn.firstByteTimeoutMs);
       // Register before writing: immediate responses must find their waiter.
       conn.pending.set(id, {
         resolve: (value) => { cleanup(); resolve(value as T); },
         reject: (error) => { cleanup(); reject(error); },
+        firstByte: () => clearTimeout(firstByteTimer),
       });
       opts.signal?.addEventListener("abort", aborted, { once: true });
       this.send(conn, { jsonrpc: "2.0", id, method, params });
@@ -205,6 +219,7 @@ export class HermesAcpClient {
     if (typeof message.id !== "string" && typeof message.id !== "number") return this.protocolFailure(conn, "Invalid ACP response id");
     const pending = conn.pending.get(String(message.id));
     if (!pending) return; // Late response or server-issued request id.
+    pending.firstByte();
     if (object(message.error)) {
       pending.reject(new HermesAcpError(String(message.error.message ?? "ACP request failed"),
         typeof message.error.code === "number" ? message.error.code : "REMOTE_ERROR", message.error.data));

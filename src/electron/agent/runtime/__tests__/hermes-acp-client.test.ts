@@ -80,6 +80,11 @@ describe("Hermes ACP subprocess transport", () => {
     controller.abort();
     await expect(request).rejects.toMatchObject({code:'CANCELLED'});
   });
+  it("reports a first-byte timeout separately from the total timeout", async () => {
+    const c = new HermesAcpClient(); cleanup.push(() => c.stop());
+    await c.start({ ...options, firstByteTimeoutMs: 30 });
+    await expect(c.request("wait", {}, { timeoutMs: 1000 })).rejects.toMatchObject({ code: "FIRST_BYTE_TIMEOUT" });
+  });
   it("fails fast on malformed protocol output", async () => {
     await expect((await client()).request('invalid', {})).rejects.toMatchObject({code:'PROTOCOL_ERROR'});
   });
