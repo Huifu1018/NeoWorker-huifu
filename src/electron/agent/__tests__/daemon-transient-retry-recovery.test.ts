@@ -11,6 +11,59 @@ describe("AgentDaemon.handleTransientTaskFailure recovery", () => {
     vi.useRealTimers();
   });
 
+  it("uses bounded exponential backoff when no provider delay is supplied", () => {
+    const taskId = "task-retry-backoff";
+    const storedTask: Any = { id: taskId, status: "queued", error: "" };
+    const daemonLike = {
+      retryCounts: new Map<string, number>(),
+      pendingRetries: new Map<string, ReturnType<typeof setTimeout>>(),
+      activeTasks: new Map<string, Any>([[taskId, { executor: {} }]]),
+      maxTaskRetries: 2,
+      retryBaseDelayMs: 5_000,
+      retryMaxDelayMs: 60_000,
+      taskRepo: {
+        findById: vi.fn(() => storedTask),
+        update: vi.fn(),
+      },
+      queueManager: {
+        onTaskFinished: vi.fn(),
+        isRunning: vi.fn(() => false),
+        isQueued: vi.fn(() => false),
+      },
+      logEvent: vi.fn(),
+      startTask: vi.fn(async () => {}),
+      finishQueueSlot: vi.fn(),
+      releaseComputerUseSession: vi.fn(),
+      isTransientRetryErrorMessage: () => true,
+    } as Any;
+
+    expect(
+      AgentDaemon.prototype.handleTransientTaskFailure.call(
+        daemonLike,
+        taskId,
+        "socket hang up",
+      ),
+    ).toBe(true);
+    expect(daemonLike.taskRepo.update).toHaveBeenCalledWith(taskId, {
+      status: "queued",
+      error: "Transient provider error. Retry 1/2 in 5s.",
+    });
+
+    vi.advanceTimersByTime(5_000);
+    daemonLike.retryCounts.set(taskId, 1);
+    expect(
+      AgentDaemon.prototype.handleTransientTaskFailure.call(
+        daemonLike,
+        taskId,
+        "socket hang up",
+      ),
+    ).toBe(true);
+    expect(daemonLike.taskRepo.update).toHaveBeenLastCalledWith(taskId, {
+      status: "queued",
+      error: "Transient provider error. Retry 2/2 in 10s.",
+    });
+  });
+
   it("recovers a stale executing+transient task back to queued before retry start", async () => {
     const taskId = "task-retry-recover";
     let storedTask: Any = {

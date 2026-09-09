@@ -572,7 +572,11 @@ export class AgentDaemon extends EventEmitter {
     new Map();
   private retryCounts: Map<string, number> = new Map();
   private readonly maxTaskRetries = 2;
-  private readonly retryDelayMs = 30 * 1000;
+  // Transient transport failures should recover quickly. Rate limits pass an
+  // explicit longer delay from the executor; ordinary failures use bounded
+  // exponential backoff (5s, 10s, ...).
+  private readonly retryBaseDelayMs = 5 * 1000;
+  private readonly retryMaxDelayMs = 60 * 1000;
   /** Session-level auto-approve: when true, all approval requests are auto-granted.
    *  Set via IPC when the user clicks "Approve all" in the UI.
    *  Persists for the app lifetime (survives HMR/renderer reloads). */
@@ -4896,13 +4900,21 @@ export class AgentDaemon extends EventEmitter {
   handleTransientTaskFailure(
     taskId: string,
     reason: string,
-    delayMs: number = this.retryDelayMs,
+    delayMs?: number,
   ): boolean {
     const currentCount = this.retryCounts.get(taskId) ?? 0;
     const nextCount = currentCount + 1;
     if (nextCount > this.maxTaskRetries) {
       return false;
     }
+
+    const effectiveDelayMs =
+      typeof delayMs === "number" && Number.isFinite(delayMs) && delayMs >= 0
+        ? Math.floor(delayMs)
+        : Math.min(
+            this.retryBaseDelayMs * 2 ** (nextCount - 1),
+            this.retryMaxDelayMs,
+          );
 
     this.retryCounts.set(taskId, nextCount);
 
@@ -4911,7 +4923,7 @@ export class AgentDaemon extends EventEmitter {
     }
 
     // Mark as queued with a helpful message
-    const retrySeconds = Math.ceil(delayMs / 1000);
+    const retrySeconds = Math.ceil(effectiveDelayMs / 1000);
     const queuedError = `Transient provider error. Retry ${nextCount}/${this.maxTaskRetries} in ${retrySeconds}s.`;
     this.taskRepo.update(taskId, {
       status: "queued",
@@ -4924,7 +4936,7 @@ export class AgentDaemon extends EventEmitter {
     });
 
     this.logEvent(taskId, "log", {
-      message: `Transient provider error detected. Scheduling retry ${nextCount}/${this.maxTaskRetries} in ${Math.ceil(delayMs / 1000)}s.`,
+      message: `Transient provider error detected. Scheduling retry ${nextCount}/${this.maxTaskRetries} in ${retrySeconds}s.`,
       reason,
     });
 
@@ -4959,7 +4971,7 @@ export class AgentDaemon extends EventEmitter {
         return;
       }
       await this.startTask(taskToStart);
-    }, delayMs);
+    }, effectiveDelayMs);
 
     this.pendingRetries.set(taskId, handle);
     return true;
