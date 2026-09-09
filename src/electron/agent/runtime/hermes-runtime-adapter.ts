@@ -24,6 +24,13 @@ export interface HermesPromptResult {
   sessionId: string;
 }
 
+// Keep a single task's accumulated assistant transcript bounded. Individual
+// ACP frames are already capped by HermesAcpClient, but a long-running session
+// can otherwise append an unbounded number of valid chunks in the Electron
+// process.
+const MAX_ASSISTANT_TEXT_CHARS = 2_000_000;
+const ASSISTANT_TEXT_TRUNCATION_MARKER = "\n[Hermes response truncated by NeoWorker]\n";
+
 /**
  * A real Hermes ACP session, independent of NeoWorker's TurnKernel.
  * Not yet selected by the production executor. Permission callbacks are mediated
@@ -57,7 +64,13 @@ export class HermesRuntimeAdapter {
       const value = update as AcpObject;
       if (this.acceptingUpdates && value.sessionUpdate === "agent_message_chunk") {
         const content = value.content as AcpObject | undefined;
-        if (content?.type === "text" && typeof content.text === "string") this.text += content.text;
+        if (content?.type === "text" && typeof content.text === "string") {
+          if (this.text.length < MAX_ASSISTANT_TEXT_CHARS) {
+            const remaining = MAX_ASSISTANT_TEXT_CHARS - this.text.length;
+            this.text += content.text.slice(0, remaining);
+            if (content.text.length > remaining) this.text += ASSISTANT_TEXT_TRUNCATION_MARKER;
+          }
+        }
       }
       this.options.onUpdate?.(value);
     };
