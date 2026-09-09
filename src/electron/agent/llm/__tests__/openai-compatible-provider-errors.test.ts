@@ -60,6 +60,23 @@ describe("OpenAICompatibleProvider error metadata", () => {
       .rejects.toMatchObject({ message: expect.stringMatching(/timed out|aborted|Failed to refresh/i) });
   });
 
+  it("keeps the timeout active while decoding a slow model response", async () => {
+    let responseSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_input: string, init?: RequestInit) => {
+      responseSignal = init?.signal;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => new Promise<unknown>((_resolve, reject) => {
+          responseSignal?.addEventListener("abort", () => reject(responseSignal?.reason));
+        }),
+      } as Response);
+    }));
+
+    await expect(createProvider({ auxiliaryRequestTimeoutMs: 10 }).getAvailableModels())
+      .rejects.toMatchObject({ message: expect.stringMatching(/timed out|aborted|Failed to refresh/i) });
+  });
+
   it("parses streamed Hermes text and fragmented tool calls", async () => {
     const sse = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
     const frames = [

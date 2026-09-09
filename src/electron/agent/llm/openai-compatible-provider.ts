@@ -165,17 +165,16 @@ export class OpenAICompatibleProvider implements LLMProvider {
       : DEFAULT_AUX_REQUEST_TIMEOUT_MS;
   }
 
-  private async fetchAuxiliary(
-    input: string,
-    init: RequestInit,
-  ): Promise<Response> {
+  private async withAuxiliaryTimeout<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const controller = new AbortController();
     const timeout = setTimeout(
       () => controller.abort(new Error(`${this.providerName} auxiliary request timed out`)),
       this.auxiliaryRequestTimeoutMs,
     );
     try {
-      return await fetch(input, { ...init, signal: controller.signal });
+      return await operation(controller.signal);
     } finally {
       clearTimeout(timeout);
     }
@@ -548,6 +547,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
+      return await this.withAuxiliaryTimeout(async (signal) => {
       const model = this.normalizeModelForEndpoint(this.defaultModel);
       const outputTokenField = this.getOutputTokenField(model);
       const headers: Record<string, string> = {
@@ -558,7 +558,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
 
-      const response = await this.fetchAuxiliary(this.chatCompletionsUrl, {
+      const response = await fetch(this.chatCompletionsUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -566,6 +566,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           messages: [{ role: "user", content: "Hi" }],
           [outputTokenField]: 10,
         }),
+        signal,
       });
 
       if (!response.ok) {
@@ -579,6 +580,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       }
 
       return { success: true };
+      });
     } catch (error: Any) {
       return {
         success: false,
@@ -589,13 +591,15 @@ export class OpenAICompatibleProvider implements LLMProvider {
 
   async getAvailableModels(): Promise<Array<{ id: string; name: string }>> {
     try {
+      return await this.withAuxiliaryTimeout(async (signal) => {
       const headers: Record<string, string> = {};
       if (this.apiKey) {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
 
-      const response = await this.fetchAuxiliary(this.modelsUrl, {
+      const response = await fetch(this.modelsUrl, {
         headers,
+        signal,
       });
 
       if (!response.ok) {
@@ -651,6 +655,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           };
         })
         .filter((model): model is { id: string; name: string } => model !== null);
+      });
     } catch (error: Any) {
       // ECONNREFUSED means the local server simply isn't running yet — not an error worth logging loudly
       const isOffline =
