@@ -317,7 +317,7 @@ export class WindowsRestrictedSandbox extends NoSandbox {
       maxOutputSize,
     );
     if (builtin) return builtin;
-    const env = {
+    const env: Record<string, string> = {
       PATH: process.env.PATH || "",
       USERPROFILE: process.env.USERPROFILE || "",
       TEMP: process.env.TEMP || process.env.TMP || "",
@@ -326,6 +326,13 @@ export class WindowsRestrictedSandbox extends NoSandbox {
       COMSPEC: process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
       OFFICECLI_RESIDENT_FLUSH: "each",
     };
+    for (const key of options.envPassthrough || []) {
+      // Only copy explicitly requested, well-formed names that exist in the
+      // parent environment. Never allow an option to inject a new value.
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && process.env[key] !== undefined) {
+        env[key] = process.env[key] as string;
+      }
+    }
     return spawnDirectProcess(executable, childArgs, {
       cwd: resolvedCwd,
       env,

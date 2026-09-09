@@ -198,4 +198,35 @@ describe("Windows restricted runner", () => {
       expect.objectContaining({ shell: false, cwd: "/tmp/workspace" }),
     );
   });
+
+  it("passes only explicitly requested environment variables", async () => {
+    const previous = process.env.NEOWORKER_TEST_ENV;
+    process.env.NEOWORKER_TEST_ENV = "hermes-proxy";
+    spawnMock.mockImplementationOnce(() => makeChildProcess({ stdout: "ok\n" }));
+    try {
+      const sandbox = new WindowsRestrictedSandbox({
+        id: "workspace",
+        name: "Workspace",
+        path: "/tmp/workspace",
+        createdAt: Date.now(),
+        permissions: { read: true, write: true, delete: true, network: false, shell: true },
+      });
+      await expect(sandbox.execute("python", ["script.py"], {
+        cwd: "/tmp/workspace",
+        envPassthrough: ["NEOWORKER_TEST_ENV", "bad-name"],
+      })).resolves.toMatchObject({ exitCode: 0 });
+      expect(spawnMock).toHaveBeenCalledWith(
+        "python",
+        ["script.py"],
+        expect.objectContaining({
+          env: expect.objectContaining({ NEOWORKER_TEST_ENV: "hermes-proxy" }),
+        }),
+      );
+      const spawnOptions = spawnMock.mock.calls.at(-1)?.[2] as { env?: Record<string, string> };
+      expect(spawnOptions.env).not.toHaveProperty("bad-name");
+    } finally {
+      if (previous === undefined) delete process.env.NEOWORKER_TEST_ENV;
+      else process.env.NEOWORKER_TEST_ENV = previous;
+    }
+  });
 });
