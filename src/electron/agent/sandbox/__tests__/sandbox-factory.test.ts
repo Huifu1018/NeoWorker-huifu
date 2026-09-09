@@ -21,11 +21,15 @@ function makeChildProcess(options: {
   stderr?: string;
   errorMessage?: string;
   stayOpen?: boolean;
+  pid?: number;
 } = {}): ChildProcess {
   const proc = new EventEmitter() as ChildProcess;
   proc.stdout = new EventEmitter() as ChildProcess["stdout"];
   proc.stderr = new EventEmitter() as ChildProcess["stderr"];
   proc.kill = vi.fn(() => true) as unknown as ChildProcess["kill"];
+  if (options.pid !== undefined) {
+    Object.defineProperty(proc, "pid", { value: options.pid, configurable: true });
+  }
   if (!options.stayOpen) {
     queueMicrotask(() => {
       if (options.stdout) proc.stdout?.emit("data", Buffer.from(options.stdout));
@@ -248,5 +252,31 @@ describe("Windows restricted runner", () => {
       exitCode: 0,
       stdout: "中",
     });
+  });
+
+  it("terminates the Windows process tree when a direct command times out", async () => {
+    vi.useFakeTimers();
+    const child = makeChildProcess({ stayOpen: true, pid: 4321 });
+    spawnMock.mockReturnValueOnce(child);
+    const sandbox = new WindowsRestrictedSandbox({
+      id: "workspace",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      createdAt: Date.now(),
+      permissions: { read: true, write: true, delete: true, network: false, shell: true },
+    });
+    const resultPromise = sandbox.execute("python", ["script.py"], {
+      cwd: "/tmp/workspace",
+      timeout: 25,
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "taskkill",
+      ["/PID", "4321", "/T", "/F"],
+      expect.objectContaining({ shell: false, windowsHide: true }),
+    );
+    expect(child.kill).toHaveBeenCalled();
+    child.emit("close", null, "SIGTERM");
+    await expect(resultPromise).resolves.toMatchObject({ timedOut: true, killed: true });
   });
 });

@@ -738,6 +738,7 @@ function spawnDirectProcess(
     const timeoutHandle = setTimeout(() => {
       timedOut = true;
       killed = true;
+      terminateWindowsProcessTree(child);
       child.kill();
     }, options.timeout);
     const append = (target: "stdout" | "stderr", data: Buffer) => {
@@ -761,6 +762,22 @@ function spawnDirectProcess(
       resolve({ exitCode: code ?? 1, stdout, stderr: stderr || error || "", killed, timedOut, signal, error });
     });
   });
+}
+
+function terminateWindowsProcessTree(child: ChildProcess): void {
+  if (process.platform !== "win32" || !child.pid) return;
+  try {
+    // taskkill is invoked directly, never through a shell, and /T covers
+    // interpreters that spawned workers (npm, Python, office helpers, etc.).
+    const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+      shell: false,
+    });
+    killer.on("error", () => undefined);
+  } catch {
+    // The root child.kill() call remains the fallback when taskkill is absent.
+  }
 }
 
 /**
