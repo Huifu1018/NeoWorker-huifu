@@ -1943,7 +1943,7 @@ export type ExecutionModeSource = "user" | "strategy" | "auto_promote";
 
 export type ExternalRuntimePermissionMode =
   "approve-reads" | "approve-all" | "deny-all";
-export type ExternalRuntimeAgent = "codex" | "claude";
+export type ExternalRuntimeAgent = "codex" | "claude" | "hermes";
 
 export interface ExternalRuntimeConfig {
   kind: "acpx";
