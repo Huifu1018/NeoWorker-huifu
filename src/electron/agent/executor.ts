@@ -4620,9 +4620,127 @@ export class TaskExecutor {
     return this.acpxRuntimeRunner;
   }
 
+  private clearHermesRuntimeIdleTimer(): void {
+    if (this.hermesRuntimeIdleTimer) {
+      clearTimeout(this.hermesRuntimeIdleTimer);
+      this.hermesRuntimeIdleTimer = undefined;
+    }
+  }
+
+  private retainHermesRuntime(
+    runtime: HermesRuntimeAdapter,
+    reason: string,
+  ): void {
+    this.clearHermesRuntimeIdleTimer();
+    this.hermesRuntimeAdapter = runtime;
+    this.hermesRuntimeWorkspacePath = this.workspace.path;
+    this.hermesCheckpoint = runtime.getCheckpoint() ?? this.hermesCheckpoint;
+    const idleTimer = setTimeout(() => {
+      if (this.hermesRuntimeAdapter !== runtime) return;
+      void this.closeHermesRuntime("idle_timeout").catch((error) => {
+        this.emitEvent("log", {
+          message: "Failed to close idle Hermes runtime.",
+          error: String((error as Any)?.message || error),
+        });
+      });
+    }, TaskExecutor.HERMES_RUNTIME_IDLE_TTL_MS);
+    idleTimer.unref?.();
+    this.hermesRuntimeIdleTimer = idleTimer;
+    this.emitEvent("log", {
+      metric: "hermes_runtime_session_warm",
+      taskId: this.task.id,
+      reason,
+      idleTtlMs: TaskExecutor.HERMES_RUNTIME_IDLE_TTL_MS,
+    });
+  }
+
+  private activateHermesRuntime(runtime: HermesRuntimeAdapter): void {
+    this.clearHermesRuntimeIdleTimer();
+    this.hermesRuntimeAdapter = runtime;
+    this.hermesRuntimeWorkspacePath = this.workspace.path;
+  }
+
+  private async closeHermesRuntime(reason: string): Promise<void> {
+    this.clearHermesRuntimeIdleTimer();
+    const runtime = this.hermesRuntimeAdapter;
+    this.hermesRuntimeAdapter = null;
+    this.hermesRuntimeWorkspacePath = null;
+    if (!runtime) return;
+    this.emitEvent("log", {
+      metric: "hermes_runtime_session_closed",
+      taskId: this.task.id,
+      reason,
+    });
+    try {
+      await runtime.close();
+    } catch (error) {
+      this.emitEvent("log", {
+        message: "Failed to close Hermes runtime cleanly.",
+        error: String((error as Any)?.message || error),
+        reason,
+      });
+    }
+  }
+
+  private async finishHermesRuntimeTurn(
+    runtime: HermesRuntimeAdapter,
+    keepWarm: boolean,
+    reason: string,
+  ): Promise<void> {
+    if (
+      keepWarm &&
+      !this.cancelled &&
+      !this.paused &&
+      this.hermesRuntimeAdapter === runtime
+    ) {
+      this.retainHermesRuntime(runtime, reason);
+      return;
+    }
+    if (this.hermesRuntimeAdapter === runtime) {
+      await this.closeHermesRuntime(reason);
+      return;
+    }
+    try {
+      await runtime.close();
+    } catch (error) {
+      this.emitEvent("log", {
+        message: "Failed to close replaced Hermes runtime.",
+        error: String((error as Any)?.message || error),
+        reason,
+      });
+    }
+  }
+
+  private getReusableHermesRuntimeAdapter(
+    checkpoint?: HermesSessionCheckpoint,
+  ): HermesRuntimeAdapter | null {
+    const runtime = this.hermesRuntimeAdapter;
+    if (!runtime) return null;
+    if (this.hermesRuntimeWorkspacePath !== this.workspace.path) return null;
+    const activeCheckpoint = runtime.getCheckpoint();
+    const requestedSessionId = checkpoint?.sessionId;
+    if (
+      requestedSessionId &&
+      activeCheckpoint?.sessionId &&
+      requestedSessionId !== activeCheckpoint.sessionId
+    ) {
+      return null;
+    }
+    this.clearHermesRuntimeIdleTimer();
+    this.emitEvent("log", {
+      metric: "hermes_runtime_session_reused",
+      taskId: this.task.id,
+      sessionId: activeCheckpoint?.sessionId,
+    });
+    return runtime;
+  }
+
   private disableExternalRuntimeForFallback(reason: string): void {
     const existingConfig = this.task.agentConfig || {};
     if (!existingConfig.externalRuntime) return;
+    if (this.hermesRuntimeAdapter) {
+      void this.closeHermesRuntime("external_runtime_fallback");
+    }
     const runtimeMetadata = {
       runtime: existingConfig.externalRuntime.kind,
       runtimeAgent: existingConfig.externalRuntime.agent,
@@ -4821,9 +4939,10 @@ export class TaskExecutor {
 
   private async executeWithHermesRuntime(initialPrompt: string): Promise<void> {
     const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
-    this.hermesRuntimeAdapter = runtime;
+    this.activateHermesRuntime(runtime);
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", { message: "Delegating task to Hermes Agent Runtime" });
+    let keepWarm = false;
     try {
       // A pause can race with runtime construction. Mark the adapter before
       // prompting so it creates/persists a checkpoint but never starts tools.
@@ -4866,9 +4985,13 @@ export class TaskExecutor {
         this.lastNonVerificationOutput = assistantText;
       }
       this.finalizeTaskBestEffort(assistantText || "Hermes Agent completed without a final assistant message.", "hermes runtime completed");
+      keepWarm = true;
     } finally {
-      this.hermesRuntimeAdapter = null;
-      await runtime.close();
+      await this.finishHermesRuntimeTurn(
+        runtime,
+        keepWarm,
+        keepWarm ? "task_turn_complete" : "task_turn_failed_or_cancelled",
+      );
     }
   }
 
@@ -4879,7 +5002,7 @@ export class TaskExecutor {
   ): Promise<void> {
     if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
       const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
-      this.hermesRuntimeAdapter = runtime;
+      this.activateHermesRuntime(runtime);
       const followUp = buildHermesFollowUpPrompt({
         message: this.buildQuotedAssistantContextMessage(
           message,
@@ -4890,6 +5013,7 @@ export class TaskExecutor {
       this.daemon.updateTaskStatus(this.task.id, "executing");
       this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
       this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
+      let keepWarm = false;
       try {
         const toolProgress = runtime.getCheckpoint()?.toolProgress;
         const isResuming = Boolean(
@@ -4915,9 +5039,13 @@ export class TaskExecutor {
             "Hermes Agent follow-up completed without a final assistant message.",
           "hermes follow-up completed",
         );
+        keepWarm = true;
       } finally {
-        this.hermesRuntimeAdapter = null;
-        await runtime.close();
+        await this.finishHermesRuntimeTurn(
+          runtime,
+          keepWarm,
+          keepWarm ? "follow_up_complete" : "follow_up_failed_or_cancelled",
+        );
       }
       return;
     }
@@ -4965,6 +5093,17 @@ export class TaskExecutor {
       message: `Closing acpx session after ${reason}.`,
     });
     await this.acpxRuntimeRunner.closeSession();
+  }
+
+  /**
+   * Release any external runtime process owned by this executor.
+   * The daemon uses this when a completed executor leaves its cache.
+   */
+  async closeExternalRuntime(reason = "executor_cleanup"): Promise<void> {
+    await Promise.allSettled([
+      this.closeHermesRuntime(reason),
+      this.closeAcpxRuntimeSession(reason),
+    ]);
   }
 
   private extractCapabilityGapSignalCount(
@@ -7974,7 +8113,10 @@ ${transcript}
   private agentPolicyFilePath: string | null = null;
   private acpxRuntimeRunner: AcpxRuntimeRunner | null = null;
   private hermesRuntimeAdapter: HermesRuntimeAdapter | null = null;
+  private hermesRuntimeWorkspacePath: string | null = null;
+  private hermesRuntimeIdleTimer?: ReturnType<typeof setTimeout>;
   private hermesCheckpoint: HermesSessionCheckpoint | undefined;
+  private static readonly HERMES_RUNTIME_IDLE_TTL_MS = 60_000;
   private lastRoutingState: LLMRoutingRuntimeState | null = null;
   private cachedLlmSettings: ReturnType<
     typeof LLMProviderFactory.loadSettings
@@ -9681,6 +9823,15 @@ ${transcript}
           ? { logSequence: Math.max(0, Math.floor(savedCheckpoint.logSequence)) }
           : {}),
       };
+    }
+    const reusableRuntime = this.getReusableHermesRuntimeAdapter(
+      this.hermesCheckpoint,
+    );
+    if (reusableRuntime) return reusableRuntime;
+    if (this.hermesRuntimeAdapter) {
+      // A workspace or checkpoint mismatch must not leave the previous ACP
+      // process alive while a replacement is being started.
+      void this.closeHermesRuntime("workspace_or_checkpoint_changed");
     }
     // New Hermes tasks use NeoWorker's Tool Host. Retain the ownership of a
     // saved legacy session; silently switching an existing native-tool
@@ -20910,6 +21061,13 @@ You are continuing a previous conversation. The context from the previous conver
    * This is used when permissions change during an active task
    */
   updateWorkspace(workspace: Workspace): void {
+    if (
+      this.hermesRuntimeAdapter &&
+      this.workspace?.path &&
+      this.workspace.path !== workspace.path
+    ) {
+      void this.closeHermesRuntime("workspace_changed");
+    }
     this.workspace = workspace;
     if (workspace.permissions.shell) {
       this.allowExecutionWithoutShell = false;
@@ -23117,6 +23275,13 @@ You are continuing a previous conversation. The context from the previous conver
   private async handleWorkspaceSwitch(newWorkspace: Workspace): Promise<void> {
     const oldWorkspacePath = this.workspace.path;
 
+    if (
+      this.hermesRuntimeAdapter &&
+      oldWorkspacePath !== newWorkspace.path
+    ) {
+      await this.closeHermesRuntime("workspace_changed");
+    }
+
     // Update the executor's workspace reference
     this.workspace = newWorkspace;
     this.reloadAgentPolicy();
@@ -23759,6 +23924,12 @@ You are continuing a previous conversation. The context from the previous conver
       isDirectory: (workspacePath) => fs.statSync(workspacePath).isDirectory(),
       applyWorkspaceSwitch: (preferred) => {
         const oldWorkspacePath = this.workspace.path;
+        if (
+          this.hermesRuntimeAdapter &&
+          oldWorkspacePath !== preferred.path
+        ) {
+          void this.closeHermesRuntime("workspace_changed");
+        }
         this.workspace = preferred;
         this.task.workspaceId = preferred.id;
         this.sandboxRunner = new SandboxRunner(preferred);
@@ -46538,9 +46709,12 @@ Return ONLY a JSON object:
     if (this.isAcpxExternalRuntimeTask()) {
       try {
         if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
-          await this.hermesRuntimeAdapter?.cancel();
-          await this.hermesRuntimeAdapter?.close();
-          this.hermesRuntimeAdapter = null;
+          const runtime = this.hermesRuntimeAdapter;
+          this.clearHermesRuntimeIdleTimer();
+          if (runtime) {
+            await runtime.cancel();
+            await this.closeHermesRuntime("task_cancelled");
+          }
         } else {
           await this.getAcpxRuntimeRunner().cancel();
         }
@@ -46606,9 +46780,10 @@ Return ONLY a JSON object:
 
   private async resumeHermesAfterPause(): Promise<void> {
     const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
-    this.hermesRuntimeAdapter = runtime;
+    this.activateHermesRuntime(runtime);
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", { message: "Resuming Hermes session from checkpoint" });
+    let keepWarm = false;
     try {
       const continuation =
         buildHermesFollowUpPrompt({
@@ -46634,9 +46809,13 @@ Return ONLY a JSON object:
         this.lastNonVerificationOutput = assistantText;
       }
       this.finalizeTaskBestEffort(assistantText || "Hermes Agent resumed without a final assistant message.", "hermes runtime resumed");
+      keepWarm = true;
     } finally {
-      this.hermesRuntimeAdapter = null;
-      await runtime.close();
+      await this.finishHermesRuntimeTurn(
+        runtime,
+        keepWarm,
+        keepWarm ? "pause_resume_complete" : "pause_resume_failed_or_cancelled",
+      );
     }
   }
 

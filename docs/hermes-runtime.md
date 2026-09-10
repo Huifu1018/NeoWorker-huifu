@@ -14,6 +14,14 @@ Executor prompts use a versioned, bounded host contract (`<neoworker_runtime_con
 
 ACP assistant message chunks are delivered as ephemeral `llm_streaming` updates. NeoWorker does not persist one timeline row per streamed token; the completed assistant message remains the durable transcript record, while internal thought chunks are discarded. This keeps long Hermes responses from turning into synchronous database-write storms and preserves task-switch performance. A successful Hermes follow-up also runs through the normal terminal finalizer, so the task status and result summary cannot remain stuck at `executing` after the response is delivered.
 
+After a successful Hermes turn, the executor keeps the connected ACP session and
+task-scoped MCP endpoint warm for 60 seconds. A follow-up in the same workspace
+and session reuses that adapter, avoiding a second Python process launch,
+ACP initialization, and MCP server handshake. Failed, cancelled, paused, or
+workspace-mismatched turns close the old adapter instead of retaining a stale
+process; completed executors also release the runtime when the daemon evicts
+them from its cache.
+
 For host-owned Hermes tasks, a provider failure can be retried once with a bounded exponential delay when the current prompt has not advanced the NeoWorker Tool Host progress marker. Queue saturation, transient 5xx responses, connection resets and request timeouts use this path; explicit non-retryable responses and any prompt that started a host tool do not. The retry is recorded as `hermes_runtime_retry` and uses the saved session checkpoint, so it never resubmits an unknown side effect automatically.
 
 `HermesRuntimeOptions.onPermissionRequest` receives the operation details, offered options, and an AbortSignal. Return the selected option ID or null. `HermesPermissionBridge` validates the active session and options and dismisses on timeout, cancellation or handler failure. Generic `onRequest` callbacks cannot approve permission requests. The production executor wires this handler to the daemon task approval service; UI integrations must still close any pending approval surface when the signal aborts.

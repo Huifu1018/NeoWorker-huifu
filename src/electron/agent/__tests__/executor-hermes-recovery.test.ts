@@ -7,7 +7,18 @@ import type { HermesRuntimeAdapter } from "../runtime/hermes-runtime-adapter";
 const cwd = __dirname;
 const fixture = path.join(cwd, "../runtime/__tests__/fixtures/hermes-acp-fixture.cjs");
 const adapters: HermesRuntimeAdapter[] = [];
+const executorsToCleanup: Any[] = [];
 afterEach(async () => {
+  await Promise.all(
+    executorsToCleanup
+      .splice(0)
+      .map((instance) =>
+        TaskExecutor.prototype.closeExternalRuntime.call(
+          instance,
+          "test_cleanup",
+        ),
+      ),
+  );
   await Promise.all(adapters.splice(0).map(adapter => adapter.close()));
   vi.restoreAllMocks();
 });
@@ -26,6 +37,7 @@ function executor(events: Array<{ payload: unknown }>) {
     }),
     createHermesPermissionHandler: () => async () => null,
   };
+  executorsToCleanup.push(instance);
   return instance as TaskExecutor;
 }
 
@@ -135,7 +147,8 @@ describe("Executor Hermes recovery", () => {
       "follow-up completed",
       "hermes follow-up completed",
     );
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("keeps sequential file and Shell steps inside the NeoWorker Tool Host", async () => {
@@ -206,7 +219,8 @@ describe("Executor Hermes recovery", () => {
     await TaskExecutor.prototype.resume.call(instance);
     expect(runtime.prompt).toHaveBeenCalledWith(expect.stringContaining("last checkpoint"));
     expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith("continued", "hermes runtime resumed");
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("applies the bounded provider retry when Hermes resume fails before host progress", async () => {
@@ -271,7 +285,8 @@ describe("Executor Hermes recovery", () => {
         }),
       }),
     ]));
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("uses a guarded retry prompt when initial execution finds a persisted checkpoint", async () => {
@@ -326,7 +341,41 @@ describe("Executor Hermes recovery", () => {
       "recovered",
       "hermes runtime completed",
     );
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("reuses a warm Hermes runtime for a follow-up in the same workspace", () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "warm-session",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.hermesCheckpoint = checkpoint;
+    instance.hermesRuntimeAdapter = runtime;
+    instance.hermesRuntimeWorkspacePath = cwd;
+
+    const reused = TaskExecutor.prototype.createHermesRuntimeAdapter.call(
+      instance,
+      checkpoint,
+    );
+
+    expect(reused).toBe(runtime);
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "log",
+      expect.objectContaining({
+        metric: "hermes_runtime_session_reused",
+        sessionId: "warm-session",
+      }),
+    );
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("retries a transient Hermes provider failure once when no host tool started", async () => {

@@ -1809,6 +1809,14 @@ export class AgentDaemon extends EventEmitter {
       console.log(
         `[AgentDaemon] Cleaning up cached executor for task ${taskId}`,
       );
+      const cached = this.activeTasks.get(taskId);
+      if (cached) {
+        void cached.executor
+          .closeExternalRuntime("cache_cleanup")
+          .catch(() => {
+            // Ignore runtime release failures during cache cleanup.
+          });
+      }
       // Release any MCP server connections held by this executor to prevent process leaks
       try {
         void MCPClientManager.getInstance()
