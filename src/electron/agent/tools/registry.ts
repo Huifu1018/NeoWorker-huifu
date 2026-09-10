@@ -1878,6 +1878,7 @@ export class ToolRegistry {
     const policyMiddleware: ToolExecutionMiddleware = async (context, next) => {
       const executionStartedAt = Date.now();
       const runtime = this.getRuntimeMetadata(context.request.name);
+      const emitLifecycle = context.request.runtime?.emitLifecycle;
       const toolCallId =
         typeof context.request.runtime?.toolUseId === "string" &&
         context.request.runtime.toolUseId.trim()
@@ -1904,6 +1905,7 @@ export class ToolRegistry {
       const serverName = this.getMcpServerName(context.request.name);
       const approvalDetails = {
         tool: context.request.name,
+        toolCallId,
         params: context.request.input ?? null,
         ...(serverName ? { serverName } : {}),
         ...browserUseApproval,
@@ -1965,6 +1967,17 @@ export class ToolRegistry {
       }
 
       if (pipeline.decision === "require_approval") {
+        const approvalTypeForLifecycle =
+          effectiveApprovalType || "external_service";
+        const approvalReason =
+          pipeline.reason || `Approval required for ${context.request.name}`;
+        emitLifecycle?.("approval", {
+          approvalStatus: this.toolHandlesApprovalInternally(context.request.name)
+            ? "delegated"
+            : "requested",
+          approvalType: approvalTypeForLifecycle,
+          reason: approvalReason,
+        });
         if (!this.toolHandlesApprovalInternally(context.request.name)) {
           const requester = (this.daemon as Any)?.requestApproval;
           if (typeof requester !== "function") {
@@ -1990,6 +2003,11 @@ export class ToolRegistry {
             },
             { allowAutoApprove: effectiveApprovalType !== "location_access" },
           );
+          emitLifecycle?.("approval", {
+            approvalStatus: approved ? "granted" : "denied",
+            approvalType: approvalTypeForLifecycle,
+            reason: approvalReason,
+          });
           if (approved !== true) {
             throw Object.assign(new Error(`Tool "${context.request.name}" approval denied`), {
               policyTrace: pipeline.trace,

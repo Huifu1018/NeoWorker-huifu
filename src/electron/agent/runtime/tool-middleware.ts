@@ -1,7 +1,11 @@
+import type { ToolLifecycleEmitter } from "./ToolInvocationContext";
+
 export interface ToolExecutionRequest {
   name: string;
   input: Any;
-  runtime?: Record<string, unknown>;
+  runtime?: Record<string, unknown> & {
+    emitLifecycle?: ToolLifecycleEmitter;
+  };
 }
 
 export interface ToolExecutionContext {

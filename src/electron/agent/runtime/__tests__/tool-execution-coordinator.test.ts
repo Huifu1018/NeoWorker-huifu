@@ -23,7 +23,7 @@ function lifecycleContext(events: Any[], overrides: Any = {}) {
 }
 
 describe("ToolExecutionCoordinator lifecycle", () => {
-  it("records running and result states with duration and toolCallId", async () => {
+  it("records request, running and result states with duration and toolCallId", async () => {
     const events: Any[] = [];
     const { coordinator } = coordinatorFor({ success: true, value: "ok" });
     const output = await coordinator.executeTool(
@@ -34,7 +34,11 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     );
 
     const lifecycle = events.filter((event) => event.payload.metric === "tool_lifecycle");
-    expect(lifecycle.map((event) => event.payload.status)).toEqual(["running", "result"]);
+    expect(lifecycle.map((event) => event.payload.status)).toEqual([
+      "request",
+      "running",
+      "result",
+    ]);
     expect(lifecycle[0].payload).toMatchObject({
       taskId: "task-1",
       tool: "read_file",
@@ -42,8 +46,8 @@ describe("ToolExecutionCoordinator lifecycle", () => {
       idempotencyKey: '["task-1","call-1"]',
       startedAt: expect.any(Number),
     });
-    expect(lifecycle[1].payload.durationMs).toEqual(expect.any(Number));
-    expect(lifecycle[1].payload.endedAt).toEqual(expect.any(Number));
+    expect(lifecycle[2].payload.durationMs).toEqual(expect.any(Number));
+    expect(lifecycle[2].payload.endedAt).toEqual(expect.any(Number));
     expect(output.envelope.status).toBe("success");
   });
 

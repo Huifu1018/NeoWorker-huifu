@@ -1,6 +1,10 @@
 import type { ToolPolicyTrace } from "../../../shared/types";
 import type { ToolRegistry } from "../tools/registry";
-import type { ToolInvocationContext } from "./ToolInvocationContext";
+import type {
+  ToolInvocationContext,
+  ToolLifecycleEmitter,
+  ToolLifecycleStatus,
+} from "./ToolInvocationContext";
 import { buildToolResultEnvelope } from "./tool-result-envelope";
 import { stableJsonStringify } from "../../utils/json-utils";
 
@@ -63,7 +67,10 @@ export class ToolExecutionCoordinator {
       { sortKeys: false },
     );
     const stopHeartbeat = context.beginHeartbeat?.(toolName, toolTimeoutMs, input);
-    const emitLifecycle = (status: "running" | "result" | "failed" | "timed_out" | "cancelled", extra: Record<string, unknown> = {}) => {
+    const emitLifecycle: ToolLifecycleEmitter = (
+      status: ToolLifecycleStatus,
+      extra: Record<string, unknown> = {},
+    ) => {
       context.emitEvent?.("log", {
         metric: "tool_lifecycle",
         taskId: context.taskId,
@@ -77,6 +84,7 @@ export class ToolExecutionCoordinator {
         ...extra,
       });
     };
+    emitLifecycle("request", { timeoutMs: toolTimeoutMs });
     emitLifecycle("running", { timeoutMs: toolTimeoutMs });
 
     try {
@@ -88,6 +96,7 @@ export class ToolExecutionCoordinator {
         targetPaths: context.targetPaths,
         followUp: context.followUp,
         stepId: context.stepId,
+        emitLifecycle,
       });
       const result = executionWithRuntime?.result;
       const policyTrace = executionWithRuntime?.policyTrace;

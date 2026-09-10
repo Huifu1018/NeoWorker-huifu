@@ -355,6 +355,11 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
         expect.objectContaining({ tool: "write_file", status: "running" }),
         expect.objectContaining({ tool: "write_file", status: "result" }),
         expect.objectContaining({ tool: "run_command", status: "running" }),
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "delegated",
+        }),
         expect.objectContaining({ tool: "run_command", status: "result" }),
       ]),
     );

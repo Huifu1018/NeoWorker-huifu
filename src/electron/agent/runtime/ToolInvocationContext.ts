@@ -1,5 +1,19 @@
 import type { ToolPolicyContext } from "../tool-policy-engine";
 
+export type ToolLifecycleStatus =
+  | "request"
+  | "approval"
+  | "running"
+  | "result"
+  | "failed"
+  | "timed_out"
+  | "cancelled";
+
+export type ToolLifecycleEmitter = (
+  status: ToolLifecycleStatus,
+  extra?: Record<string, unknown>,
+) => void;
+
 export interface ToolBatchCorrelationMetaLite {
   toolUseId: string;
   toolCallIndex: number;

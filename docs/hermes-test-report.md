@@ -35,7 +35,7 @@
 | 安装包 Runtime 内容 | 已加入最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 在 macOS/Windows 安装后检查 `app.asar` 内 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Tool Host 日志持久化 | 通过专项验证 | `log` 事件保留 `tool_host_lifecycle`；记录 taskId、phase、幂等键、开始/结束时间和结果/错误状态；重启查询按 taskId/toolCallId 直接命中最新记录，不受 200 条历史窗口影响；无终态时继续拒绝副作用重放 |
-| 工具生命周期可追踪性 | 通过专项验证 | `tool_lifecycle` 记录 taskId、toolCallId、结构化幂等键、phase、开始/结束时间、duration、退出码/终止原因和错误类型 |
+| 工具生命周期可追踪性 | 通过专项验证 | `tool_lifecycle` 统一记录 request、approval、running、result/failed/timed_out/cancelled；taskId、toolCallId、结构化幂等键、phase、开始/结束时间、duration、退出码/终止原因和错误类型齐全 |
 | Hermes 断点工具进度 | 通过专项验证 | checkpoint 保存活动、完成、失败和未知 toolCallId 及最后日志序号；`resume()`/`retry()` 对未知或重启时仍活动的调用要求显式确认 |
 | 只读工具重复调用 | 通过专项验证 | 同一批次内对规范化输入的 `read_parallel + idempotent` 调用复用成功结果；失败、写入和 Shell 调用不缓存 |
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
@@ -59,7 +59,7 @@
 - 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路已经由 `run-hermes-live-hostchain.mjs` 验收；取消、暂停后的恢复和未知副作用确认仍以确定性回归为准，待 Windows 实机再补一轮。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 CI（2026-09-10，提交 `bf52df3`）为 853 个测试文件：795 通过、54 失败、4 跳过；失败集中在既有 mailbox/managed/memory/renderer/Office 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。随后本地新增的生命周期并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过；`npm run lint` 为 0 错误，剩余为既有警告。
+- 全量 CI（2026-09-10，提交 `56be3f9`）为 854 个测试文件：796 通过、54 失败、4 跳过；失败集中在既有 mailbox/managed/memory/renderer/Office 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
 
 ## 下一步
 
