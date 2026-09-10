@@ -260,6 +260,27 @@ function appendBoundedRuntimeBuffer(
   output: string,
 ): void {
   if (!output) return;
+  if (runtime.bufferTruncated) {
+    // Once the buffer has crossed the cap, retain the diagnostic head and the
+    // newest tail without repeatedly concatenating and slicing the full
+    // megabyte-sized buffer for every incoming data chunk. Windows pipes often
+    // deliver large native-command output in very small chunks.
+    const retained = Math.max(
+      0,
+      MAX_PERSISTENT_BUFFER_CHARS - PERSISTENT_OUTPUT_TRUNCATION_MARKER.length,
+    );
+    const head = Math.floor(retained * 0.2);
+    const tail = retained - head;
+    const nextTail =
+      output.length >= tail
+        ? output.slice(-tail)
+        : runtime.buffer.slice(-Math.max(0, tail - output.length)) + output;
+    runtime.buffer =
+      runtime.buffer.slice(0, head) +
+      PERSISTENT_OUTPUT_TRUNCATION_MARKER +
+      nextTail;
+    return;
+  }
   const next = runtime.buffer + output;
   if (next.length <= MAX_PERSISTENT_BUFFER_CHARS) {
     runtime.buffer = next;
@@ -1159,7 +1180,12 @@ export class ShellSessionManager {
     const currentPending = runtime.pending[0];
     if (!currentPending) return;
     const doneMarker = `__NEOWORKER_DONE__:${currentPending.commandId}:`;
-    if (!runtime.buffer.includes(doneMarker)) return;
+    // The completion marker is emitted after the state block, so it is always
+    // close to the end of the protocol buffer. Avoid rescanning the entire
+    // retained output for every small stdout chunk.
+    const markerLookback = Math.max(1_024, doneMarker.length * 4);
+    const markerSearchStart = Math.max(0, runtime.buffer.length - markerLookback);
+    if (runtime.buffer.indexOf(doneMarker, markerSearchStart) < 0) return;
 
     const raw = runtime.buffer;
     runtime.buffer = "";
