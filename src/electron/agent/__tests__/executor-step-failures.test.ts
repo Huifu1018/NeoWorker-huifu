@@ -40,16 +40,19 @@ vi.mock("../../memory/MemoryService", () => ({
   },
 }));
 
+let toolUseSequence = 0;
+
 function toolUseResponse(
   name: string,
   input: Record<string, Any>,
 ): LLMResponse {
+  toolUseSequence += 1;
   return {
     stopReason: "tool_use",
     content: [
       {
         type: "tool_use",
-        id: `tool-${name}`,
+        id: `tool-${name}-${toolUseSequence}`,
         name,
         input,
       },
@@ -181,6 +184,7 @@ function createExecutorWithStubs(
   executor.daemon = {
     logEvent: vi.fn(),
     getTaskEvents: vi.fn().mockReturnValue([]),
+    getLatestToolHostLifecycle: vi.fn().mockReturnValue(null),
     updateTask: vi.fn(),
     updateTaskStatus: vi.fn(),
   };
@@ -337,7 +341,11 @@ function createExecutorWithStubs(
         result,
         durationMs: 0,
         resultJson: JSON.stringify(result),
-        envelope: undefined,
+        envelope: {
+          status: result?.success === false ? "error" : "success",
+          structuredData: result,
+          modelPayload: JSON.stringify(result),
+        },
         policyTrace: undefined,
       };
     }),
@@ -388,6 +396,7 @@ function createExecutorWithLLMHandler(
   executor.daemon = {
     logEvent: vi.fn(),
     getTaskEvents: vi.fn().mockReturnValue([]),
+    getLatestToolHostLifecycle: vi.fn().mockReturnValue(null),
     updateTask: vi.fn(),
     updateTaskStatus: vi.fn(),
   };

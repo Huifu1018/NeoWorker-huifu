@@ -220,12 +220,14 @@ describe("TaskExecutor parallel tool batches", () => {
       "web_search",
       expect.objectContaining({ query: "first", provider: "duckduckgo" }),
       1000,
+      expect.any(String),
     );
     expect(executor.executeToolWithHeartbeat).toHaveBeenNthCalledWith(
       2,
       "web_search",
       expect.objectContaining({ query: "second", provider: "duckduckgo" }),
       1000,
+      expect.any(String),
     );
     expect(executor.webSearchToolCallCount).toBe(2);
     expect(executor.paidWebSearchToolCallCount).toBe(0);

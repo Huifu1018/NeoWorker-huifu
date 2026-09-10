@@ -11,6 +11,12 @@ function getWaivableStepIds(
   },
 ): string[] {
   const executor = Object.create(TaskExecutor.prototype) as Any;
+  executor.task = {
+    id: "task-1",
+    title: "Test task",
+    prompt: "Test prompt",
+    rawPrompt: "Test prompt",
+  };
   executor.plan = { description: "Plan", steps };
   executor.budgetConstrainedFailedStepIds = new Set(opts?.budgetConstrainedFailedStepIds || []);
   executor.blockingVerificationFailedStepIds = new Set(opts?.blockingVerificationFailedStepIds || []);

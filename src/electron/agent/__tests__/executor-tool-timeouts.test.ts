@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TaskExecutor } from "../executor";
-import { withTimeout } from "../executor-helpers";
+import { STEP_TIMEOUT_MS, withTimeout } from "../executor-helpers";
 import { BuiltinToolsSettingsManager } from "../tools/builtin-settings";
 
 vi.mock("electron", () => ({
@@ -235,7 +235,7 @@ describe("TaskExecutor getToolTimeoutMs", () => {
       prompt: "snow leopard avatar",
     });
 
-    expect(timeoutMs).toBe(600_000);
+    expect(timeoutMs).toBe(STEP_TIMEOUT_MS - 5_000);
     timeoutSpy.mockRestore();
   });
 });
