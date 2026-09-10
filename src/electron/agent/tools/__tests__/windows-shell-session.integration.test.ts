@@ -14,6 +14,21 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
   let taskId: string;
   let workspaceId: string;
 
+  const removeWorkspaceEventually = async (directory: string): Promise<void> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      try {
+        await rm(directory, { recursive: true, force: true });
+        return;
+      } catch (error) {
+        lastError = error;
+        if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    if (lastError) throw lastError;
+  };
+
   beforeEach(async () => {
     workspace = await mkdtemp(path.join(tmpdir(), "neoworker-shell-session-"));
     manager = ShellSessionManager.getInstance();
@@ -23,7 +38,7 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
 
   afterEach(async () => {
     await manager.closeSession(taskId, workspaceId);
-    await rm(workspace, { recursive: true, force: true });
+    await removeWorkspaceEventually(workspace);
   });
 
   it("executes UTF-8 PowerShell commands and preserves session environment", async () => {
@@ -42,9 +57,6 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         truncated: false,
       }),
     });
-    if (!first.success || first.exitCode !== 0) {
-      console.error("[windows-shell-session:first]", JSON.stringify(first));
-    }
     expect(first).toMatchObject({
       success: true,
       exitCode: 0,
@@ -87,9 +99,6 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         truncated: false,
       }),
     });
-    if (failed.exitCode !== 17) {
-      console.error("[windows-shell-session:failed]", JSON.stringify(failed));
-    }
     expect(failed).toMatchObject({ success: false, exitCode: 17, usedPersistentSession: true });
 
     await expect(manager.runCommand({
