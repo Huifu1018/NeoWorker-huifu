@@ -11,12 +11,14 @@ import { ShellSessionManager } from "../shell-session-manager";
 describe.skipIf(process.platform !== "win32")("Windows persistent shell session", () => {
   let workspace: string;
   let manager: ShellSessionManager;
-  const taskId = `windows-shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const workspaceId = `workspace-${taskId}`;
+  let taskId: string;
+  let workspaceId: string;
 
   beforeEach(async () => {
     workspace = await mkdtemp(path.join(tmpdir(), "neoworker-shell-session-"));
     manager = ShellSessionManager.getInstance();
+    taskId = `windows-shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    workspaceId = `workspace-${taskId}`;
   });
 
   afterEach(async () => {

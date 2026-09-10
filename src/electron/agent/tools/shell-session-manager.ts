@@ -116,6 +116,26 @@ function terminateProcessTree(child: ChildProcess | null, signal: NodeJS.Signals
   }
 }
 
+function waitForProcessExit(child: ChildProcess | null, timeoutMs = 1_500): Promise<void> {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = () => {
+      if (timer) clearTimeout(timer);
+      child.off("close", done);
+      child.off("exit", done);
+      child.off("error", done);
+      resolve();
+    };
+    child.once("close", done);
+    child.once("exit", done);
+    child.once("error", done);
+    timer = setTimeout(done, timeoutMs);
+  });
+}
+
 function terminatePersistedShellProcess(pid: number): void {
   if (!Number.isInteger(pid) || pid <= 0) return;
   if (process.platform === "win32") {
@@ -895,7 +915,10 @@ export class ShellSessionManager {
     aliases: Record<string, string>;
     exitCode: number | null;
   } {
-    const doneMatch = raw.match(/__NEOWORKER_DONE__:(.+?):(\d+|null)\s*$/m);
+    // PowerShell/cmd may append a prompt or other whitespace after the
+    // sentinel. Use a greedy command-id capture so IDs containing colons do
+    // not make the parser stop at an earlier numeric segment.
+    const doneMatch = raw.match(/__NEOWORKER_DONE__:(.*):(\d+|null)/);
     const exitCode = doneMatch
       ? doneMatch[2] === "null"
         ? null
@@ -1251,7 +1274,8 @@ export class ShellSessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     session.exitStatusOverride = "inactive";
-    terminateProcessTree(session.process);
+    const processToKill = session.process;
+    terminateProcessTree(processToKill);
     session.process = null;
     session.ready = false;
     session.busy = false;
@@ -1269,6 +1293,7 @@ export class ShellSessionManager {
       });
     }
     session.pending = [];
+    await waitForProcessExit(processToKill);
     this.updateRuntimeInfo(session, { status: "inactive", lastTerminationReason: "error" });
     await this.persistState();
     return { ...session.info };
@@ -1278,12 +1303,25 @@ export class ShellSessionManager {
     await this.ensureStateLoaded();
     const session = this.sessions.get(sessionId);
     if (!session) return null;
+    session.exitStatusOverride = "ended";
+    const processToKill = session.process;
     for (const pending of session.pending) {
-      pending.resolve({ stdout: "", stderr: "", exitCode: null, success: false, usedPersistentSession: true });
+      clearTimeout(pending.timeout);
+      pending.resolve({
+        stdout: "",
+        stderr: "Terminal session closed.",
+        exitCode: null,
+        success: false,
+        usedPersistentSession: true,
+      });
     }
     session.pending = [];
-    terminateProcessTree(session.process);
+    terminateProcessTree(processToKill);
+    session.process = null;
+    session.ready = false;
+    session.busy = false;
     this.activeSessionRuns.delete(session.info.id);
+    await waitForProcessExit(processToKill);
     this.sessions.delete(sessionId);
     await this.persistState();
     return { ...session.info, status: "ended" };
@@ -1311,7 +1349,9 @@ export class ShellSessionManager {
     if (!session) return null;
 
     this.updateRuntimeInfo(session, { status: "resetting" });
-    session.process?.kill("SIGTERM");
+    session.exitStatusOverride = "inactive";
+    const processToKill = session.process;
+    terminateProcessTree(processToKill);
     session.process = null;
     session.ready = false;
     session.buffer = "";
@@ -1322,8 +1362,9 @@ export class ShellSessionManager {
     session.info.lastExitCode = undefined;
     session.info.lastTerminationReason = undefined;
     session.info.lastError = undefined;
+    await waitForProcessExit(processToKill);
     this.updateRuntimeInfo(session, { status: "inactive" });
-    void this.persistState();
+    await this.persistState();
     return { ...session.info };
   }
 
@@ -1333,10 +1374,29 @@ export class ShellSessionManager {
     const session = this.sessions.get(key);
     if (!session) return null;
 
-    session.process?.kill("SIGTERM");
+    session.exitStatusOverride = "ended";
+    const processToKill = session.process;
+    terminateProcessTree(processToKill);
     session.process = null;
+    session.ready = false;
+    session.busy = false;
+    for (const pending of session.pending) {
+      clearTimeout(pending.timeout);
+      pending.resolve({
+        success: false,
+        stdout: "",
+        stderr: "Terminal session closed.",
+        exitCode: null,
+        terminationReason: "error",
+        usedPersistentSession: true,
+        sessionId: session.info.id,
+      });
+    }
+    session.pending = [];
+    this.activeSessionRuns.delete(session.info.id);
+    await waitForProcessExit(processToKill);
     this.updateRuntimeInfo(session, { status: "ended" });
-    void this.persistState();
+    await this.persistState();
     return { ...session.info };
   }
 }
