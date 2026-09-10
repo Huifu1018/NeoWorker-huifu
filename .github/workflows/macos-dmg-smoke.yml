@@ -51,3 +51,15 @@ jobs:
 
       - name: Smoke macOS DMG
         run: npm run package:mac:smoke -- --expected-version=${{ inputs.expected_version }} --allow-unsigned
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v6
+        with:
+          name: NeoWorker-${{ inputs.expected_version }}-macos-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.blockmap
+            release/*.yml
+            release/*.sha256
+          if-no-files-found: error
