@@ -868,6 +868,10 @@ export class ShellSessionManager {
     });
 
     child.on("exit", (code, signal) => {
+      // A timed-out process can emit its exit event after the session has
+      // already spawned a replacement. Never let that stale event clear or
+      // overwrite the replacement runtime.
+      if (runtime.process !== child) return;
       const nextStatus = runtime.exitStatusOverride || "ended";
       runtime.exitStatusOverride = undefined;
       runtime.process = null;
