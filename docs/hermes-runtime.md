@@ -41,6 +41,7 @@ For the source-level ownership evidence, see [hermes-tool-ownership-audit.md](he
 hermes acp --check
 npm test -- --run src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
 npm test -- --run src/electron/agent/runtime/__tests__/hermes-tool-host-mcp.test.ts src/electron/agent/__tests__/executor-hermes-recovery.test.ts
+npm test -- --run src/electron/agent/runtime/__tests__/hermes-host-owned-toolchain.test.ts
 python3 scripts/qa/test_hermes_host_launcher.py
 npm test -- --run src/electron/agent/tools/__tests__/shell-tools.test.ts
 ```

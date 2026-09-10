@@ -21,7 +21,7 @@
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
-| Hermes 宿主多步路由 | 通过确定性回归 | ACP fixture 依次调用 `write_file` 和 `run_command`；两次调用都经过同一 NeoWorker Tool Host，并生成独立的工具生命周期事件；真实模型多步验收仍待供应商余额恢复 |
+| Hermes 宿主多步路由 | 通过 NeoWorker 侧真实工具链回归 | `hermes-host-owned-toolchain.test.ts` 使用 ACP fixture 依次调用 `write_file` 和 `run_command`；两次调用都经过真实 `ToolRegistry → FileTools/ShellTools → Coordinator → Tool Host`，验证审批、沙箱、文件产物、Shell 输出和生命周期日志；真实模型多步验收仍待供应商余额恢复 |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
 | MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、200,000 字符模型输出上限 |
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
@@ -47,13 +47,13 @@
 
 - 新建 Hermes ACP 宿主工具任务需要安装 `hermes-agent==0.18.0` 的 Python 环境；包装器不会修改已安装 Hermes，其他版本在验证前拒绝启动。可通过 `NEOWORKER_HERMES_PYTHON` 指定解释器。
 - 普通 NeoWorker 任务仍使用原生 SessionRuntime/TurnKernel；只有显式选择 Hermes 外部 Runtime 的任务才进入 ACP。
-- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型探针证明桥接调用与原生工具排除，文件/Shell/审批/取消完整场景仍待验证，阶段 2 尚未关闭。
+- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。确定性回归已经证明 NeoWorker 侧真实文件/Shell/审批/沙箱/日志链路，真实模型驱动的文件/Shell/审批/取消完整场景仍待验证，阶段 2 尚未关闭。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
 - 全量 Vitest 当前为 847 个测试文件：787 通过、59 失败、1 跳过；8480 个测试：8312 通过、163 失败、3 跳过、2 todo。失败主要是既有 Renderer 文案/快照、数据库初始化、外部 SecureSettings 和环境迁移测试；本轮执行链专项未出现新增回归。
 
 ## 下一步
 
-1. 在真实 Hermes ACP 宿主工具模式执行文件操作、Shell、依赖安装和多步任务，并记录每个 Tool Host 生命周期事件。
+1. 在真实 Hermes ACP 宿主工具模式执行文件操作、Shell、依赖安装和多步任务，并记录每个 Tool Host 生命周期事件；确定性链路回归见 `src/electron/agent/runtime/__tests__/hermes-host-owned-toolchain.test.ts`。
 2. 验证审批拒绝、取消与恢复、旧 checkpoint 所有权隔离，以及 Windows Python/Hermes 启动路径。
 3. 完成跨平台实机验证后再生成安装包。
