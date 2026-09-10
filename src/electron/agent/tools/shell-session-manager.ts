@@ -419,7 +419,11 @@ function buildPowerShellCommandWrapper(targetCwd: string, command: string, comma
     `$__neoworker_command = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedCommand}'))`,
     "try {",
     "  Invoke-Expression $__neoworker_command",
-    "  if ($LASTEXITCODE -is [int]) { $__neoworker_exit_code = $LASTEXITCODE } elseif ($?) { $__neoworker_exit_code = 0 } else { $__neoworker_exit_code = 1 }",
+    // Capture the invocation result before evaluating any follow-up
+    // expressions. PowerShell's `$?` is mutable and can otherwise describe
+    // the type check below instead of the command that just ran.
+    "  $__neoworker_invocation_succeeded = $?",
+    "  if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { $__neoworker_exit_code = $LASTEXITCODE } elseif ($__neoworker_invocation_succeeded) { $__neoworker_exit_code = 0 } else { $__neoworker_exit_code = 1 }",
     "} catch {",
     "  [Console]::Error.WriteLine($_.Exception.Message)",
     "  $__neoworker_exit_code = 1",
