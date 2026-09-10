@@ -62,7 +62,7 @@
 - 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路曾由 `run-hermes-live-hostchain.mjs` 验收；最新真实复测受外部 provider HTTP 502 queue full 阻断，取消、暂停后的恢复和未知副作用确认由确定性回归及 Windows runner 覆盖。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 CI（2026-09-10，提交 `d78f7b8`）为 854 个测试文件：796 通过、54 失败、4 跳过；8,583 个测试：8,405 通过、165 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
+- 全量 CI（2026-09-10，提交 `c4c5b96`）为 854 个测试文件：796 通过、54 失败、4 跳过；8,584 个测试：8,406 通过、165 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层、checkpoint guarded retry、流式输出和 follow-up 终态定向测试均通过。
 
 ## 下一步
 
