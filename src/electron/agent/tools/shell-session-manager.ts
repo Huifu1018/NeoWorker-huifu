@@ -24,8 +24,17 @@ type ShellSessionRuntime = {
   shell?: string;
   process: ChildProcess | null;
   invalidation?: Promise<void>;
-  buffer: string;
+  /** Untruncated protocol output, kept as chunks to avoid O(n²) concatenation. */
+  bufferChunks: string[];
+  bufferChunkStart: number;
+  bufferLength: number;
   bufferTruncated: boolean;
+  /** Head retained after the bounded buffer overflows. */
+  bufferHead: string;
+  /** Tail chunks retained after the bounded buffer overflows. */
+  bufferTailChunks: string[];
+  bufferTailChunkStart: number;
+  bufferTailLength: number;
   ready: boolean;
   busy: boolean;
   pending: Array<{
@@ -262,46 +271,144 @@ function appendBoundedRuntimeBuffer(
   if (!output) return;
   if (runtime.bufferTruncated) {
     // Once the buffer has crossed the cap, retain the diagnostic head and the
-    // newest tail without repeatedly concatenating and slicing the full
-    // megabyte-sized buffer for every incoming data chunk. Windows pipes often
-    // deliver large native-command output in very small chunks.
-    const retained = Math.max(
-      0,
-      MAX_PERSISTENT_BUFFER_CHARS - PERSISTENT_OUTPUT_TRUNCATION_MARKER.length,
-    );
-    const head = Math.floor(retained * 0.2);
-    const tail = retained - head;
-    const nextTail =
-      output.length >= tail
-        ? output.slice(-tail)
-        : runtime.buffer.slice(-Math.max(0, tail - output.length)) + output;
-    runtime.buffer =
-      runtime.buffer.slice(0, head) +
-      PERSISTENT_OUTPUT_TRUNCATION_MARKER +
-      nextTail;
+    // newest tail as chunks. Windows pipes often deliver large native-command
+    // output in very small chunks; rebuilding a megabyte string per chunk can
+    // turn a bounded stream into an accidental O(n²) operation.
+    appendRuntimeTail(runtime, output, getPersistentBufferTailLength());
     return;
   }
-  const next = runtime.buffer + output;
-  if (next.length <= MAX_PERSISTENT_BUFFER_CHARS) {
-    runtime.buffer = next;
+  runtime.bufferChunks.push(output);
+  runtime.bufferLength += output.length;
+  if (runtime.bufferLength <= MAX_PERSISTENT_BUFFER_CHARS) {
     return;
   }
 
+  const next = materializeRuntimeBuffer(runtime);
   // Keep the beginning for command diagnostics and the tail where state,
   // exit markers and build errors are emitted. The marker makes truncation
   // explicit without allowing a long-running process to grow the buffer
   // without bound.
-  const retained = Math.max(
+  const retained = getPersistentBufferRetainedLength();
+  const head = Math.floor(retained * 0.2);
+  const tail = retained - head;
+  runtime.bufferChunks = [];
+  runtime.bufferChunkStart = 0;
+  runtime.bufferLength = 0;
+  runtime.bufferHead = next.slice(0, head);
+  runtime.bufferTailChunks = [];
+  runtime.bufferTailChunkStart = 0;
+  runtime.bufferTailLength = 0;
+  runtime.bufferTruncated = true;
+  appendRuntimeTail(runtime, next.slice(-tail), tail);
+}
+
+function getPersistentBufferRetainedLength(): number {
+  return Math.max(
     0,
     MAX_PERSISTENT_BUFFER_CHARS - PERSISTENT_OUTPUT_TRUNCATION_MARKER.length,
   );
-  const head = Math.floor(retained * 0.2);
-  const tail = retained - head;
-  runtime.buffer =
-    next.slice(0, head) +
+}
+
+function getPersistentBufferTailLength(): number {
+  const retained = getPersistentBufferRetainedLength();
+  return retained - Math.floor(retained * 0.2);
+}
+
+function appendRuntimeTail(
+  runtime: ShellSessionRuntime,
+  output: string,
+  maxLength: number,
+): void {
+  if (!output || maxLength <= 0) return;
+  if (output.length >= maxLength) {
+    runtime.bufferTailChunks = [output.slice(-maxLength)];
+    runtime.bufferTailChunkStart = 0;
+    runtime.bufferTailLength = maxLength;
+    return;
+  }
+
+  runtime.bufferTailChunks.push(output);
+  runtime.bufferTailLength += output.length;
+  while (runtime.bufferTailLength > maxLength && runtime.bufferTailChunkStart < runtime.bufferTailChunks.length) {
+    const first = runtime.bufferTailChunks[runtime.bufferTailChunkStart] || "";
+    const overflow = runtime.bufferTailLength - maxLength;
+    if (first.length <= overflow) {
+      runtime.bufferTailChunkStart += 1;
+      runtime.bufferTailLength -= first.length;
+    } else {
+      runtime.bufferTailChunks[runtime.bufferTailChunkStart] = first.slice(overflow);
+      runtime.bufferTailLength -= overflow;
+      break;
+    }
+  }
+  if (
+    runtime.bufferTailChunkStart > 32 &&
+    runtime.bufferTailChunkStart * 2 >= runtime.bufferTailChunks.length
+  ) {
+    runtime.bufferTailChunks = runtime.bufferTailChunks.slice(runtime.bufferTailChunkStart);
+    runtime.bufferTailChunkStart = 0;
+  }
+}
+
+function getRuntimeBufferTail(runtime: ShellSessionRuntime, maxLength: number): string {
+  if (maxLength <= 0) return "";
+  if (!runtime.bufferTruncated) {
+    let remaining = Math.min(maxLength, runtime.bufferLength);
+    if (remaining <= 0) return "";
+    const chunks: string[] = [];
+    for (let index = runtime.bufferChunks.length - 1; index >= runtime.bufferChunkStart && remaining > 0; index -= 1) {
+      const chunk = runtime.bufferChunks[index] || "";
+      if (chunk.length <= remaining) {
+        chunks.push(chunk);
+        remaining -= chunk.length;
+      } else {
+        chunks.push(chunk.slice(-remaining));
+        remaining = 0;
+      }
+    }
+    return chunks.reverse().join("");
+  }
+
+  let remaining = Math.min(maxLength, runtime.bufferTailLength);
+  if (remaining <= 0) return "";
+  const chunks: string[] = [];
+  for (
+    let index = runtime.bufferTailChunks.length - 1;
+    index >= runtime.bufferTailChunkStart && remaining > 0;
+    index -= 1
+  ) {
+    const chunk = runtime.bufferTailChunks[index] || "";
+    if (chunk.length <= remaining) {
+      chunks.push(chunk);
+      remaining -= chunk.length;
+    } else {
+      chunks.push(chunk.slice(-remaining));
+      remaining = 0;
+    }
+  }
+  return chunks.reverse().join("");
+}
+
+function materializeRuntimeBuffer(runtime: ShellSessionRuntime): string {
+  if (!runtime.bufferTruncated) {
+    return runtime.bufferChunks.slice(runtime.bufferChunkStart).join("");
+  }
+  return (
+    runtime.bufferHead +
     PERSISTENT_OUTPUT_TRUNCATION_MARKER +
-    next.slice(-tail);
-  runtime.bufferTruncated = true;
+    runtime.bufferTailChunks.slice(runtime.bufferTailChunkStart).join("")
+  );
+}
+
+function resetRuntimeBuffer(runtime: ShellSessionRuntime): void {
+  runtime.bufferChunks = [];
+  runtime.bufferChunkStart = 0;
+  runtime.bufferLength = 0;
+  runtime.bufferTruncated = false;
+  runtime.bufferHead = "";
+  runtime.bufferTailChunks = [];
+  runtime.bufferTailChunkStart = 0;
+  runtime.bufferTailLength = 0;
 }
 
 function boundPersistentVisibleOutput(
@@ -823,8 +930,14 @@ export class ShellSessionManager {
           shell: undefined,
           process: null,
           invalidation: undefined,
-          buffer: "",
+          bufferChunks: [],
+          bufferChunkStart: 0,
+          bufferLength: 0,
           bufferTruncated: false,
+          bufferHead: "",
+          bufferTailChunks: [],
+          bufferTailChunkStart: 0,
+          bufferTailLength: 0,
           ready: false,
           busy: false,
           pending: [],
@@ -928,8 +1041,14 @@ export class ShellSessionManager {
         shell: undefined,
         process: null,
         invalidation: undefined,
-        buffer: "",
+        bufferChunks: [],
+        bufferChunkStart: 0,
+        bufferLength: 0,
         bufferTruncated: false,
+        bufferHead: "",
+        bufferTailChunks: [],
+        bufferTailChunkStart: 0,
+        bufferTailLength: 0,
         ready: false,
         busy: false,
         pending: [],
@@ -983,8 +1102,7 @@ export class ShellSessionManager {
       runtime.process = null;
       runtime.ready = false;
       runtime.busy = false;
-      runtime.buffer = "";
-      runtime.bufferTruncated = false;
+      resetRuntimeBuffer(runtime);
       runtime.snapshot = {
         cwd: previousCwd,
         env: {},
@@ -1065,8 +1183,7 @@ export class ShellSessionManager {
     runtime.process = null;
     runtime.ready = false;
     runtime.busy = false;
-    runtime.buffer = "";
-    runtime.bufferTruncated = false;
+    resetRuntimeBuffer(runtime);
     runtime.exitStatusOverride = undefined;
 
     const pending = runtime.pending.splice(0);
@@ -1108,8 +1225,7 @@ export class ShellSessionManager {
 
     runtime.shell = shell;
     runtime.process = child;
-    runtime.buffer = "";
-    runtime.bufferTruncated = false;
+    resetRuntimeBuffer(runtime);
     runtime.ready = true;
     child.once("error", (error) => {
       this.handleProcessError(runtime, child, error);
@@ -1184,13 +1300,11 @@ export class ShellSessionManager {
     // close to the end of the protocol buffer. Avoid rescanning the entire
     // retained output for every small stdout chunk.
     const markerLookback = Math.max(1_024, doneMarker.length * 4);
-    const markerSearchStart = Math.max(0, runtime.buffer.length - markerLookback);
-    if (runtime.buffer.indexOf(doneMarker, markerSearchStart) < 0) return;
+    if (!getRuntimeBufferTail(runtime, markerLookback).includes(doneMarker)) return;
 
-    const raw = runtime.buffer;
-    runtime.buffer = "";
     const wasBufferTruncated = runtime.bufferTruncated;
-    runtime.bufferTruncated = false;
+    const raw = materializeRuntimeBuffer(runtime);
+    resetRuntimeBuffer(runtime);
     const parsed = this.parseShellOutput(raw, runtime, wasBufferTruncated);
     const diff = diffSnapshot(runtime.snapshot, {
       cwd: parsed.cwd,
@@ -1444,8 +1558,7 @@ export class ShellSessionManager {
       : session.snapshot.cwd || request.workspacePath;
     // A new command owns a fresh protocol buffer. Any bytes left after a
     // previous process error or cancellation must never satisfy its marker.
-    session.buffer = "";
-    session.bufferTruncated = false;
+    resetRuntimeBuffer(session);
     const wrapper = buildCommandWrapper(
       session.shell || resolveShellExecutable(),
       targetCwd,
@@ -1739,8 +1852,7 @@ export class ShellSessionManager {
     terminateProcessTree(processToKill);
     session.process = null;
     session.ready = false;
-    session.buffer = "";
-    session.bufferTruncated = false;
+    resetRuntimeBuffer(session);
     session.busy = false;
     session.snapshot = { cwd: session.info.cwd, env: {}, aliases: {} };
     session.info.commandCount = 0;
