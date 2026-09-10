@@ -331,6 +331,7 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
       expect.objectContaining({
         command: "node hermes-host.cjs",
         cwd: workspacePath,
+        toolCallId: expect.any(String),
       }),
     );
     expect(sandboxMocks.createSandbox).toHaveBeenCalledTimes(1);
@@ -388,6 +389,9 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
       toolCallId: expect.any(String),
       approvalType: "run_command",
     });
+    expect(runApproval?.toolCallId).toBe(
+      (daemon.requestApproval as Any).mock.calls[0]?.[3]?.toolCallId,
+    );
     expect(events.some((event) => event.type === "file_created")).toBe(true);
     expect(events.some((event) => event.type === "tool_call")).toBe(true);
     expect(events.some((event) => event.type === "tool_result")).toBe(true);
