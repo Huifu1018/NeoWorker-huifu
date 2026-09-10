@@ -314,8 +314,10 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
   it("routes ACP file and shell calls through real registry, approval, sandbox, and lifecycle logs", async () => {
     const { runtime, workspacePath, daemon, events } = await createHostHarness();
     const result = await runtime.prompt("host-multi-tool");
-    const outputPath = path.join(workspacePath, "hermes-host.txt");
-    expect(await readFile(outputPath, "utf8")).toBe("hello from Hermes");
+    const outputPath = path.join(workspacePath, "hermes-host.cjs");
+    expect(await readFile(outputPath, "utf8")).toBe(
+      "process.stdout.write('hello from Hermes')",
+    );
     expect(result).toMatchObject({
       stopReason: "end_turn",
       sessionId: "fixture-session",
@@ -327,14 +329,14 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
       "run_command",
       expect.any(String),
       expect.objectContaining({
-        command: expect.stringContaining("hello from Hermes"),
+        command: "node hermes-host.cjs",
         cwd: workspacePath,
       }),
     );
     expect(sandboxMocks.createSandbox).toHaveBeenCalledTimes(1);
     expect(sandboxMocks.executions).toEqual([
       expect.objectContaining({
-        command: expect.stringContaining("hello from Hermes"),
+        command: "node hermes-host.cjs",
         cwd: workspacePath,
         allowNetwork: false,
       }),
@@ -396,7 +398,7 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
     };
     const writePayload = JSON.parse(assistant.write.result?.content?.[0]?.text || "{}");
     const shellPayload = JSON.parse(assistant.shell.result?.content?.[0]?.text || "{}");
-    expect(writePayload).toMatchObject({ success: true, path: "hermes-host.txt" });
+    expect(writePayload).toMatchObject({ success: true, path: "hermes-host.cjs" });
     expect(shellPayload).toMatchObject({
       success: true,
       stdout: "hello from Hermes",
@@ -420,7 +422,7 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
     const shellPayload = JSON.parse(assistant.shell.result?.content?.[0]?.text || "{}");
 
     expect(result.stopReason).toBe("end_turn");
-    expect(writePayload).toMatchObject({ success: true, path: "hermes-host.txt" });
+    expect(writePayload).toMatchObject({ success: true, path: "hermes-host.cjs" });
     expect(shellPayload).toMatchObject({
       error: "User denied command execution",
     });
@@ -439,8 +441,8 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
     );
     expect(daemon.requestApproval).toHaveBeenCalledTimes(1);
     expect(sandboxMocks.createSandbox).not.toHaveBeenCalled();
-    await expect(readFile(path.join(workspacePath, "hermes-host.txt"), "utf8"))
-      .resolves.toBe("hello from Hermes");
+    await expect(readFile(path.join(workspacePath, "hermes-host.cjs"), "utf8"))
+      .resolves.toBe("process.stdout.write('hello from Hermes')");
   });
 
   it("cancels a pending host approval without starting Shell and resumes the checkpoint", async () => {
@@ -469,8 +471,8 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
       ]),
     );
     await expect(
-      readFile(path.join(harness.workspacePath, "hermes-host.txt"), "utf8"),
-    ).resolves.toBe("hello from Hermes");
+      readFile(path.join(harness.workspacePath, "hermes-host.cjs"), "utf8"),
+    ).resolves.toBe("process.stdout.write('hello from Hermes')");
 
     const resumed = await harness.runtime.resume("next");
     expect(resumed).toMatchObject({

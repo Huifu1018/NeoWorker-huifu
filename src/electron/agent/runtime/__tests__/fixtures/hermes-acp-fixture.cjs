@@ -60,8 +60,8 @@ readline.createInterface({input:process.stdin}).on('line', line => {
        };
        const init = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{}})});
        headers['mcp-session-id'] = init.headers.get('mcp-session-id');
-       const write = await request(2, 'write_file', {path:'hermes-host.txt', content:'hello from Hermes'});
-       const shell = await request(3, 'run_command', {command:'node -e "process.stdout.write(\'hello from Hermes\')"'});
+       const write = await request(2, 'write_file', {path:'hermes-host.cjs', content:"process.stdout.write('hello from Hermes')"});
+       const shell = await request(3, 'run_command', {command:'node hermes-host.cjs'});
        send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify({write,shell})}}}});
        result(id,{stopReason:'end_turn'}); promptId=undefined;
      })().catch(error => send({id,error:{code:-32001,message:error.message}}));
