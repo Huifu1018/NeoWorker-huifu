@@ -128,7 +128,21 @@ function terminateProcessTree(child: ChildProcess | null, signal: NodeJS.Signals
 }
 
 function waitForProcessExit(child: ChildProcess | null, timeoutMs = 1_500): Promise<void> {
-  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+  if (!child?.pid) {
+    return Promise.resolve();
+  }
+  const streamsClosed = [child.stdin, child.stdout, child.stderr].every(
+    (stream) => {
+      if (!stream) return true;
+      const state = stream as {
+        destroyed?: boolean;
+        readableEnded?: boolean;
+        writableEnded?: boolean;
+      };
+      return state.destroyed === true || state.readableEnded === true || state.writableEnded === true;
+    },
+  );
+  if ((child.exitCode !== null || child.signalCode !== null) && streamsClosed) {
     return Promise.resolve();
   }
   return new Promise((resolve) => {
@@ -136,12 +150,10 @@ function waitForProcessExit(child: ChildProcess | null, timeoutMs = 1_500): Prom
     const done = () => {
       if (timer) clearTimeout(timer);
       child.off("close", done);
-      child.off("exit", done);
       child.off("error", done);
       resolve();
     };
     child.once("close", done);
-    child.once("exit", done);
     child.once("error", done);
     timer = setTimeout(done, timeoutMs);
   });
