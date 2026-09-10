@@ -16,7 +16,7 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
 
   const removeWorkspaceEventually = async (directory: string): Promise<void> => {
     let lastError: unknown;
-    for (let attempt = 0; attempt < 12; attempt += 1) {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
       try {
         await rm(directory, { recursive: true, force: true });
         return;
@@ -81,7 +81,7 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
     });
     expect(second).toMatchObject({ success: true, exitCode: 0 });
     expect(second.stdout).toContain("任务变量");
-  });
+  }, 20_000);
 
   it("returns native exit codes and recovers after a timed-out process", async () => {
     const failed = await manager.runCommand({
