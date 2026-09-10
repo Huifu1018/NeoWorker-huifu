@@ -378,6 +378,25 @@ describe("Executor Hermes recovery", () => {
     expect(runtime.close).not.toHaveBeenCalled();
   });
 
+  it("reads only the latest task event when building Hermes checkpoints", () => {
+    const instance = executor([]) as Any;
+    const runtime = adapter(instance);
+    const getTaskEvents = instance.daemon.getTaskEvents as Any;
+    getTaskEvents.mockReturnValue([{ seq: 42 }]);
+
+    expect((runtime as Any).options.getLogSequence()).toBe(42);
+    expect(getTaskEvents).toHaveBeenCalledWith(
+      "recover-hermes",
+      { limit: 1 },
+    );
+    expect(
+      getTaskEvents.mock.calls.some(
+        ([taskId, options]: [string, Any]) =>
+          taskId === "recover-hermes" && options === undefined,
+      ),
+    ).toBe(false);
+  });
+
   it("retries a transient Hermes provider failure once when no host tool started", async () => {
     const events: Array<{ type: string; payload?: Any }> = [];
     const checkpoint = {

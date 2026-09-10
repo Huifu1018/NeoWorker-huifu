@@ -9841,9 +9841,15 @@ ${transcript}
       cwd: this.workspace.path,
       checkpoint: this.hermesCheckpoint,
       getLogSequence: () => {
-        const lastEvent = this.daemon.getTaskEvents(this.task.id).at(-1);
+        // Checkpoints are persisted before and after every host tool call.
+        // Reading the whole task timeline here makes each checkpoint
+        // progressively slower on long tasks. The repository's recent-event
+        // query already returns the newest event, so keep this lookup bounded.
+        const lastEvent = this.daemon
+          .getTaskEvents(this.task.id, { limit: 1 })
+          .at(-1);
         const sequence = Number(lastEvent?.seq ?? lastEvent?.ts);
-        return Number.isFinite(sequence) ? sequence : this.daemon.getTaskEvents(this.task.id).length;
+        return Number.isFinite(sequence) ? sequence : 0;
       },
       ...(hostOwned ? {
         ...resolveHermesHostLauncher(),

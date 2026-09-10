@@ -526,11 +526,10 @@ export class HermesRuntimeAdapter {
   private snapshotCheckpoint(): HermesSessionCheckpoint | undefined {
     if (!this.sessionCheckpoint) return undefined;
     const logSequence = this.options.getLogSequence?.();
+    const toolProgress = this.snapshotToolProgress();
     return {
       ...this.sessionCheckpoint,
-      ...(this.snapshotToolProgress()
-        ? { toolProgress: this.snapshotToolProgress() }
-        : {}),
+      ...(toolProgress ? { toolProgress } : {}),
       ...(Number.isFinite(logSequence)
         ? { logSequence: Math.max(0, Math.floor(logSequence as number)) }
         : {}),
@@ -545,16 +544,17 @@ export class HermesRuntimeAdapter {
   private getCheckpointPayload(): Record<string, unknown> | undefined {
     const checkpoint = this.getCheckpoint();
     if (!checkpoint) return undefined;
+    const toolProgress = checkpoint.toolProgress;
     return {
       ...checkpoint,
-      ...(checkpoint.toolProgress
+      ...(toolProgress
         ? {
             toolProgress: {
-              ...checkpoint.toolProgress,
-              activeToolCallIds: [...checkpoint.toolProgress.activeToolCallIds],
-              completedToolCallIds: [...checkpoint.toolProgress.completedToolCallIds],
-              failedToolCallIds: [...checkpoint.toolProgress.failedToolCallIds],
-              unknownToolCallIds: [...checkpoint.toolProgress.unknownToolCallIds],
+              ...toolProgress,
+              activeToolCallIds: [...toolProgress.activeToolCallIds],
+              completedToolCallIds: [...toolProgress.completedToolCallIds],
+              failedToolCallIds: [...toolProgress.failedToolCallIds],
+              unknownToolCallIds: [...toolProgress.unknownToolCallIds],
             },
           }
         : {}),
