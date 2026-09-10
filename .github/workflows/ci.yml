@@ -224,6 +224,7 @@ jobs:
           src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts
           src/electron/agent/runtime/__tests__/hermes-tool-host-mcp.test.ts
           src/electron/agent/runtime/__tests__/hermes-host-launcher.test.ts
+          src/electron/agent/runtime/__tests__/hermes-host-owned-toolchain.test.ts
           src/electron/agent/__tests__/executor-hermes-recovery.test.ts
           src/electron/agent/runtime/__tests__/tool-execution-coordinator.test.ts
 
