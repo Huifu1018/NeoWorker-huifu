@@ -23,6 +23,7 @@ type ShellSessionRuntime = {
   snapshot: ShellSnapshot;
   shell?: string;
   process: ChildProcess | null;
+  invalidation?: Promise<void>;
   buffer: string;
   ready: boolean;
   busy: boolean;
@@ -564,6 +565,7 @@ export class ShellSessionManager {
           snapshot: session.snapshot || { cwd: session.cwd, env: {}, aliases: {} },
           shell: undefined,
           process: null,
+          invalidation: undefined,
           buffer: "",
           ready: false,
           busy: false,
@@ -667,6 +669,7 @@ export class ShellSessionManager {
         snapshot: { cwd: params.workspacePath, env: {}, aliases: {} },
         shell: undefined,
         process: null,
+        invalidation: undefined,
         buffer: "",
         ready: false,
         busy: false,
@@ -693,42 +696,59 @@ export class ShellSessionManager {
     reason: string,
     rejection: Error = new Error(reason),
   ): Promise<void> {
-    const pending = [...runtime.pending];
-    runtime.pending = [];
-
-    for (const item of pending) {
-      clearTimeout(item.timeout);
-      try {
-        item.reject(rejection);
-      } catch {
-        // Ignore duplicate or late rejections.
-      }
+    if (runtime.invalidation) {
+      await runtime.invalidation;
+      return;
     }
 
-    const previousCwd = runtime.snapshot.cwd || runtime.info.cwd;
-    const processToKill = runtime.process;
-    runtime.process = null;
-    runtime.ready = false;
-    runtime.busy = false;
-    runtime.buffer = "";
-    runtime.snapshot = {
-      cwd: previousCwd,
-      env: {},
-      aliases: {},
-    };
-    this.updateRuntimeInfo(runtime, {
-      status: "inactive",
-      cwd: previousCwd,
-      aliases: [],
-      envKeys: [],
-      lastError: reason,
+    let releaseInvalidation!: () => void;
+    const invalidation = new Promise<void>((resolve) => {
+      releaseInvalidation = resolve;
     });
+    runtime.invalidation = invalidation;
+    try {
+      const pending = [...runtime.pending];
+      runtime.pending = [];
 
-    runtime.exitStatusOverride = "inactive";
-    terminateProcessTree(processToKill);
-    await waitForProcessExit(processToKill);
+      for (const item of pending) {
+        clearTimeout(item.timeout);
+        try {
+          item.reject(rejection);
+        } catch {
+          // Ignore duplicate or late rejections.
+        }
+      }
 
-    await this.persistState();
+      const previousCwd = runtime.snapshot.cwd || runtime.info.cwd;
+      const processToKill = runtime.process;
+      runtime.process = null;
+      runtime.ready = false;
+      runtime.busy = false;
+      runtime.buffer = "";
+      runtime.snapshot = {
+        cwd: previousCwd,
+        env: {},
+        aliases: {},
+      };
+      this.updateRuntimeInfo(runtime, {
+        status: "inactive",
+        cwd: previousCwd,
+        aliases: [],
+        envKeys: [],
+        lastError: reason,
+      });
+
+      runtime.exitStatusOverride = "inactive";
+      terminateProcessTree(processToKill);
+      await waitForProcessExit(processToKill);
+
+      await this.persistState();
+    } finally {
+      if (runtime.invalidation === invalidation) {
+        runtime.invalidation = undefined;
+      }
+      releaseInvalidation();
+    }
   }
 
   private emitTerminalOutput(
@@ -898,6 +918,9 @@ export class ShellSessionManager {
   }
 
   private async ensureShellReady(runtime: ShellSessionRuntime, workspacePath: string): Promise<void> {
+    if (runtime.invalidation) {
+      await runtime.invalidation;
+    }
     if (runtime.process && !runtime.process.killed) return;
     this.spawnProcess(runtime, workspacePath);
     if (!runtime.process?.stdin) {
