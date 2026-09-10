@@ -4727,7 +4727,9 @@ export class TaskExecutor {
       this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
       this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
       try {
-        const result = await runtime.prompt(followUp);
+        const result = runtime.checkpoint()?.toolProgress?.unknownToolCallIds?.length
+          ? await runtime.retry(followUp)
+          : await runtime.prompt(followUp);
         this.hermesCheckpoint = runtime.getCheckpoint();
         const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true, requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({ rawPrompt: message }) });
         if (assistantText) {
@@ -9475,6 +9477,32 @@ ${transcript}
         ...(savedCheckpoint.toolOwnership === "neoworker" || savedCheckpoint.toolOwnership === "hermes"
           ? { toolOwnership: savedCheckpoint.toolOwnership }
           : {}),
+        ...(savedCheckpoint.toolProgress &&
+        typeof savedCheckpoint.toolProgress === "object" &&
+        !Array.isArray(savedCheckpoint.toolProgress)
+          ? {
+              toolProgress: {
+                activeToolCallIds: Array.isArray(savedCheckpoint.toolProgress.activeToolCallIds)
+                  ? savedCheckpoint.toolProgress.activeToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                  : [],
+                completedToolCallIds: Array.isArray(savedCheckpoint.toolProgress.completedToolCallIds)
+                  ? savedCheckpoint.toolProgress.completedToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                  : [],
+                failedToolCallIds: Array.isArray(savedCheckpoint.toolProgress.failedToolCallIds)
+                  ? savedCheckpoint.toolProgress.failedToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                  : [],
+                unknownToolCallIds: Array.isArray(savedCheckpoint.toolProgress.unknownToolCallIds)
+                  ? savedCheckpoint.toolProgress.unknownToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                  : [],
+                ...(typeof savedCheckpoint.toolProgress.lastToolCallId === "string" && savedCheckpoint.toolProgress.lastToolCallId.trim()
+                  ? { lastToolCallId: savedCheckpoint.toolProgress.lastToolCallId.trim() }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(Number.isFinite(savedCheckpoint.logSequence)
+          ? { logSequence: Math.max(0, Math.floor(savedCheckpoint.logSequence)) }
+          : {}),
       };
     }
     // New Hermes tasks use NeoWorker's Tool Host. Retain the ownership of a
@@ -9484,6 +9512,11 @@ ${transcript}
     const options: HermesRuntimeOptions = {
       cwd: this.workspace.path,
       checkpoint: this.hermesCheckpoint,
+      getLogSequence: () => {
+        const lastEvent = this.daemon.getTaskEvents(this.task.id).at(-1);
+        const sequence = Number(lastEvent?.seq ?? lastEvent?.ts);
+        return Number.isFinite(sequence) ? sequence : this.daemon.getTaskEvents(this.task.id).length;
+      },
       ...(hostOwned ? {
         ...resolveHermesHostLauncher(),
         hostToolBridge: {
@@ -9518,6 +9551,21 @@ ${transcript}
       onCheckpoint: async (saved) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_checkpoint", saved);
         this.hermesCheckpoint = { ...saved };
+      },
+      onRetryConfirmation: async (request, context) => {
+        const approved = await this.daemon.requestApproval(
+          this.task.id,
+          "risk_gate",
+          "Hermes 重试前需要确认：上一次工具调用的副作用结果未知。",
+          {
+            tool: "hermes_retry",
+            hermesSessionId: request.sessionId,
+            unknownToolCallIds: request.unknownToolCallIds,
+            checkpoint: request.checkpoint,
+          },
+          { allowAutoApprove: false },
+        );
+        return approved && !context.signal.aborted;
       },
       onUpdate: (update) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);

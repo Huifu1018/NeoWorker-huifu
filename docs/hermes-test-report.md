@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接改动已通过本地专项验证，随提交 `ba22ef4` 推送。
+更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接、恢复和断点改动已通过本地专项验证，并随当前交付提交推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -21,7 +21,7 @@
 | 长任务与故障注入 | 通过专项验证 | `hermes-fault-injection.test.ts` 验证 32 项只读任务受并发上限约束、失败读取不污染缓存、副作用调用即使请求并发也保持串行 |
 | 普通 CI 打包门禁 | 已收紧 | push/PR 只执行编译和执行链验证；仅手动 `workflow_dispatch` 才运行打包步骤，且矩阵打包依赖 Windows 执行链 job 通过 |
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
-| Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器 |
+| Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器；适配器提供 `start/prompt/cancel/pause/resume/retry/checkpoint/close` 稳定生命周期接口 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
 | Hermes 宿主多步路由 | 通过 NeoWorker 侧真实工具链回归 | `hermes-host-owned-toolchain.test.ts` 使用 ACP fixture 依次调用 `write_file` 和 `run_command`；两次调用都经过真实 `ToolRegistry → FileTools/ShellTools → Coordinator → Tool Host`，验证审批、沙箱、文件产物、Shell 输出和生命周期日志；真实模型多步验收仍待供应商余额恢复 |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
@@ -31,6 +31,7 @@
 | 安装包 Runtime 内容 | 已加入最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 在 macOS/Windows 安装后检查 `app.asar` 内 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Tool Host 日志持久化 | 通过专项验证 | `log` 事件保留 `tool_host_lifecycle`；重启查询按 taskId/toolCallId 直接命中最新记录，不受 200 条历史窗口影响；无终态时继续拒绝副作用重放 |
+| Hermes 断点工具进度 | 通过专项验证 | checkpoint 保存活动、完成、失败和未知 toolCallId 及最后日志序号；`retry()` 对未知或重启时仍活动的调用要求显式确认 |
 | 只读工具重复调用 | 通过专项验证 | 同一批次内对规范化输入的 `read_parallel + idempotent` 调用复用成功结果；失败、写入和 Shell 调用不缓存 |
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |

@@ -13,13 +13,36 @@ export interface HermesSessionCheckpoint {
   agentVersion: string;
   /** Missing means a legacy session using Hermes-native tools. */
   toolOwnership?: "neoworker" | "hermes";
+  /** Host-side progress used to make recovery decisions without replaying effects. */
+  toolProgress?: HermesToolProgressCheckpoint;
+  /** Last NeoWorker task-event sequence observed while persisting this checkpoint. */
+  logSequence?: number;
+}
+
+export interface HermesToolProgressCheckpoint {
+  activeToolCallIds: string[];
+  completedToolCallIds: string[];
+  failedToolCallIds: string[];
+  unknownToolCallIds: string[];
+  lastToolCallId?: string;
+}
+
+export interface HermesRetryConfirmationRequest {
+  sessionId: string;
+  unknownToolCallIds: string[];
+  checkpoint: HermesSessionCheckpoint;
 }
 export interface HermesRuntimeOptions extends HermesAcpClientOptions {
   checkpoint?: HermesSessionCheckpoint;
   onCheckpoint?: (checkpoint: HermesSessionCheckpoint) => Promise<void>;
+  getLogSequence?: () => number | undefined;
   onUpdate?: (update: AcpObject) => void;
   onPermissionRequest?: HermesPermissionHandler;
   permissionTimeoutMs?: number;
+  onRetryConfirmation?: (
+    request: HermesRetryConfirmationRequest,
+    context: AcpRequestContext,
+  ) => Promise<boolean>;
   onRequest?: (method: string, params: AcpObject, context: AcpRequestContext) => Promise<unknown>;
   /**
    * Optional task-scoped NeoWorker Tool Host exposed to Hermes through MCP.
@@ -49,7 +72,13 @@ const ASSISTANT_TEXT_TRUNCATION_MARKER = "\n[Hermes response truncated by NeoWor
  */
 export class HermesRuntimeAdapter {
   private readonly client = new HermesAcpClient();
-  private checkpoint?: HermesSessionCheckpoint;
+  private sessionCheckpoint?: HermesSessionCheckpoint;
+  private readonly activeToolCallIds = new Set<string>();
+  private readonly completedToolCallIds = new Set<string>();
+  private readonly failedToolCallIds = new Set<string>();
+  private readonly unknownToolCallIds = new Set<string>();
+  private lastToolCallId?: string;
+  private checkpointWrite: Promise<void> = Promise.resolve();
   private activePrompt?: Promise<HermesPromptResult>;
   private text = "";
   private acceptingUpdates = false;
@@ -62,17 +91,18 @@ export class HermesRuntimeAdapter {
   private hostToolServerConfig?: HermesAcpMcpServer;
 
   constructor(private readonly options: HermesRuntimeOptions) {
-    this.checkpoint = options.checkpoint;
+    this.sessionCheckpoint = options.checkpoint;
+    this.restoreToolProgress(options.checkpoint?.toolProgress);
     this.permissions = new HermesPermissionBridge(options.onPermissionRequest, options.permissionTimeoutMs);
     this.client.onRequest = (method, params, context) => {
       if (method === "session/request_permission") {
-        return this.permissions.request(params, this.acceptingUpdates ? this.checkpoint?.sessionId : undefined, context);
+        return this.permissions.request(params, this.acceptingUpdates ? this.sessionCheckpoint?.sessionId : undefined, context);
       }
       if (options.onRequest) return options.onRequest(method, params, context);
       return Promise.reject(new HermesAcpError("Unsupported client method", -32601));
     };
     this.client.onNotification = ({ method, params }) => {
-      if (method !== "session/update" || params.sessionId !== this.checkpoint?.sessionId) return;
+      if (method !== "session/update" || params.sessionId !== this.sessionCheckpoint?.sessionId) return;
       const update = params.update;
       if (!update || typeof update !== "object" || Array.isArray(update)) return;
       const value = update as AcpObject;
@@ -91,18 +121,55 @@ export class HermesRuntimeAdapter {
   }
 
   connect(): Promise<HermesSessionCheckpoint> {
-    if (this.connected && this.checkpoint) return Promise.resolve({ ...this.checkpoint });
+    if (this.connected && this.sessionCheckpoint) return Promise.resolve(this.getCheckpoint()!);
     if (this.connecting) return this.connecting;
     this.connecting = this.open().finally(() => { this.connecting = undefined; });
     return this.connecting;
   }
 
+  /** Stable lifecycle alias used by the runtime adapter contract. */
+  start(): Promise<HermesSessionCheckpoint> {
+    return this.connect();
+  }
+
   private async open(): Promise<HermesSessionCheckpoint> {
     try {
       if (this.options.hostToolBridge && !this.hostToolServer) {
+        const bridge = this.options.hostToolBridge;
         this.hostToolServer = new HermesToolHostMcpServer({
-          ...this.options.hostToolBridge,
-          taskId: this.options.hostToolBridge.taskId,
+          ...bridge,
+          taskId: bridge.taskId,
+          execute: async (input) => {
+            this.updateToolProgress(input.toolCallId, "running");
+            // Persist before dispatching the host operation. If persistence
+            // fails, fail closed so a side effect is never started without a
+            // recovery marker.
+            await this.persistCheckpoint();
+            try {
+              const response = await bridge.execute(input);
+              this.updateToolProgress(
+                input.toolCallId,
+                response.status === "success"
+                  ? "completed"
+                  : response.status === "cancelled"
+                    ? "cancelled"
+                    : "failed",
+              );
+              await this.persistCheckpoint();
+              return response;
+            } catch (error) {
+              // A transport/runtime rejection does not tell us whether a
+              // side effect reached the host. Keep it in the checkpoint and
+              // require explicit confirmation before retry().
+              const code = String((error as { code?: unknown })?.code || "");
+              this.updateToolProgress(
+                input.toolCallId,
+                code === "CANCELLED" ? "cancelled" : "unknown",
+              );
+              await this.persistCheckpoint();
+              throw error;
+            }
+          },
         });
         this.hostToolServer.suspendToolCalls();
         const endpoint = await this.hostToolServer.start();
@@ -130,30 +197,30 @@ export class HermesRuntimeAdapter {
       if (init.protocolVersion !== 1) throw new Error("Unsupported Hermes ACP protocol version");
       const agentInfo = init.agentInfo as AcpObject | undefined;
       const agentVersion = String(agentInfo?.version ?? "unknown");
-      if (this.checkpoint) {
-        if (this.checkpoint.schema !== "neoworker_hermes_acp_v1" || this.checkpoint.cwd !== this.options.cwd) {
+      if (this.sessionCheckpoint) {
+        if (this.sessionCheckpoint.schema !== "neoworker_hermes_acp_v1" || this.sessionCheckpoint.cwd !== this.options.cwd) {
           throw new Error("Hermes checkpoint does not match this workspace");
         }
-        const ownership = this.checkpoint.toolOwnership ?? "hermes";
+        const ownership = this.sessionCheckpoint.toolOwnership ?? "hermes";
         if (ownership !== (this.options.hostToolBridge ? "neoworker" : "hermes")) {
           throw new Error("Hermes checkpoint tool ownership does not match this runtime");
         }
         const caps = init.agentCapabilities as AcpObject | undefined;
         if (caps?.loadSession !== true) throw new Error("Hermes cannot restore sessions");
-        await this.client.loadSession(this.checkpoint.sessionId, this.options.cwd, this.getMcpServers());
+        await this.client.loadSession(this.sessionCheckpoint.sessionId, this.options.cwd, this.getMcpServers());
       } else {
         const session = await this.client.newSession(this.options.cwd, this.getMcpServers());
         if (typeof session.sessionId !== "string" || !session.sessionId) throw new Error("Hermes returned no session id");
-        this.checkpoint = {
+        this.sessionCheckpoint = {
           schema: "neoworker_hermes_acp_v1", sessionId: session.sessionId,
           cwd: this.options.cwd, agentVersion,
           toolOwnership: this.options.hostToolBridge ? "neoworker" : "hermes",
         };
       }
       // Persist the stable Hermes session handle before a prompt can run tools.
-      await this.options.onCheckpoint?.({ ...this.checkpoint });
+      await this.persistCheckpoint();
       this.connected = true;
-      return { ...this.checkpoint };
+      return this.getCheckpoint()!;
     } catch (error) {
       this.client.stop();
       await this.hostToolServer?.stop();
@@ -220,6 +287,15 @@ export class HermesRuntimeAdapter {
         throw error;
       } finally {
         signal?.removeEventListener("abort", onAbort);
+        // If a host callback ignored cancellation or the transport closed
+        // before a structured result arrived, the side effect is unknown.
+        // Preserve that fact for an explicit retry decision.
+        if (this.activeToolCallIds.size > 0) {
+          for (const toolCallId of this.activeToolCallIds) {
+            this.updateToolProgress(toolCallId, this.paused ? "cancelled" : "unknown");
+          }
+          await this.persistCheckpoint().catch(() => undefined);
+        }
         this.hostToolServer?.suspendToolCalls();
         this.acceptingUpdates = false;
         this.permissions.cancelPending();
@@ -242,7 +318,7 @@ export class HermesRuntimeAdapter {
     // task-scoped MCP calls immediately so a tool that ignores ACP cancel
     // cannot keep a NeoWorker side effect alive until the hard close timeout.
     this.hostToolServer?.suspendToolCalls();
-    if (this.checkpoint) this.client.cancel(this.checkpoint.sessionId);
+    if (this.sessionCheckpoint) this.client.cancel(this.sessionCheckpoint.sessionId);
     let force: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -275,12 +351,66 @@ export class HermesRuntimeAdapter {
     return this.prompt(prompt);
   }
 
+  /**
+   * Retry a failed or interrupted turn from the saved session. A transport
+   * failure may have happened after a host side effect started, so unknown
+   * calls require an explicit user decision before another turn is submitted.
+   */
+  async retry(
+    prompt = "Retry the task from the last checkpoint. Inspect the current workspace and tool results first. Do not repeat any side effect whose result is unknown.",
+    signal?: AbortSignal,
+  ): Promise<HermesPromptResult> {
+    const checkpoint = this.getCheckpoint();
+    if (!checkpoint) {
+      throw new HermesAcpError(
+        "Cannot retry Hermes before a session checkpoint exists",
+        "NO_CHECKPOINT",
+      );
+    }
+    const unknownToolCallIds = Array.from(new Set([
+      ...(checkpoint.toolProgress?.unknownToolCallIds ?? []),
+      // A process can terminate while a call is still active. Treat that
+      // persisted active marker as unknown on the next retry.
+      ...(checkpoint.toolProgress?.activeToolCallIds ?? []),
+    ]));
+    if (unknownToolCallIds.length > 0) {
+      if (signal?.aborted) {
+        throw new HermesAcpError("Hermes retry cancelled", "CANCELLED");
+      }
+      const confirmationController = new AbortController();
+      const abortConfirmation = () => confirmationController.abort(signal?.reason);
+      signal?.addEventListener("abort", abortConfirmation, { once: true });
+      try {
+        const approved = await this.options.onRetryConfirmation?.(
+          { sessionId: checkpoint.sessionId, unknownToolCallIds, checkpoint },
+          { signal: confirmationController.signal },
+        );
+        if (!approved || confirmationController.signal.aborted) {
+          throw new HermesAcpError(
+            "Hermes retry requires confirmation because a previous side effect has an unknown result",
+            "RETRY_CONFIRMATION_REQUIRED",
+            { unknownToolCallIds },
+          );
+        }
+      } finally {
+        signal?.removeEventListener("abort", abortConfirmation);
+      }
+    }
+    this.paused = false;
+    return this.prompt(prompt, signal);
+  }
+
   isPaused(): boolean {
     return this.paused;
   }
 
   getCheckpoint(): HermesSessionCheckpoint | undefined {
-    return this.checkpoint ? { ...this.checkpoint } : undefined;
+    return this.snapshotCheckpoint();
+  }
+
+  /** Stable checkpoint accessor used by runtime integrations. */
+  checkpoint(): HermesSessionCheckpoint | undefined {
+    return this.getCheckpoint();
   }
 
   close(): void {
@@ -297,6 +427,89 @@ export class HermesRuntimeAdapter {
   private getMcpServers(): HermesAcpMcpServer[] {
     const configured = Array.isArray(this.options.mcpServers) ? this.options.mcpServers : [];
     return this.hostToolServerConfig ? [...configured, this.hostToolServerConfig] : configured;
+  }
+
+  private restoreToolProgress(progress?: HermesToolProgressCheckpoint): void {
+    if (!progress) return;
+    for (const value of progress.activeToolCallIds || []) {
+      if (typeof value === "string" && value) this.activeToolCallIds.add(value);
+    }
+    for (const value of progress.completedToolCallIds || []) {
+      if (typeof value === "string" && value) this.completedToolCallIds.add(value);
+    }
+    for (const value of progress.failedToolCallIds || []) {
+      if (typeof value === "string" && value) this.failedToolCallIds.add(value);
+    }
+    for (const value of progress.unknownToolCallIds || []) {
+      if (typeof value === "string" && value) this.unknownToolCallIds.add(value);
+    }
+    this.lastToolCallId = typeof progress.lastToolCallId === "string"
+      ? progress.lastToolCallId
+      : undefined;
+  }
+
+  private updateToolProgress(
+    toolCallId: string,
+    status: "running" | "completed" | "failed" | "unknown" | "cancelled",
+  ): void {
+    const normalized = toolCallId.trim();
+    if (!normalized) return;
+    this.lastToolCallId = normalized;
+    this.activeToolCallIds.delete(normalized);
+    this.completedToolCallIds.delete(normalized);
+    this.failedToolCallIds.delete(normalized);
+    this.unknownToolCallIds.delete(normalized);
+    if (status === "running") this.activeToolCallIds.add(normalized);
+    else if (status === "completed") this.completedToolCallIds.add(normalized);
+    else if (status === "failed") this.failedToolCallIds.add(normalized);
+    else if (status === "unknown") this.unknownToolCallIds.add(normalized);
+  }
+
+  private boundedToolCallIds(values: Set<string>): string[] {
+    return Array.from(values).slice(-256);
+  }
+
+  private snapshotToolProgress(): HermesToolProgressCheckpoint | undefined {
+    const hasProgress =
+      this.activeToolCallIds.size > 0 ||
+      this.completedToolCallIds.size > 0 ||
+      this.failedToolCallIds.size > 0 ||
+      this.unknownToolCallIds.size > 0 ||
+      !!this.lastToolCallId;
+    if (!hasProgress) return undefined;
+    return {
+      activeToolCallIds: this.boundedToolCallIds(this.activeToolCallIds),
+      completedToolCallIds: this.boundedToolCallIds(this.completedToolCallIds),
+      failedToolCallIds: this.boundedToolCallIds(this.failedToolCallIds),
+      unknownToolCallIds: this.boundedToolCallIds(this.unknownToolCallIds),
+      ...(this.lastToolCallId ? { lastToolCallId: this.lastToolCallId } : {}),
+    };
+  }
+
+  private snapshotCheckpoint(): HermesSessionCheckpoint | undefined {
+    if (!this.sessionCheckpoint) return undefined;
+    const logSequence = this.options.getLogSequence?.();
+    return {
+      ...this.sessionCheckpoint,
+      ...(this.snapshotToolProgress()
+        ? { toolProgress: this.snapshotToolProgress() }
+        : {}),
+      ...(Number.isFinite(logSequence)
+        ? { logSequence: Math.max(0, Math.floor(logSequence as number)) }
+        : {}),
+    };
+  }
+
+  private async persistCheckpoint(): Promise<void> {
+    const snapshot = this.snapshotCheckpoint();
+    if (!snapshot) return;
+    this.sessionCheckpoint = snapshot;
+    if (!this.options.onCheckpoint) return;
+    const write = this.checkpointWrite
+      .catch(() => undefined)
+      .then(() => this.options.onCheckpoint!(snapshot));
+    this.checkpointWrite = write.catch(() => undefined);
+    await write;
   }
 
   private loopbackNoProxy(key: "NO_PROXY" | "no_proxy"): string {

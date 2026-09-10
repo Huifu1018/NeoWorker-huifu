@@ -149,7 +149,13 @@ describe('Hermes runtime session', () => {
     await r.pause();
     expect(await pending).toMatchObject({ stopReason: 'cancelled' });
     expect(toolSignal?.aborted).toBe(true);
-    expect(r.getCheckpoint()).toEqual(checkpoint);
+    expect(r.getCheckpoint()).toMatchObject({
+      sessionId: checkpoint?.sessionId,
+      toolProgress: {
+        activeToolCallIds: [],
+        lastToolCallId: checkpoint?.toolProgress?.lastToolCallId,
+      },
+    });
     expect(await r.resume('next')).toMatchObject({ stopReason: 'end_turn', assistantText: '你好 OK', sessionId: checkpoint?.sessionId });
     expect(calls).toBe(1);
   });
@@ -227,6 +233,56 @@ describe('Hermes runtime session', () => {
     const result=await r.prompt('hello');
     expect(saved?.sessionId).toBe(result.sessionId);
     expect(result).toMatchObject({assistantText:'你好 OK',stopReason:'end_turn'});
+  });
+  it('exposes the stable start, checkpoint, and retry adapter contract', async () => {
+    const r = runtime();
+    const started = await r.start();
+    expect(r.checkpoint()).toMatchObject(started);
+    await expect(r.prompt('provider-error')).rejects.toMatchObject({
+      code: 'HERMES_RUNTIME_ERROR',
+    });
+    expect(await r.retry('retry')).toMatchObject({
+      assistantText: '你好 OK',
+      stopReason: 'end_turn',
+      sessionId: started.sessionId,
+    });
+  });
+  it('requires confirmation before retrying after an unknown host side effect', async () => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    const r = runtime({
+      onRetryConfirmation: confirm,
+      hostToolBridge: {
+        taskId: 'retry-unknown',
+        getTools: () => [{
+          name: 'run_command',
+          description: 'Run a command',
+          input_schema: { type: 'object', properties: {} },
+        }],
+        execute: async () => {
+          throw Object.assign(new Error('host transport lost'), {
+            code: 'TRANSPORT_ERROR',
+          });
+        },
+      },
+    });
+    const result = await r.prompt('host-tool');
+    expect(result.stopReason).toBe('end_turn');
+    expect(r.checkpoint()?.toolProgress?.unknownToolCallIds).toHaveLength(1);
+    await expect(r.retry('retry')).rejects.toMatchObject({
+      code: 'RETRY_CONFIRMATION_REQUIRED',
+    });
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unknownToolCallIds: expect.any(Array),
+        sessionId: 'fixture-session',
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    confirm.mockResolvedValue(true);
+    expect(await r.retry('retry after confirmation')).toMatchObject({
+      assistantText: '你好 OK',
+      stopReason: 'end_turn',
+    });
   });
   it('loads a saved session across process restarts without appending replayed history', async () => {
     const first=runtime(); await first.connect();
