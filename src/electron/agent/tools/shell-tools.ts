@@ -12,6 +12,7 @@ import {
 import { createSandbox, createProcessOutputDecoder } from "../sandbox/sandbox-factory";
 import { loadPolicies, type AdminPolicies } from "../../admin/policies";
 import { createLogger } from "../../utils/logger";
+import type { ToolLifecycleEmitter } from "../runtime/ToolInvocationContext";
 
 const log = createLogger("ShellTools");
 
@@ -1109,10 +1110,22 @@ export class ShellTools {
       timeout?: number;
       env?: Record<string, string>;
       signal?: AbortSignal;
+      emitLifecycle?: ToolLifecycleEmitter;
+      toolCallId?: string;
     },
   ): Promise<RunCommandResult> {
     const signal = options?.signal;
     if (signal?.aborted) throw createCancellationError();
+    const emitApprovalLifecycle = (
+      approvalStatus: string,
+      extra: Record<string, unknown> = {},
+    ): void => {
+      options?.emitLifecycle?.("approval", {
+        approvalStatus,
+        approvalType: "run_command",
+        ...extra,
+      });
+    };
 
     // Check if command is blocked by guardrails BEFORE anything else
     const blockCheck = GuardrailManager.isCommandBlocked(command);
@@ -1152,12 +1165,18 @@ export class ShellTools {
     if (bundleEligible && this.isBundleApprovalActive(now)) {
       approved = true;
       this.recordBundleApproval(now);
+      emitApprovalLifecycle("granted", {
+        approvalMechanism: "single_bundle",
+      });
       this.daemon.logEvent(this.taskId, "log", {
         message: `Auto-approved command via single bundle (${this.bundleApproval?.count || 1} approved in current bundle)`,
         command,
       });
     } else if (autoApproveEnabled && safeForAutoApproval) {
       approved = true;
+      emitApprovalLifecycle("granted", {
+        approvalMechanism: "tool_auto_approve",
+      });
       this.daemon.logEvent(this.taskId, "log", {
         message: "Auto-approved command (user setting enabled)",
         command,
@@ -1165,6 +1184,10 @@ export class ShellTools {
     } else if (trustCheck.trusted) {
       // Auto-approve trusted commands
       approved = true;
+      emitApprovalLifecycle("granted", {
+        approvalMechanism: "trusted_command",
+        matchedPattern: trustCheck.pattern,
+      });
       this.daemon.logEvent(this.taskId, "log", {
         message: `Auto-approved trusted command (matched: ${trustCheck.pattern})`,
         command,
@@ -1182,29 +1205,49 @@ export class ShellTools {
         previousApproval.count += 1;
         previousApproval.approvedAt = now;
         this.recentApprovals.set(signature, previousApproval);
+        emitApprovalLifecycle("granted", {
+          approvalMechanism: "recent_similar_command",
+          approvalCount: previousApproval.count,
+        });
         this.daemon.logEvent(this.taskId, "log", {
           message: `Auto-approved similar command (approved ${previousApproval.count}x in last ${Math.round(this.approvalWindowMs / 1000)}s)`,
           command,
         });
       } else {
         // Request user approval before executing
-        approved = await awaitWithAbort(
-          this.daemon.requestApproval(
-            this.taskId,
-            "run_command",
-            bundleEligible
-              ? "Single approval bundle for this task: subsequent safe commands may run without another prompt until you deny or the task ends."
-              : "Review the shell command below before approving.",
-            {
-              command,
-              cwd: options?.cwd || this.workspace.path,
-              timeout: options?.timeout || DEFAULT_TIMEOUT,
-              approvalMode,
-              bundleScope: bundleEligible ? "safe_commands_in_this_task" : undefined,
-            },
-          ),
-          signal,
-        );
+        const approvalDetails = {
+          command,
+          cwd: options?.cwd || this.workspace.path,
+          timeout: options?.timeout || DEFAULT_TIMEOUT,
+          approvalMode,
+          bundleScope: bundleEligible ? "safe_commands_in_this_task" : undefined,
+          ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
+        };
+        emitApprovalLifecycle("requested", {
+          approvalMode,
+          bundleEligible,
+        });
+        try {
+          approved = await awaitWithAbort(
+            this.daemon.requestApproval(
+              this.taskId,
+              "run_command",
+              bundleEligible
+                ? "Single approval bundle for this task: subsequent safe commands may run without another prompt until you deny or the task ends."
+                : "Review the shell command below before approving.",
+              approvalDetails,
+            ),
+            signal,
+          );
+        } catch (error) {
+          emitApprovalLifecycle(signal?.aborted ? "cancelled" : "error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+        emitApprovalLifecycle(approved ? "granted" : "denied", {
+          approvalMechanism: "user",
+        });
 
         if (approved && signature) {
           this.recentApprovals.set(signature, { approvedAt: now, count: 1 });

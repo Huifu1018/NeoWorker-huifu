@@ -165,6 +165,7 @@ import {
   type ToolExecutionHandler,
   type ToolExecutionMiddleware,
 } from "../runtime/tool-middleware";
+import type { ToolLifecycleEmitter } from "../runtime/ToolInvocationContext";
 import { evaluateToolPolicyPipeline } from "../runtime/ToolPolicyPipeline";
 import { ToolSearchService } from "../runtime/ToolSearchService";
 import {
@@ -2181,7 +2182,16 @@ export class ToolRegistry {
     );
     register(
       "delete_file",
-      async ({ request }) => this.fileTools.deleteFile(request.input.path),
+      async ({ request }) =>
+        this.fileTools.deleteFile(request.input.path, {
+          signal:
+            request.runtime?.signal instanceof AbortSignal ? request.runtime.signal : undefined,
+          emitLifecycle: request.runtime?.emitLifecycle,
+          toolCallId:
+            typeof request.runtime?.toolUseId === "string"
+              ? request.runtime.toolUseId
+              : undefined,
+        }),
       exclusiveSchedulerSpec,
     );
     register(
@@ -2373,6 +2383,11 @@ export class ToolRegistry {
           ...request.input,
           signal:
             request.runtime?.signal instanceof AbortSignal ? request.runtime.signal : undefined,
+          emitLifecycle: request.runtime?.emitLifecycle,
+          toolCallId:
+            typeof request.runtime?.toolUseId === "string"
+              ? request.runtime.toolUseId
+              : undefined,
         }),
       exclusiveSchedulerSpec,
     );
@@ -4031,7 +4046,16 @@ ${skillDescriptions}`;
     if (name === "get_file_info") return await this.fileTools.getFileInfo(input.path);
     if (name === "rename_file")
       return await this.fileTools.renameFile(input.oldPath, input.newPath);
-    if (name === "delete_file") return await this.fileTools.deleteFile(input.path);
+    if (name === "delete_file") {
+      return await this.fileTools.deleteFile(input.path, {
+        signal: _runtime?.signal instanceof AbortSignal ? _runtime.signal : undefined,
+        emitLifecycle:
+          typeof _runtime?.emitLifecycle === "function"
+            ? (_runtime.emitLifecycle as ToolLifecycleEmitter)
+            : undefined,
+        toolCallId: typeof _runtime?.toolUseId === "string" ? _runtime.toolUseId : undefined,
+      });
+    }
     if (name === "create_directory") return await this.fileTools.createDirectory(input.path);
     if (name === "search_files") return await this.fileTools.searchFiles(input.query, input.path);
 
@@ -4210,6 +4234,11 @@ ${skillDescriptions}`;
       return await this.shellTools.runCommand(input.command, {
         ...input,
         signal: _runtime?.signal instanceof AbortSignal ? _runtime.signal : undefined,
+        emitLifecycle:
+          typeof _runtime?.emitLifecycle === "function"
+            ? (_runtime.emitLifecycle as ToolLifecycleEmitter)
+            : undefined,
+        toolCallId: typeof _runtime?.toolUseId === "string" ? _runtime.toolUseId : undefined,
       });
     }
 

@@ -360,9 +360,32 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
           status: "approval",
           approvalStatus: "delegated",
         }),
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "requested",
+          approvalType: "run_command",
+        }),
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "granted",
+          approvalMechanism: "user",
+          approvalType: "run_command",
+        }),
         expect.objectContaining({ tool: "run_command", status: "result" }),
       ]),
     );
+    const runApproval = toolLifecycle.find(
+      (payload) =>
+        payload.tool === "run_command" &&
+        payload.status === "approval" &&
+        payload.approvalStatus === "granted",
+    );
+    expect(runApproval).toMatchObject({
+      toolCallId: expect.any(String),
+      approvalType: "run_command",
+    });
     expect(events.some((event) => event.type === "file_created")).toBe(true);
     expect(events.some((event) => event.type === "tool_call")).toBe(true);
     expect(events.some((event) => event.type === "tool_result")).toBe(true);
@@ -384,7 +407,7 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
   });
 
   it("returns a structured host error when NeoWorker denies the shell approval", async () => {
-    const { runtime, workspacePath, daemon } = await createHostHarness({
+    const { runtime, workspacePath, daemon, events } = await createHostHarness({
       approval: false,
     });
 
@@ -401,6 +424,19 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
     expect(shellPayload).toMatchObject({
       error: "User denied command execution",
     });
+    const toolLifecycle = events
+      .map((event) => event.payload)
+      .filter((payload) => payload?.metric === "tool_lifecycle");
+    expect(toolLifecycle).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "denied",
+          approvalType: "run_command",
+        }),
+      ]),
+    );
     expect(daemon.requestApproval).toHaveBeenCalledTimes(1);
     expect(sandboxMocks.createSandbox).not.toHaveBeenCalled();
     await expect(readFile(path.join(workspacePath, "hermes-host.txt"), "utf8"))
@@ -419,6 +455,19 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
     expect(harness.runtime.isPaused()).toBe(true);
     expect(sandboxMocks.createSandbox).not.toHaveBeenCalled();
     expect(harness.daemon.requestApproval).toHaveBeenCalledTimes(1);
+    const toolLifecycle = harness.events
+      .map((event) => event.payload)
+      .filter((payload) => payload?.metric === "tool_lifecycle");
+    expect(toolLifecycle).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "cancelled",
+          approvalType: "run_command",
+        }),
+      ]),
+    );
     await expect(
       readFile(path.join(harness.workspacePath, "hermes-host.txt"), "utf8"),
     ).resolves.toBe("hello from Hermes");

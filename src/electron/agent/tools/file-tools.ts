@@ -37,6 +37,7 @@ import {
   isUntrustedExternalSource,
 } from "../security/export-permission-context";
 import { assertMacOsTrashReadable } from "./macos-trash-access";
+import type { ToolLifecycleEmitter } from "../runtime/ToolInvocationContext";
 
 // Limits to prevent context overflow
 const DEFAULT_READ_WINDOW_CHARS = 300 * 1024; // 300KB default read window
@@ -59,6 +60,29 @@ interface ReadWindowOptions {
 interface WriteFileOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+}
+
+function createCancellationError(message = "File operation cancelled"): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  (error as Error & { code?: string }).code = "CANCELLED";
+  return error;
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw createCancellationError();
+
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    abortListener = () => reject(createCancellationError());
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
 }
 
 function getElectronShell(): Any | null {
@@ -1751,26 +1775,64 @@ export class FileTools {
    * Note: We don't check workspace.permissions.delete here because
    * delete operations always require explicit user approval via requestApproval()
    */
-  async deleteFile(relativePath: string): Promise<{ success: boolean; movedToTrash?: boolean }> {
+  async deleteFile(
+    relativePath: string,
+    options?: {
+      signal?: AbortSignal;
+      emitLifecycle?: ToolLifecycleEmitter;
+      toolCallId?: string;
+    },
+  ): Promise<{ success: boolean; movedToTrash?: boolean }> {
     // Validate input
     if (!relativePath || typeof relativePath !== "string") {
       throw new Error("Invalid path: path must be a non-empty string");
     }
+    if (options?.signal?.aborted) throw createCancellationError();
+
+    const emitApprovalLifecycle = (
+      approvalStatus: string,
+      extra: Record<string, unknown> = {},
+    ): void => {
+      options?.emitLifecycle?.("approval", {
+        approvalStatus,
+        approvalType: "delete_file",
+        ...extra,
+      });
+    };
 
     const fullPath = this.resolvePath(relativePath, "delete");
     await this.enforceProjectAccess(fullPath);
 
     // Request user approval
-    const approved = await this.daemon.requestApproval(
-      this.taskId,
-      "delete_file",
-      `Delete file: ${relativePath}`,
-      { path: relativePath },
-    );
+    emitApprovalLifecycle("requested");
+    let approved: boolean;
+    try {
+      approved = await awaitWithAbort(
+        this.daemon.requestApproval(
+          this.taskId,
+          "delete_file",
+          `Delete file: ${relativePath}`,
+          {
+            path: relativePath,
+            ...(options?.toolCallId ? { toolCallId: options.toolCallId } : {}),
+          },
+        ),
+        options?.signal,
+      );
+    } catch (error) {
+      emitApprovalLifecycle(options?.signal?.aborted ? "cancelled" : "error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    emitApprovalLifecycle(approved ? "granted" : "denied", {
+      approvalMechanism: "user",
+    });
 
     if (!approved) {
       throw new Error("User denied file deletion");
     }
+    if (options?.signal?.aborted) throw createCancellationError();
 
     try {
       // For .app bundles on macOS, use shell.trashItem directly (safer and expected behavior)
