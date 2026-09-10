@@ -13,6 +13,16 @@ function coordinatorFor(result: unknown, rejection?: Error) {
   };
 }
 
+function legacyCoordinatorFor(result: unknown) {
+  const registry = {
+    executeTool: vi.fn().mockResolvedValue(result),
+  } as Any;
+  return {
+    coordinator: new ToolExecutionCoordinator(registry),
+    registry,
+  };
+}
+
 function lifecycleContext(events: Any[], overrides: Any = {}) {
   return {
     taskId: "task-1",
@@ -23,6 +33,35 @@ function lifecycleContext(events: Any[], overrides: Any = {}) {
 }
 
 describe("ToolExecutionCoordinator lifecycle", () => {
+  it("falls back to a legacy registry executor when runtime context is unavailable", async () => {
+    const events: Any[] = [];
+    const { coordinator, registry } = legacyCoordinatorFor({
+      success: true,
+      value: "legacy-ok",
+    });
+
+    const output = await coordinator.executeTool(
+      "read_file",
+      { path: "README.md" },
+      lifecycleContext(events),
+      "legacy-call",
+    );
+
+    expect(registry.executeTool).toHaveBeenCalledWith(
+      "read_file",
+      { path: "README.md" },
+      expect.objectContaining({ toolUseId: "legacy-call" }),
+    );
+    expect(output.envelope.status).toBe("success");
+    expect(
+      events.some(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "result",
+      ),
+    ).toBe(true);
+  });
+
   it("records request, running and result states with duration and toolCallId", async () => {
     const events: Any[] = [];
     const { coordinator } = coordinatorFor({ success: true, value: "ok" });

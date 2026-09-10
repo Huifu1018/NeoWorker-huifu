@@ -12822,8 +12822,9 @@ ${transcript}
         input: effectiveInput as Any,
         ...(checkpoint ? { checkpoint } : {}),
       });
+      const toolHost = this.getToolHost();
       const coordinated = await withTimeout(
-        this.toolHost.execute(
+        toolHost.execute(
           toolHostRequest,
           {
             taskId: this.task.id,
@@ -12867,6 +12868,23 @@ ${transcript}
   }
 
   /**
+   * Keep the host boundary available during partial/legacy executor
+   * initialization. Production construction eagerly initializes these fields,
+   * while recovery paths and older test fixtures may only provide a registry.
+   */
+  private getToolHost(): NeoWorkerToolHost {
+    if (this.toolHost) return this.toolHost;
+    if (!this.toolRegistry) {
+      throw new Error("NeoWorker Tool Host is unavailable before ToolRegistry initialization");
+    }
+    if (!this.toolExecutionCoordinator) {
+      this.toolExecutionCoordinator = new ToolExecutionCoordinator(this.toolRegistry);
+    }
+    this.toolHost = new NeoWorkerToolHost(this.toolExecutionCoordinator);
+    return this.toolHost;
+  }
+
+  /**
    * Recover a host-side tool result after an executor restart. A lifecycle
    * request without a terminal response is deliberately returned as-is so the
    * Tool Host can fail closed instead of replaying an unknown side effect.
@@ -12874,10 +12892,11 @@ ${transcript}
   private loadPersistedToolHostRecord(
     toolCallId: string,
   ): PersistedToolHostRecord | undefined {
-    const latestPersisted = this.daemon.getLatestToolHostLifecycle(
-      this.task.id,
-      toolCallId,
-    );
+    const getLatestToolHostLifecycle = this.daemon?.getLatestToolHostLifecycle;
+    const latestPersisted =
+      typeof getLatestToolHostLifecycle === "function"
+        ? getLatestToolHostLifecycle.call(this.daemon, this.task.id, toolCallId)
+        : null;
     const events = latestPersisted ? [latestPersisted] : [];
     const lifecycle = events
       .map((event) => event.payload as Record<string, unknown> | undefined)

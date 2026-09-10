@@ -88,16 +88,33 @@ export class ToolExecutionCoordinator {
     emitLifecycle("running", { timeoutMs: toolTimeoutMs });
 
     try {
-      const executionWithRuntime = await this.toolRegistry.executeToolWithRuntime(toolName, input, {
-        toolPolicyContext: context.toolPolicyContext,
-        toolUseId,
-        signal: context.signal,
-        timeoutMs: toolTimeoutMs,
-        targetPaths: context.targetPaths,
-        followUp: context.followUp,
-        stepId: context.stepId,
-        emitLifecycle,
-      });
+      const executeWithRuntime = this.toolRegistry.executeToolWithRuntime;
+      const executionWithRuntime =
+        typeof executeWithRuntime === "function"
+          ? await executeWithRuntime.call(this.toolRegistry, toolName, input, {
+              toolPolicyContext: context.toolPolicyContext,
+              toolUseId,
+              signal: context.signal,
+              timeoutMs: toolTimeoutMs,
+              targetPaths: context.targetPaths,
+              followUp: context.followUp,
+              stepId: context.stepId,
+              emitLifecycle,
+            })
+          : {
+              // Keep the host boundary compatible with older or test-provided
+              // registries while the real registry rolls out runtime context.
+              result: await this.toolRegistry.executeTool(toolName, input, {
+                toolPolicyContext: context.toolPolicyContext,
+                toolUseId,
+                signal: context.signal,
+                timeoutMs: toolTimeoutMs,
+                targetPaths: context.targetPaths,
+                followUp: context.followUp,
+                stepId: context.stepId,
+                emitLifecycle,
+              }),
+            };
       const result = executionWithRuntime?.result;
       const policyTrace = executionWithRuntime?.policyTrace;
       const modelReminder = this.getModelReminder(result);
