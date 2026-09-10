@@ -4868,9 +4868,15 @@ export class TaskExecutor {
       this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
       try {
         const toolProgress = runtime.getCheckpoint()?.toolProgress;
-        const result = (toolProgress?.unknownToolCallIds?.length || toolProgress?.activeToolCallIds?.length)
-          ? await runtime.retry(followUp)
-          : await runtime.prompt(followUp);
+        const isResuming = Boolean(
+          toolProgress?.unknownToolCallIds?.length ||
+          toolProgress?.activeToolCallIds?.length,
+        );
+        const result = await this.runHermesPromptWithTransientRetry(
+          runtime,
+          followUp,
+          isResuming,
+        );
         this.hermesCheckpoint = runtime.getCheckpoint();
         const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true, requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({ rawPrompt: message }) });
         if (assistantText) {
