@@ -15,7 +15,7 @@
 | OpenAI 兼容流式响应边界 | 通过专项验证 | 流式响应在输出部分内容后提前断开时返回 `STREAM_INCOMPLETE` 且标记为可重试，避免把截断文本或不完整工具参数当成成功 |
 | Provider 辅助请求超时 | 通过 | 连接测试与模型刷新默认 15 秒超时；超时不会无限阻塞 Electron |
 | Hermes ACP 传输遥测 | 通过专项验证 | `hermes_runtime_transport` 记录请求、首字节、响应、超时、取消、协议错误和断链阶段及耗时；不记录响应正文，避免把模型内容写入诊断日志 |
-| Windows Shell 路由 | 通过单元验证 | PowerShell/cmd 参数、跨 chunk UTF-8/代码页编码、路径处理测试通过；npm/npx `.cmd/.bat` 包装器转换为 `node.exe + *-cli.js`，保持 `shell:false` |
+| Windows Shell 路由 | 通过单元与 runner 集成验证 | PowerShell → Windows PowerShell → cmd.exe 选择、持久 Shell 包装器、跨 chunk UTF-8/代码页编码、路径处理测试通过；npm/npx `.cmd/.bat` 包装器转换为 `node.exe + *-cli.js`，保持 `shell:false` |
 | Windows Shell 环境继承 | 通过单元验证 | 自定义环境变量不再覆盖系统 PATH；PowerShell 原生命令统一使用 UTF-8 编码 |
 | Windows Hermes 启动路径 | 通过单元验证 | `hermes-host-launcher.test.ts` 覆盖显式 Python、Hermes shebang 和带引号 PATH 目录，避免含空格的虚拟环境路径回退到错误解释器 |
 | Windows runner 执行链 | 已加入 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上执行 Electron 构建与 Hermes/Tool Host/Shell 专项测试，不提前打包 |
@@ -38,7 +38,7 @@
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |
 | 调度取消边界 | 通过专项验证 | 并行队列中未获得执行资格的调用不会触发派发事件、工具计数或“已启动”日志 |
-| Windows 实机执行场景 | 已加入 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令 |
+| Windows 实机执行场景 | 已加入 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令；持久 PowerShell 会话另验证跨命令环境、退出码、超时回收和同 cwd 自愈 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 和外部 AbortSignal 已接通；活动 Tool Host 调用会立即挂起，checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | 本机 Hermes Model Proxy | 环境未就绪 | `hermes proxy status` 显示 Nous Portal/xAI OAuth 均未登录；8645 当前返回 502，待登录后执行真实多步文件/Shell 验证 |

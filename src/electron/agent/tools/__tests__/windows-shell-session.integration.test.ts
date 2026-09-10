@@ -1,0 +1,121 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
+import { ShellSessionManager } from "../shell-session-manager";
+
+/**
+ * These assertions run on the Windows CI runner because macOS/Linux do not
+ * provide the PowerShell/cmd process semantics under test.
+ */
+describe.skipIf(process.platform !== "win32")("Windows persistent shell session", () => {
+  let workspace: string;
+  let manager: ShellSessionManager;
+  const taskId = `windows-shell-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const workspaceId = `workspace-${taskId}`;
+
+  beforeEach(async () => {
+    workspace = await mkdtemp(path.join(tmpdir(), "neoworker-shell-session-"));
+    manager = ShellSessionManager.getInstance();
+  });
+
+  afterEach(async () => {
+    await manager.closeSession(taskId, workspaceId);
+    await rm(workspace, { recursive: true, force: true });
+  });
+
+  it("executes UTF-8 PowerShell commands and preserves session environment", async () => {
+    const first = await manager.runCommand({
+      taskId,
+      workspaceId,
+      workspacePath: workspace,
+      command: "$env:NEOWORKER_TEST_VALUE = '任务变量'; Write-Output '中文输出 😀'",
+      timeoutMs: 5_000,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "fallback should not run",
+        exitCode: null,
+        terminationReason: "error",
+        truncated: false,
+      }),
+    });
+    expect(first).toMatchObject({
+      success: true,
+      exitCode: 0,
+      usedPersistentSession: true,
+    });
+    expect(first.stdout).toContain("中文输出 😀");
+
+    const second = await manager.runCommand({
+      taskId,
+      workspaceId,
+      workspacePath: workspace,
+      command: "Write-Output $env:NEOWORKER_TEST_VALUE",
+      timeoutMs: 5_000,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "fallback should not run",
+        exitCode: null,
+        terminationReason: "error",
+        truncated: false,
+      }),
+    });
+    expect(second).toMatchObject({ success: true, exitCode: 0 });
+    expect(second.stdout).toContain("任务变量");
+  });
+
+  it("returns native exit codes and recovers after a timed-out process", async () => {
+    const failed = await manager.runCommand({
+      taskId,
+      workspaceId,
+      workspacePath: workspace,
+      command: "cmd.exe /d /c exit 17",
+      timeoutMs: 5_000,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "fallback should not run",
+        exitCode: null,
+        terminationReason: "error",
+        truncated: false,
+      }),
+    });
+    expect(failed).toMatchObject({ success: false, exitCode: 17, usedPersistentSession: true });
+
+    await expect(manager.runCommand({
+      taskId,
+      workspaceId,
+      workspacePath: workspace,
+      command: "Start-Sleep -Seconds 30",
+      timeoutMs: 1_500,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "fallback should not run",
+        exitCode: null,
+        terminationReason: "error",
+        truncated: false,
+      }),
+    })).rejects.toThrow(/timed out/i);
+
+    const recovered = await manager.runCommand({
+      taskId,
+      workspaceId,
+      workspacePath: workspace,
+      command: "Write-Output 'recovered'",
+      timeoutMs: 5_000,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "fallback should not run",
+        exitCode: null,
+        terminationReason: "error",
+        truncated: false,
+      }),
+    });
+    expect(recovered).toMatchObject({ success: true, exitCode: 0 });
+    expect(recovered.stdout).toContain("recovered");
+  }, 20_000);
+});

@@ -21,6 +21,7 @@ type ShellSnapshot = {
 type ShellSessionRuntime = {
   info: ShellSessionInfo;
   snapshot: ShellSnapshot;
+  shell?: string;
   process: ChildProcess | null;
   buffer: string;
   ready: boolean;
@@ -156,17 +157,30 @@ export function isLikelyInteractiveCommand(command: string): boolean {
 
 function resolveShellExecutable(): string {
   if (process.platform === "win32") {
-    const pwsh = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
-    if (fs.existsSync(pwsh)) return pwsh;
     const systemRoot = process.env.SystemRoot || "C:\\Windows";
-    const powershell = path.join(
-      systemRoot,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    if (fs.existsSync(powershell)) return powershell;
+    const fixedCandidates = [
+      path.win32.join("C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
+      path.win32.join(
+        systemRoot,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      ),
+    ];
+    for (const candidate of fixedCandidates) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    const pathEntries = String(process.env.PATH || "")
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    for (const entry of pathEntries) {
+      for (const name of ["pwsh.exe", "powershell.exe", "cmd.exe"]) {
+        const candidate = path.win32.join(entry, name);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+    }
     return process.env.COMSPEC || "cmd.exe";
   }
 
@@ -181,7 +195,7 @@ function resolveShellExecutable(): string {
 function resolveTerminalShellExecutable(): string {
   if (process.platform === "win32") {
     const systemRoot = process.env.SystemRoot || "C:\\Windows";
-    const cmd = path.join(systemRoot, "System32", "cmd.exe");
+    const cmd = path.win32.join(systemRoot, "System32", "cmd.exe");
     if (fs.existsSync(cmd)) return cmd;
     return process.env.COMSPEC || "cmd.exe";
   }
@@ -197,7 +211,7 @@ function getShellArgs(shell: string): string[] {
   if (process.platform === "win32") {
     const lower = shell.toLowerCase();
     if (lower.includes("powershell") || lower.includes("pwsh")) {
-      return ["-NoLogo", "-NoProfile"];
+      return ["-NoLogo", "-NoProfile", "-NonInteractive"];
     }
     return [];
   }
@@ -279,7 +293,58 @@ function applyAliasExport(name: string, value: string): string {
   return `alias ${name}='${escaped}'`;
 }
 
-function buildRehydrateCommands(snapshot: ShellSnapshot): string[] {
+function isWindowsPowerShell(shell: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && /(?:powershell|pwsh)(?:\.exe)?$/i.test(path.win32.basename(shell));
+}
+
+function isWindowsCmd(shell: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && path.win32.basename(shell).toLowerCase() === "cmd.exe";
+}
+
+function quoteForPowerShell(value: string): string {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+function quoteForCmd(value: string): string {
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function buildRehydrateCommands(
+  snapshot: ShellSnapshot,
+  shell = process.platform === "win32" ? resolveShellExecutable() : "",
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (isWindowsPowerShell(shell, platform)) {
+    const commands: string[] = [];
+    if (snapshot.cwd) {
+      commands.push(`Set-Location -LiteralPath ${quoteForPowerShell(snapshot.cwd)}`);
+    }
+    for (const [key, value] of Object.entries(snapshot.env)) {
+      if (value == null) {
+        commands.push(`Remove-Item Env:${key} -ErrorAction SilentlyContinue`);
+      } else {
+        commands.push(`$env:${key} = ${quoteForPowerShell(value)}`);
+      }
+    }
+    for (const [key, value] of Object.entries(snapshot.aliases)) {
+      if (value != null) {
+        commands.push(`Set-Alias -Name ${quoteForPowerShell(key)} -Value ${quoteForPowerShell(value)} -Scope Global`);
+      }
+    }
+    return commands;
+  }
+  if (isWindowsCmd(shell, platform)) {
+    const commands: string[] = [];
+    if (snapshot.cwd) commands.push(`cd /d ${quoteForCmd(snapshot.cwd)}`);
+    for (const [key, value] of Object.entries(snapshot.env)) {
+      commands.push(value == null ? `set "${key}="` : `set "${key}=${String(value).replace(/"/g, '""')}"`);
+    }
+    for (const [key, value] of Object.entries(snapshot.aliases)) {
+      if (value != null) commands.push(`doskey ${key}=${value}`);
+    }
+    return commands;
+  }
+
   const commands: string[] = [];
   if (snapshot.cwd) {
     commands.push(`cd ${quoteForPosixShell(normalizePathForShell(snapshot.cwd))}`);
@@ -297,6 +362,92 @@ function buildRehydrateCommands(snapshot: ShellSnapshot): string[] {
     }
   }
   return commands;
+}
+
+function buildUnixCommandWrapper(targetCwd: string, command: string, commandId: string): string {
+  const heredocMarker = `__NEOWORKER_CMD_${commandId.replace(/[^a-zA-Z0-9]/g, "_")}__`;
+  return [
+    "set +e",
+    `cd ${quoteForPosixShell(normalizePathForShell(targetCwd))}`,
+    `__NEOWORKER_COMMAND=$(cat <<'${heredocMarker}'`,
+    command,
+    heredocMarker,
+    ")",
+    "eval \"$__NEOWORKER_COMMAND\"",
+    "__neoworker_exit_code=$?",
+    "printf '\\n__NEOWORKER_STATE_START__\\n'",
+    "printf '__NEOWORKER_CWD__:%s\\n' \"$(pwd -P)\"",
+    "printf '__NEOWORKER_ALIASES_START__\\n'",
+    "alias",
+    "printf '__NEOWORKER_ALIASES_END__\\n'",
+    "printf '__NEOWORKER_ENV_START__\\n'",
+    "env",
+    "printf '__NEOWORKER_ENV_END__\\n'",
+    `printf '__NEOWORKER_DONE__:%s:%s\\n' ${quoteForPosixShell(commandId)} "$__neoworker_exit_code"`,
+  ].join("\n");
+}
+
+function buildPowerShellCommandWrapper(targetCwd: string, command: string, commandId: string): string {
+  // Base64 keeps arbitrary command text (quotes, newlines and shell operators)
+  // out of the PowerShell wrapper itself. Invoke-Expression is intentional:
+  // the command has already passed NeoWorker's approval and sandbox policy.
+  const encodedCommand = Buffer.from(command, "utf8").toString("base64");
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    `$global:LASTEXITCODE = 0`,
+    `Set-Location -LiteralPath ${quoteForPowerShell(targetCwd)}`,
+    `$__neoworker_command = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedCommand}'))`,
+    "try {",
+    "  Invoke-Expression $__neoworker_command",
+    "  if ($LASTEXITCODE -is [int]) { $__neoworker_exit_code = $LASTEXITCODE } elseif ($?) { $__neoworker_exit_code = 0 } else { $__neoworker_exit_code = 1 }",
+    "} catch {",
+    "  [Console]::Error.WriteLine($_.Exception.Message)",
+    "  $__neoworker_exit_code = 1",
+    "}",
+    "Write-Output ''",
+    "Write-Output '__NEOWORKER_STATE_START__'",
+    "Write-Output ('__NEOWORKER_CWD__:' + (Get-Location).Path)",
+    "Write-Output '__NEOWORKER_ALIASES_START__'",
+    "Write-Output '__NEOWORKER_ALIASES_END__'",
+    "Write-Output '__NEOWORKER_ENV_START__'",
+    "Get-ChildItem Env: | ForEach-Object { $_.Name + '=' + ($_.Value -replace \"`r?`n\", ' ') }",
+    "Write-Output '__NEOWORKER_ENV_END__'",
+    `Write-Output ('__NEOWORKER_DONE__:${commandId}:' + $__neoworker_exit_code)`,
+  ].join("\n");
+}
+
+function buildCmdCommandWrapper(targetCwd: string, command: string, commandId: string): string {
+  return [
+    "@echo off",
+    `cd /d ${quoteForCmd(targetCwd)}`,
+    command,
+    "set \"__NEOWORKER_EXIT=%ERRORLEVEL%\"",
+    "echo.",
+    "echo __NEOWORKER_STATE_START__",
+    "echo __NEOWORKER_CWD__:%CD%",
+    "echo __NEOWORKER_ALIASES_START__",
+    "echo __NEOWORKER_ALIASES_END__",
+    "echo __NEOWORKER_ENV_START__",
+    "set",
+    "echo __NEOWORKER_ENV_END__",
+    `echo __NEOWORKER_DONE__:${commandId}:%__NEOWORKER_EXIT%`,
+  ].join("\r\n");
+}
+
+function buildCommandWrapper(
+  shell: string,
+  targetCwd: string,
+  command: string,
+  commandId: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (isWindowsPowerShell(shell, platform)) {
+    return buildPowerShellCommandWrapper(targetCwd, command, commandId);
+  }
+  if (isWindowsCmd(shell, platform)) {
+    return buildCmdCommandWrapper(targetCwd, command, commandId);
+  }
+  return buildUnixCommandWrapper(targetCwd, command, commandId);
 }
 
 function snapshotForPersistence(snapshot: ShellSnapshot): ShellSnapshot {
@@ -384,6 +535,7 @@ export class ShellSessionManager {
             lastError: session.lastError,
           },
           snapshot: session.snapshot || { cwd: session.cwd, env: {}, aliases: {} },
+          shell: undefined,
           process: null,
           buffer: "",
           ready: false,
@@ -486,6 +638,7 @@ export class ShellSessionManager {
           id: params.id,
         }),
         snapshot: { cwd: params.workspacePath, env: {}, aliases: {} },
+        shell: undefined,
         process: null,
         buffer: "",
         ready: false,
@@ -586,9 +739,24 @@ export class ShellSessionManager {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    runtime.shell = shell;
     runtime.process = child;
     runtime.buffer = "";
     runtime.ready = true;
+    if (process.platform === "win32") {
+      if (!isTerminalTab && isWindowsPowerShell(shell)) {
+        // Windows PowerShell 5 can emit the active system code page when its
+        // stdout is redirected. Set all relevant encodings before commands
+        // arrive so Chinese output and marker lines remain UTF-8.
+        child.stdin?.write(
+          "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
+          "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); " +
+          "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n",
+        );
+      } else if (isWindowsCmd(shell)) {
+        child.stdin?.write("chcp 65001>nul\r\n");
+      }
+    }
 
     child.stdout?.on("data", (chunk: Buffer) => {
       const output = chunk.toString("utf-8");
@@ -708,7 +876,10 @@ export class ShellSessionManager {
       throw new Error("Unable to start persistent shell session.");
     }
 
-    const rehydrateCommands = buildRehydrateCommands(runtime.snapshot);
+    const rehydrateCommands = buildRehydrateCommands(
+      runtime.snapshot,
+      runtime.shell,
+    );
     if (rehydrateCommands.length > 0) {
       runtime.process.stdin.write(`${rehydrateCommands.join("\n")}\n`);
     }
@@ -875,26 +1046,12 @@ export class ShellSessionManager {
         ? request.cwd
         : path.resolve(session.snapshot.cwd || request.workspacePath, request.cwd)
       : session.snapshot.cwd || request.workspacePath;
-    const heredocMarker = `__NEOWORKER_CMD_${commandId.replace(/[^a-zA-Z0-9]/g, "_")}__`;
-    const wrapper = [
-      "set +e",
-      `cd ${quoteForPosixShell(normalizePathForShell(targetCwd))}`,
-      `__NEOWORKER_COMMAND=$(cat <<'${heredocMarker}'`,
+    const wrapper = buildCommandWrapper(
+      session.shell || resolveShellExecutable(),
+      targetCwd,
       request.command,
-      heredocMarker,
-      ")",
-      "eval \"$__NEOWORKER_COMMAND\"",
-      "__neoworker_exit_code=$?",
-      "printf '\\n__NEOWORKER_STATE_START__\\n'",
-      "printf '__NEOWORKER_CWD__:%s\\n' \"$(pwd -P)\"",
-      "printf '__NEOWORKER_ALIASES_START__\\n'",
-      "alias",
-      "printf '__NEOWORKER_ALIASES_END__\\n'",
-      "printf '__NEOWORKER_ENV_START__\\n'",
-      "env",
-      "printf '__NEOWORKER_ENV_END__\\n'",
-      `printf '__NEOWORKER_DONE__:%s:%s\\n' ${quoteForPosixShell(commandId)} "$__neoworker_exit_code"`,
-    ].join("\n");
+      commandId,
+    );
 
     let abortListener: (() => void) | undefined;
     const commandPromise = new Promise<ShellCommandResult>((resolve, reject) => {
@@ -1185,6 +1342,8 @@ export class ShellSessionManager {
 }
 
 export const _testUtils = {
+  buildCommandWrapper,
+  buildRehydrateCommands,
   getShellArgs,
   getTerminalShellArgs,
 };

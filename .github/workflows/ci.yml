@@ -216,6 +216,8 @@ jobs:
           src/electron/agent/sandbox/__tests__/windows-package-manager-launch.test.ts
           src/electron/agent/sandbox/__tests__/windows-process.integration.test.ts
           src/electron/agent/tools/__tests__/shell-tools.test.ts
+          src/electron/agent/tools/__tests__/shell-session-manager.test.ts
+          src/electron/agent/tools/__tests__/windows-shell-session.integration.test.ts
           src/electron/agent/runtime/__tests__/tool-host-protocol.test.ts
           src/electron/agent/runtime/__tests__/ToolScheduler.test.ts
           src/electron/agent/runtime/__tests__/hermes-fault-injection.test.ts
