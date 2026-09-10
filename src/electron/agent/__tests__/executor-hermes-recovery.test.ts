@@ -78,7 +78,64 @@ describe("Executor Hermes recovery", () => {
     ]);
     expect(instance.enforceToolBudget).toHaveBeenCalledWith("run_command");
     expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "llm_streaming",
+      expect.objectContaining({ runtime: "hermes", streaming: true }),
+    );
+    expect(
+      instance.daemon.logEvent.mock.calls.some(
+        ([, type, payload]: [string, string, Any]) =>
+          type === "hermes_runtime_update" &&
+          payload?.sessionUpdate === "agent_message_chunk",
+      ),
+    ).toBe(false);
     expect(instance.daemon.logEvent.mock.calls.some(([, type]) => type === "hermes_runtime_transport")).toBe(true);
+  });
+
+  it("finalizes a successful Hermes follow-up instead of leaving the task executing", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-follow-up",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "follow-up-hermes",
+      agentConfig: { externalRuntime: { kind: "acpx", agent: "hermes" } },
+    };
+    instance.getAcpxExternalRuntimeConfig = () => ({
+      kind: "acpx",
+      agent: "hermes",
+    });
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi.fn(async () => ({
+      assistantText: "follow-up completed",
+      stopReason: "end_turn",
+      sessionId: checkpoint.sessionId,
+    }));
+    instance.buildQuotedAssistantContextMessage = (message: string) => message;
+    instance.buildIntegrationMentionEventPayload = () => ({});
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.emitEvent = vi.fn();
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.sendMessageWithAcpxRuntime.call(
+      instance,
+      "Please verify the result.",
+    );
+
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "follow-up completed",
+      "hermes follow-up completed",
+    );
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 
   it("keeps sequential file and Shell steps inside the NeoWorker Tool Host", async () => {

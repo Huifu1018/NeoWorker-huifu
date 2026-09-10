@@ -4909,6 +4909,12 @@ export class TaskExecutor {
           this.lastNonVerificationOutput = assistantText;
           this.emitEvent("assistant_message", { message: assistantText });
         }
+        if (result.stopReason === "cancelled" || this.cancelled) return;
+        this.finalizeTaskBestEffort(
+          assistantText ||
+            "Hermes Agent follow-up completed without a final assistant message.",
+          "hermes follow-up completed",
+        );
       } finally {
         this.hermesRuntimeAdapter = null;
         await runtime.close();
@@ -9740,6 +9746,41 @@ ${transcript}
         return approved && !context.signal.aborted;
       },
       onUpdate: (update) => {
+        const sessionUpdate =
+          typeof update.sessionUpdate === "string"
+            ? update.sessionUpdate
+            : "";
+        const content =
+          update.content &&
+          typeof update.content === "object" &&
+          !Array.isArray(update.content)
+            ? (update.content as Record<string, unknown>)
+            : undefined;
+        const text =
+          content && content.type === "text" && typeof content.text === "string"
+            ? content.text
+            : "";
+
+        // ACP emits one update for every streamed token. Persisting those
+        // fragments as ordinary task events turns a single answer into
+        // hundreds of synchronous database writes and makes the timeline
+        // slower for every subsequent task switch. Keep the stream ephemeral
+        // and leave the final assistant message as the durable record.
+        if (sessionUpdate === "agent_message_chunk") {
+          if (text) {
+            this.emitEvent("llm_streaming", {
+              runtime: "hermes",
+              text,
+              streaming: true,
+            });
+          }
+          return;
+        }
+
+        // Thought chunks are high-volume internal reasoning and are not part
+        // of the user-visible transcript. They should not be persisted.
+        if (sessionUpdate === "agent_thought_chunk") return;
+
         this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);
       },
       onTransportEvent: (event) => {

@@ -27,6 +27,7 @@
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器；适配器提供 `start/prompt/cancel/pause/resume/retry/checkpoint/close` 稳定生命周期接口 |
 | Hermes Prompt 分层与恢复路由 | 已接入并通过专项测试 | Executor 使用有界的 Runtime/工作区/任务/上下文/技能提示层；后续消息只发送最新指令；已有 checkpoint 时改走 guarded `retry()`，避免初始任务重复提交 |
+| Hermes 流式输出与 follow-up 终态 | 通过专项测试 | ACP message chunks 改走临时 `llm_streaming` 事件，避免逐 token 持久化；Hermes follow-up 返回后进入统一终态收口，防止任务停留在 `executing` |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
 | Hermes 宿主多步路由 | 历史真实模型验收通过；最新复测受外部 provider 阻断 | `node scripts/qa/run-hermes-live-hostchain.mjs` 曾使用本机 Hermes Agent v0.18.0 和真实模型，按顺序调用 `write_file`、`run_command`；最新复测收到外部 provider 的 HTTP 502 queue full，未把这次失败计为工具链成功 |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
