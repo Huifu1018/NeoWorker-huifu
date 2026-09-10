@@ -279,7 +279,9 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
  */
 async function validatePackagedNeoWorkerRuntime(asarPath) {
   const entries = new Set(
-    listPackage(asarPath).map((entry) => entry.replace(/^[/\\]+/, "")),
+    listPackage(asarPath).map((entry) =>
+      entry.replaceAll("\\", "/").replace(/^\/+/, ""),
+    ),
   );
   const required = [
     "dist/electron/electron/agent/runtime/hermes-runtime-adapter.js",
