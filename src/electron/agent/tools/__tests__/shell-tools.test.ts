@@ -398,6 +398,29 @@ describe("ShellTools Integration", () => {
       ]);
     });
 
+    it("accepts Windows environment keys with Electron's preserved casing", () => {
+      const probes: string[] = [];
+      const resolved = resolveWindowsShellExecutable(
+        {
+          systemroot: "D:\\Windows",
+          Path: "D:\\Tools",
+          ComSpec: "D:\\Windows\\System32\\cmd.exe",
+        },
+        (candidate) => {
+          probes.push(candidate);
+          return candidate === "D:\\Tools\\powershell.exe";
+        },
+      );
+
+      expect(resolved).toBe("D:\\Tools\\powershell.exe");
+      expect(probes).toEqual([
+        "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+        "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "D:\\Tools\\pwsh.exe",
+        "D:\\Tools\\powershell.exe",
+      ]);
+    });
+
     it("falls back to COMSPEC when no interpreter is available", () => {
       expect(resolveWindowsShellExecutable(
         { PATH: "", COMSPEC: "D:\\Windows\\System32\\cmd.exe" },

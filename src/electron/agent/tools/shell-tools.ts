@@ -339,13 +339,13 @@ export function resolveWindowsShellExecutable(
   env: NodeJS.ProcessEnv = process.env,
   probe: (filePath: string) => boolean = existsSync,
 ): string {
-  const systemRoot = env.SystemRoot || "C:\\Windows";
+  const systemRoot = readEnvironmentValue(env, "SystemRoot") || "C:\\Windows";
   const fixedCandidates = [
     path.win32.join("C:\\Program Files", "PowerShell", "7", "pwsh.exe"),
     path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
   ];
   const pathCandidates = ["pwsh.exe", "powershell.exe", "cmd.exe"];
-  const pathEntries = String(env.PATH || "")
+  const pathEntries = String(readEnvironmentValue(env, "PATH") || "")
     .split(";")
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -354,7 +354,7 @@ export function resolveWindowsShellExecutable(
   )]) {
     if (probe(candidate)) return candidate;
   }
-  return env.COMSPEC || "cmd.exe";
+  return readEnvironmentValue(env, "COMSPEC") || "cmd.exe";
 }
 
 function readEnvironmentValue(
@@ -1462,14 +1462,24 @@ export class ShellTools {
     const safeEnv: Record<string, string> =
       process.platform === "win32"
         ? {
-            USERPROFILE: process.env.USERPROFILE || "",
-            USERNAME: process.env.USERNAME || "",
-            HOMEDRIVE: process.env.HOMEDRIVE || "C:",
-            HOMEPATH: process.env.HOMEPATH || "\\Users\\" + (process.env.USERNAME || ""),
-            TEMP: process.env.TEMP || process.env.TMP || "C:\\Windows\\Temp",
-            TMP: process.env.TMP || process.env.TEMP || "C:\\Windows\\Temp",
-            SystemRoot: process.env.SystemRoot || "C:\\Windows",
-            COMSPEC: process.env.COMSPEC || "C:\\Windows\\System32\\cmd.exe",
+            USERPROFILE: readEnvironmentValue(process.env, "USERPROFILE") || "",
+            USERNAME: readEnvironmentValue(process.env, "USERNAME") || "",
+            HOMEDRIVE: readEnvironmentValue(process.env, "HOMEDRIVE") || "C:",
+            HOMEPATH:
+              readEnvironmentValue(process.env, "HOMEPATH") ||
+              "\\Users\\" + (readEnvironmentValue(process.env, "USERNAME") || ""),
+            TEMP:
+              readEnvironmentValue(process.env, "TEMP") ||
+              readEnvironmentValue(process.env, "TMP") ||
+              "C:\\Windows\\Temp",
+            TMP:
+              readEnvironmentValue(process.env, "TMP") ||
+              readEnvironmentValue(process.env, "TEMP") ||
+              "C:\\Windows\\Temp",
+            SystemRoot: readEnvironmentValue(process.env, "SystemRoot") || "C:\\Windows",
+            COMSPEC:
+              readEnvironmentValue(process.env, "COMSPEC") ||
+              "C:\\Windows\\System32\\cmd.exe",
             ...requestedEnv,
             // Keep Windows system and PowerShell directories available even
             // when a caller supplies a task-specific PATH.
