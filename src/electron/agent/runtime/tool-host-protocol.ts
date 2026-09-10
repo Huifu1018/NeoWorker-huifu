@@ -103,15 +103,19 @@ export class NeoWorkerToolHost {
         `${normalized.toolName}\n${String(stableJsonStringify(normalized.input, { sortKeys: true, maxOutputChars: 500_000 }))}`,
       )
       .digest("hex");
+    const startedAt = Date.now();
     const emitHostLifecycle = (status: "request" | "deduplicated" | "response", extra: Record<string, unknown> = {}) => {
       context.emitEvent?.("log", {
         metric: "tool_host_lifecycle",
+        taskId: context.taskId,
+        phase: context.phase,
         requestId: normalized.requestId,
         toolCallId: normalized.toolCallId,
         tool: normalized.toolName,
         idempotencyKey: executionKey,
         fingerprint,
         status,
+        startedAt,
         ...extra,
       });
     };
@@ -148,31 +152,52 @@ export class NeoWorkerToolHost {
       // has started, its final state is unknown; automatic replay is unsafe.
       this.inFlightOrCompleted.set(executionKey, { fingerprint, promise: outcomePromise });
     }
-    const outcome = await outcomePromise;
-    const error = outcome.error
-      ? {
-          message: String((outcome.error as { message?: unknown })?.message || outcome.error),
-          ...((outcome.error as { code?: unknown })?.code
-            ? { code: String((outcome.error as { code: unknown }).code) }
+    try {
+      const outcome = await outcomePromise;
+      const error = outcome.error
+        ? {
+            message: String((outcome.error as { message?: unknown })?.message || outcome.error),
+            ...((outcome.error as { code?: unknown })?.code
+              ? { code: String((outcome.error as { code: unknown }).code) }
+              : {}),
+          }
+        : undefined;
+      const endedAt = Date.now();
+      emitHostLifecycle("response", {
+        responseStatus: outcome.envelope.status,
+        endedAt,
+        durationMs: endedAt - startedAt,
+        outcome,
+      });
+      return {
+        outcome,
+        response: {
+          requestId: normalized.requestId,
+          toolCallId: normalized.toolCallId,
+          schemaVersion: TOOL_HOST_SCHEMA_VERSION,
+          status: outcome.envelope.status,
+          ...(outcome.error ? { error } : { result: outcome.envelope.structuredData }),
+          ...(normalized.checkpoint ? { checkpoint: normalized.checkpoint } : {}),
+        },
+      };
+    } catch (error) {
+      const endedAt = Date.now();
+      const errorRecord = error && typeof error === "object"
+        ? error as { message?: unknown; code?: unknown; name?: unknown }
+        : {};
+      emitHostLifecycle("response", {
+        responseStatus: "error",
+        endedAt,
+        durationMs: endedAt - startedAt,
+        error: String(errorRecord.message || error || "Tool host execution failed"),
+        ...(typeof errorRecord.code === "string" && errorRecord.code.trim()
+          ? { errorType: errorRecord.code.trim() }
+          : typeof errorRecord.name === "string" && errorRecord.name.trim()
+            ? { errorType: errorRecord.name.trim() }
             : {}),
-        }
-      : undefined;
-    emitHostLifecycle("response", {
-      responseStatus: outcome.envelope.status,
-      durationMs: outcome.durationMs,
-      outcome,
-    });
-    return {
-      outcome,
-      response: {
-        requestId: normalized.requestId,
-        toolCallId: normalized.toolCallId,
-        schemaVersion: TOOL_HOST_SCHEMA_VERSION,
-        status: outcome.envelope.status,
-        ...(outcome.error ? { error } : { result: outcome.envelope.structuredData }),
-        ...(normalized.checkpoint ? { checkpoint: normalized.checkpoint } : {}),
-      },
-    };
+      });
+      throw error;
+    }
   }
 }
 

@@ -35,8 +35,15 @@ describe("ToolExecutionCoordinator lifecycle", () => {
 
     const lifecycle = events.filter((event) => event.payload.metric === "tool_lifecycle");
     expect(lifecycle.map((event) => event.payload.status)).toEqual(["running", "result"]);
-    expect(lifecycle[0].payload).toMatchObject({ tool: "read_file", toolCallId: "call-1" });
+    expect(lifecycle[0].payload).toMatchObject({
+      taskId: "task-1",
+      tool: "read_file",
+      toolCallId: "call-1",
+      idempotencyKey: '["task-1","call-1"]',
+      startedAt: expect.any(Number),
+    });
     expect(lifecycle[1].payload.durationMs).toEqual(expect.any(Number));
+    expect(lifecycle[1].payload.endedAt).toEqual(expect.any(Number));
     expect(output.envelope.status).toBe("success");
   });
 
@@ -73,7 +80,12 @@ describe("ToolExecutionCoordinator lifecycle", () => {
 
     expect(output.envelope.status).toBe("cancelled");
     expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
-      .toMatchObject({ toolCallId: "call-stopped" });
+      .toMatchObject({
+        taskId: "task-1",
+        toolCallId: "call-stopped",
+        exitCode: null,
+        terminationReason: "user_stopped",
+      });
   });
 
   it.each([
@@ -85,7 +97,13 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     const { coordinator } = coordinatorFor(undefined, error);
     await coordinator.executeTool("run_command", { command: "build" }, lifecycleContext(events), "call-error");
     expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === expected)?.payload)
-      .toMatchObject({ toolCallId: "call-error", error: error.message });
+      .toMatchObject({
+        taskId: "task-1",
+        toolCallId: "call-error",
+        idempotencyKey: '["task-1","call-error"]',
+        error: error.message,
+        errorType: "Error",
+      });
   });
 
   it("does not start workspace recovery after cancellation", async () => {
