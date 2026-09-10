@@ -1,6 +1,6 @@
 # Hermes 工具所有权审计
 
-更新时间：2026-09-09，针对本机 Hermes Agent v0.18.0。
+更新时间：2026-09-10，针对本机 Hermes Agent v0.18.0；开发分支为 `codex/hermes-neoworker`。
 
 这份审计用于区分“模型入口”和“Agent Runtime”，避免把一个会执行本地操作的 Hermes 服务误当成纯模型 API。
 
@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | Hermes API Server `8642/v1` | 创建 Hermes `AIAgent`，执行 Hermes toolset，并返回最终回答 | 否 |
 | Hermes ACP `hermes acp` | 每个 ACP session 默认启用 `hermes-acp`，其中包含 `terminal`、`process`、`read_file`、`write_file`、`patch` | 否；当前只能桥接权限请求和生命周期 |
+| NeoWorker 新建 Hermes ACP 任务 | 版本固定的启动包装器只启用 `mcp-neoworker`；MCP 工具回调进入 NeoWorker Executor → Tool Host → Coordinator | 已接通；真实模型探针通过，文件/Shell/审批/取消完整场景待验收 |
 | Hermes Model Proxy `8645/v1` | 原样转发 OpenAI-compatible 请求和响应，附加 OAuth 凭据，不运行 Agent Loop | 是；NeoWorker 收到 tool calls 后由 Tool Host 执行 |
 
 ## 代码证据
@@ -32,4 +33,8 @@
 3. 刷新并选择代理返回的模型。
 4. 使用 NeoWorker 原生任务执行链；模型返回的工具调用会经过 `neoworker_tool_host_v1`、审批、策略、超时、日志和结果边界。
 
-需要完整 Hermes Agent Loop 时可以选择 **Hermes Agent** 或 ACP，但这类任务必须按外部 Runtime 记录，不能把它们当作 NeoWorker Tool Host 的验收结果。
+需要完整 Hermes Agent Loop 时，显式选择 ACP Hermes 任务会为新会话启动 NeoWorker 的宿主工具模式。已有原生 Hermes checkpoint 保留旧所有权，不自动切换。`Hermes Agent` HTTP Provider（8642）仍是外部工具执行入口，不属于该桥接路径。
+
+本机真实验证：2026-09-10，包装器启动 Hermes 0.18.0 后，`/tools` 只返回 `mcp_neoworker_neoworker_probe`，没有原生文件和终端工具；真实模型通过该工具回调一次并收到 `NEOWORKER_HOST_OK`。这项证据不替代文件操作、Shell、审批与取消的完整端到端验收。
+
+同日后续真实模型复测收到上游 HTTP 402（余额不足），在工具调用前结束；适配器现已为该类 ACP `end_turn` 响应保留结构化错误元数据，避免把供应商失败误报为任务成功。

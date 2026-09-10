@@ -1,14 +1,18 @@
 import {
   HermesAcpClient, HermesAcpError,
   type AcpObject, type AcpRequestContext, type HermesAcpClientOptions,
+  type HermesAcpMcpServer,
 } from "./hermes-acp-client";
 import { HermesPermissionBridge, type HermesPermissionHandler } from "./hermes-permission-bridge";
+import { HermesToolHostMcpServer, type HermesToolHostMcpOptions } from "./hermes-tool-host-mcp";
 
 export interface HermesSessionCheckpoint {
   schema: "neoworker_hermes_acp_v1";
   sessionId: string;
   cwd: string;
   agentVersion: string;
+  /** Missing means a legacy session using Hermes-native tools. */
+  toolOwnership?: "neoworker" | "hermes";
 }
 export interface HermesRuntimeOptions extends HermesAcpClientOptions {
   checkpoint?: HermesSessionCheckpoint;
@@ -17,6 +21,13 @@ export interface HermesRuntimeOptions extends HermesAcpClientOptions {
   onPermissionRequest?: HermesPermissionHandler;
   permissionTimeoutMs?: number;
   onRequest?: (method: string, params: AcpObject, context: AcpRequestContext) => Promise<unknown>;
+  /**
+   * Optional task-scoped NeoWorker Tool Host exposed to Hermes through MCP.
+   * The caller remains responsible for disabling Hermes native tools when
+   * selecting this mode; otherwise duplicate native and host-owned tools may
+   * be offered by the ACP runtime.
+   */
+  hostToolBridge?: HermesToolHostMcpOptions;
 }
 export interface HermesPromptResult {
   assistantText: string;
@@ -47,6 +58,8 @@ export class HermesRuntimeAdapter {
   private readonly permissions: HermesPermissionBridge;
   private cancelRequested = false;
   private paused = false;
+  private hostToolServer?: HermesToolHostMcpServer;
+  private hostToolServerConfig?: HermesAcpMcpServer;
 
   constructor(private readonly options: HermesRuntimeOptions) {
     this.checkpoint = options.checkpoint;
@@ -86,7 +99,32 @@ export class HermesRuntimeAdapter {
 
   private async open(): Promise<HermesSessionCheckpoint> {
     try {
-      await this.client.start(this.options);
+      if (this.options.hostToolBridge && !this.hostToolServer) {
+        this.hostToolServer = new HermesToolHostMcpServer({
+          ...this.options.hostToolBridge,
+          taskId: this.options.hostToolBridge.taskId,
+        });
+        const endpoint = await this.hostToolServer.start();
+        this.hostToolServerConfig = {
+          type: "http",
+          name: "neoworker",
+          url: endpoint.url,
+          headers: endpoint.headers,
+        };
+      }
+      const launchOptions = this.hostToolServerConfig
+        ? {
+            ...this.options,
+            env: {
+              ...this.options.env,
+              // The MCP endpoint is task-local. Inherited HTTP proxies must
+              // never route loopback tool calls through an external proxy.
+              NO_PROXY: this.loopbackNoProxy("NO_PROXY"),
+              no_proxy: this.loopbackNoProxy("no_proxy"),
+            },
+          }
+        : this.options;
+      await this.client.start(launchOptions);
       const init = await this.client.initialize();
       if (init.protocolVersion !== 1) throw new Error("Unsupported Hermes ACP protocol version");
       const agentInfo = init.agentInfo as AcpObject | undefined;
@@ -95,15 +133,20 @@ export class HermesRuntimeAdapter {
         if (this.checkpoint.schema !== "neoworker_hermes_acp_v1" || this.checkpoint.cwd !== this.options.cwd) {
           throw new Error("Hermes checkpoint does not match this workspace");
         }
+        const ownership = this.checkpoint.toolOwnership ?? "hermes";
+        if (ownership !== (this.options.hostToolBridge ? "neoworker" : "hermes")) {
+          throw new Error("Hermes checkpoint tool ownership does not match this runtime");
+        }
         const caps = init.agentCapabilities as AcpObject | undefined;
         if (caps?.loadSession !== true) throw new Error("Hermes cannot restore sessions");
-        await this.client.loadSession(this.checkpoint.sessionId, this.options.cwd);
+        await this.client.loadSession(this.checkpoint.sessionId, this.options.cwd, this.getMcpServers());
       } else {
-        const session = await this.client.newSession(this.options.cwd);
+        const session = await this.client.newSession(this.options.cwd, this.getMcpServers());
         if (typeof session.sessionId !== "string" || !session.sessionId) throw new Error("Hermes returned no session id");
         this.checkpoint = {
           schema: "neoworker_hermes_acp_v1", sessionId: session.sessionId,
           cwd: this.options.cwd, agentVersion,
+          toolOwnership: this.options.hostToolBridge ? "neoworker" : "hermes",
         };
       }
       // Persist the stable Hermes session handle before a prompt can run tools.
@@ -112,6 +155,9 @@ export class HermesRuntimeAdapter {
       return { ...this.checkpoint };
     } catch (error) {
       this.client.stop();
+      await this.hostToolServer?.stop();
+      this.hostToolServer = undefined;
+      this.hostToolServerConfig = undefined;
       this.connected = false;
       throw error;
     }
@@ -131,6 +177,15 @@ export class HermesRuntimeAdapter {
         const result = await this.client.prompt(checkpoint.sessionId, text, {
           timeoutMs: this.options.timeoutMs ?? 300_000, signal,
         });
+        const meta = result._meta as { neoworker?: { runtimeError?: { code?: unknown; message?: unknown } } } | undefined;
+        const runtimeError = meta?.neoworker?.runtimeError;
+        if (runtimeError && typeof runtimeError.message === "string") {
+          throw new HermesAcpError(
+            runtimeError.message,
+            typeof runtimeError.code === "string" ? runtimeError.code : "HERMES_RUNTIME_ERROR",
+            runtimeError,
+          );
+        }
         if (typeof result.stopReason !== "string") throw new Error("Hermes prompt returned no stop reason");
         return { assistantText: this.text, stopReason: this.cancelRequested ? "cancelled" : result.stopReason, sessionId: checkpoint.sessionId };
       } catch (error) {
@@ -199,6 +254,19 @@ export class HermesRuntimeAdapter {
     this.acceptingUpdates = false;
     this.permissions.cancelPending();
     this.client.stop();
+    void this.hostToolServer?.stop();
+    this.hostToolServer = undefined;
+    this.hostToolServerConfig = undefined;
     this.connected = false;
+  }
+
+  private getMcpServers(): HermesAcpMcpServer[] {
+    const configured = Array.isArray(this.options.mcpServers) ? this.options.mcpServers : [];
+    return this.hostToolServerConfig ? [...configured, this.hostToolServerConfig] : configured;
+  }
+
+  private loopbackNoProxy(key: "NO_PROXY" | "no_proxy"): string {
+    const current = this.options.env?.[key] ?? process.env[key] ?? "";
+    return [...new Set([...current.split(",").map((part) => part.trim()).filter(Boolean), "127.0.0.1", "localhost", "::1"])].join(",");
   }
 }

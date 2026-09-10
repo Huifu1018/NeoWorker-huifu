@@ -16,6 +16,9 @@ function executor(events: Array<{ payload: unknown }>) {
   const instance = Object.create(TaskExecutor.prototype) as Any;
   instance.task = { id: "recover-hermes" };
   instance.workspace = { path: cwd };
+  instance.emitEvent = vi.fn();
+  instance.enforceToolBudget = vi.fn();
+  instance.totalToolCallCount = 0;
   instance.daemon = {
     getTaskEvents: vi.fn(() => events.slice(-1)),
     logEvent: vi.fn((_task, type, payload) => {
@@ -40,6 +43,28 @@ function adapter(instance: TaskExecutor) {
 }
 
 describe("Executor Hermes recovery", () => {
+  it("routes a new Hermes session's MCP tool call through the executor Tool Host", async () => {
+    fixtureTransport();
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [{ name: "run_command", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } }];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(async (_name, _input, _timeout, toolCallId) => ({
+      toolHostResponse: {
+        schemaVersion: "neoworker_tool_host_v1", requestId: "host-response", toolCallId,
+        status: "success", result: { stdout: "host\n", exitCode: 0 },
+      },
+    }));
+    const runtime = adapter(instance);
+    const result = await runtime.prompt("host-tool");
+    expect(instance.executeToolWithHeartbeat).toHaveBeenCalledWith(
+      "run_command", { command: "echo host" }, 1000, expect.stringContaining("hermes-mcp:"), expect.any(AbortSignal),
+    );
+    expect(JSON.parse(result.assistantText)).toMatchObject({ result: { isError: false, content: [{ text: '{"stdout":"host\\n","exitCode":0}' }] } });
+    expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
+    expect(instance.enforceToolBudget).toHaveBeenCalledWith("run_command");
+    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+  });
+
   it("propagates desktop pause to the active Hermes adapter", async () => {
     const pause = vi.fn(async () => undefined);
     const events: unknown[] = [];
@@ -96,7 +121,12 @@ describe("Executor Hermes recovery", () => {
     expect(await restored.prompt("continue")).toMatchObject({
       sessionId: checkpoint!.sessionId, assistantText: "你好 OK",
     });
-    expect(load).toHaveBeenCalledWith(checkpoint!.sessionId, cwd);
+    expect(load).toHaveBeenCalledWith(checkpoint!.sessionId, cwd, [expect.objectContaining({
+      type: "http",
+      name: "neoworker",
+      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/),
+    })]);
+    expect(checkpoint?.toolOwnership).toBe("neoworker");
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -117,6 +147,7 @@ describe("Executor Hermes recovery", () => {
     { schema: "wrong", sessionId: "old", cwd, agentVersion: "fixture" },
     { schema: "neoworker_hermes_acp_v1", sessionId: "old", cwd: "/other", agentVersion: "fixture" },
     { schema: "neoworker_hermes_acp_v1", sessionId: "", cwd, agentVersion: "fixture" },
+    { schema: "neoworker_hermes_acp_v1", sessionId: "old", cwd, agentVersion: "fixture", toolOwnership: "invalid" },
   ])("does not silently restart a task with an invalid persisted checkpoint", payload => {
     expect(() => adapter(executor([{ payload }]))).toThrow("Cannot restore Hermes");
   });

@@ -277,13 +277,15 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
  * regressions where TypeScript builds pass but tree-shaking or an incorrect
  * files pattern drops the runtime modules from the shipped desktop app.
  */
-function validatePackagedNeoWorkerRuntime(asarPath) {
+async function validatePackagedNeoWorkerRuntime(asarPath) {
   const entries = new Set(
     listPackage(asarPath).map((entry) => entry.replace(/^[/\\]+/, "")),
   );
   const required = [
     "dist/electron/electron/agent/runtime/hermes-runtime-adapter.js",
     "dist/electron/electron/agent/runtime/hermes-acp-client.js",
+    "dist/electron/electron/agent/runtime/hermes-tool-host-mcp.js",
+    "dist/electron/electron/agent/runtime/hermes-host-launcher.js",
     "dist/electron/electron/agent/runtime/tool-host-protocol.js",
     "dist/electron/electron/agent/runtime/ToolExecutionCoordinator.js",
     "dist/electron/electron/agent/sandbox/sandbox-factory.js",
@@ -291,6 +293,14 @@ function validatePackagedNeoWorkerRuntime(asarPath) {
   const missing = required.filter((entry) => !entries.has(entry));
   if (missing.length > 0) {
     throw new Error(`Packaged app.asar is missing Hermes/Tool Host runtime files: ${missing.join(", ")}`);
+  }
+  const launcherName = "hermes-acp-neoworker-host.py";
+  const [sourceLauncher, packagedLauncher] = await Promise.all([
+    fs.readFile(path.join(ROOT, "scripts", launcherName)),
+    fs.readFile(path.join(path.dirname(asarPath), "hermes-runtime", launcherName)),
+  ]);
+  if (!sourceLauncher.equals(packagedLauncher)) {
+    throw new Error("Packaged Hermes host launcher does not match the source being delivered");
   }
 }
 
@@ -456,7 +466,7 @@ async function smokeMac({ releaseDir, expectedVersion, allowUnsigned }) {
 
     const executablePath = path.join(appPath, "Contents", "MacOS", executableName);
     await fs.access(executablePath, fsConstants.X_OK);
-    validatePackagedNeoWorkerRuntime(path.join(appPath, "Contents", "Resources", "app.asar"));
+    await validatePackagedNeoWorkerRuntime(path.join(appPath, "Contents", "Resources", "app.asar"));
     await validateNumbatRuntime(
       path.join(appPath, "Contents", "Resources"),
       `darwin-${process.arch}`,
@@ -592,7 +602,7 @@ Write-Output $item.VersionInfo.ProductVersion
       path.join(path.dirname(appExe), "resources"),
       `win32-${process.arch}`,
     );
-    validatePackagedNeoWorkerRuntime(path.join(path.dirname(appExe), "resources", "app.asar"));
+    await validatePackagedNeoWorkerRuntime(path.join(path.dirname(appExe), "resources", "app.asar"));
 
     if (!skipLaunch) {
       let spawnError = null;

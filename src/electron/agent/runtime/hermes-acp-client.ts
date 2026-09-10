@@ -12,7 +12,20 @@ export interface HermesAcpClientOptions {
   /** Time to the first correlated response, session update or permission request. */
   firstByteTimeoutMs?: number;
   maxFrameBytes?: number;
+  /** MCP servers to attach to every ACP session. */
+  mcpServers?: HermesAcpMcpServer[];
 }
+export type HermesAcpMcpServer = {
+  type: "http" | "sse";
+  name: string;
+  url: string;
+  headers: Array<{ name: string; value: string }>;
+} | {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+};
 export interface AcpRequestOptions { timeoutMs?: number; signal?: AbortSignal }
 export interface AcpRequestContext { signal: AbortSignal }
 
@@ -158,12 +171,12 @@ export class HermesAcpClient {
     });
   }
 
-  newSession(cwd: string): Promise<AcpObject> {
-    return this.request("session/new", { cwd, mcpServers: [] });
+  newSession(cwd: string, mcpServers: HermesAcpMcpServer[] = []): Promise<AcpObject> {
+    return this.request("session/new", { cwd, mcpServers });
   }
 
-  loadSession(sessionId: string, cwd: string): Promise<AcpObject> {
-    return this.request("session/load", { sessionId, cwd, mcpServers: [] });
+  loadSession(sessionId: string, cwd: string, mcpServers: HermesAcpMcpServer[] = []): Promise<AcpObject> {
+    return this.request("session/load", { sessionId, cwd, mcpServers });
   }
 
   prompt(sessionId: string, text: string, options: AcpRequestOptions | number = 300_000): Promise<AcpObject> {

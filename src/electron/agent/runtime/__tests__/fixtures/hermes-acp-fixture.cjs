@@ -3,6 +3,7 @@ const send = (message) => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ..
 const result = (id, value) => send({id, result: value});
 let promptId;
 let permissionParent;
+let mcpServers = [];
 const sessionId = 'fixture-session';
 readline.createInterface({input:process.stdin}).on('line', line => {
  const message = JSON.parse(line);
@@ -19,12 +20,32 @@ readline.createInterface({input:process.stdin}).on('line', line => {
  case 'initialize':
    process.stderr.write('x'.repeat(512*1024), () => result(id, {protocolVersion:1, agentInfo:{name:'hermes-agent', version:'fixture'}, agentCapabilities:{loadSession:true}}));
    break;
- case 'session/new': result(id, {sessionId}); break;
+ case 'session/new': mcpServers = params.mcpServers || []; result(id, {sessionId}); break;
  case 'session/load':
+   mcpServers = params.mcpServers || [];
    send({method:'session/update', params:{sessionId:params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HISTORY'}}}});
    result(id, {}); break;
  case 'session/prompt':
    promptId=id;
+   if (params.prompt[0].text === 'provider-error') {
+     send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HTTP 402: Insufficient Balance'}}}});
+     result(id,{stopReason:'end_turn',_meta:{neoworker:{runtimeError:{code:'HERMES_RUNTIME_ERROR',message:'HTTP 402: Insufficient Balance',retryable:false}}}});
+     promptId=undefined; break;
+   }
+   if (params.prompt[0].text === 'host-tool') {
+     void (async () => {
+       const server = mcpServers.find(item => item.name === 'neoworker');
+       const headers = Object.fromEntries(server.headers.map(item => [item.name, item.value]));
+       headers['content-type'] = 'application/json';
+       const init = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{}})});
+       headers['mcp-session-id'] = init.headers.get('mcp-session-id');
+       const call = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'run_command',arguments:{command:'echo host'}}})});
+       const payload = await call.json();
+       send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify(payload)}}}});
+       result(id,{stopReason:'end_turn'}); promptId=undefined;
+     })().catch(error => send({id,error:{code:-32001,message:error.message}}));
+     break;
+   }
    if (params.prompt[0].text === 'wait') break;
    if (['delayed-stream', 'foreign-stream', 'stream-without-result'].includes(params.prompt[0].text)) {
      send({method:'session/update', params:{

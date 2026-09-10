@@ -226,6 +226,10 @@
     ],
     "extraResources": [
       {
+        "from": "scripts/hermes-acp-neoworker-host.py",
+        "to": "hermes-runtime/hermes-acp-neoworker-host.py"
+      },
+      {
         "from": "resources/skills",
         "to": "skills",
         "filter": [

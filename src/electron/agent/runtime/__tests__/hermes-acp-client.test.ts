@@ -128,6 +128,13 @@ describe("Hermes ACP subprocess transport", () => {
 });
 
 describe('Hermes runtime session', () => {
+  it('treats a structured runtime failure as an error even when ACP returns end_turn', async () => {
+    const r = runtime();
+    await expect(r.prompt('provider-error')).rejects.toMatchObject({
+      code: 'HERMES_RUNTIME_ERROR', message: 'HTTP 402: Insufficient Balance', data: { retryable: false },
+    });
+    expect(r.getCheckpoint()?.sessionId).toBe('fixture-session');
+  });
   it('mediates permission requests over subprocess stdio', async () => {
     const r = runtime({onPermissionRequest: async (request) => {
       expect(request.toolCall.rawInput).toEqual({path:'example.txt'});

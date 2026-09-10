@@ -133,6 +133,7 @@ import {
   type HermesSessionCheckpoint,
 } from "./runtime/hermes-runtime-adapter";
 import { HermesAcpError } from "./runtime/hermes-acp-client";
+import { resolveHermesHostLauncher } from "./runtime/hermes-host-launcher";
 import {
   buildWorkerRolePrompt,
   resolveWorkerRoleKind,
@@ -142,6 +143,7 @@ import {
   NeoWorkerToolHost,
   createToolHostRequest,
   type PersistedToolHostRecord,
+  type ToolHostResponse,
 } from "./runtime/tool-host-protocol";
 import { resolveSkillSlashAlias } from "./skill-slash-aliases";
 import {
@@ -9460,7 +9462,8 @@ ${transcript}
         savedCheckpoint.schema !== "neoworker_hermes_acp_v1" ||
         typeof savedCheckpoint.sessionId !== "string" || !savedCheckpoint.sessionId.trim() ||
         savedCheckpoint.cwd !== this.workspace.path ||
-        typeof savedCheckpoint.agentVersion !== "string"
+        typeof savedCheckpoint.agentVersion !== "string" ||
+        (savedCheckpoint.toolOwnership !== undefined && savedCheckpoint.toolOwnership !== "neoworker" && savedCheckpoint.toolOwnership !== "hermes")
       ) {
         throw new Error("Cannot restore Hermes: invalid checkpoint or workspace mismatch");
       }
@@ -9469,11 +9472,49 @@ ${transcript}
         sessionId: savedCheckpoint.sessionId,
         cwd: savedCheckpoint.cwd,
         agentVersion: savedCheckpoint.agentVersion,
+        ...(savedCheckpoint.toolOwnership === "neoworker" || savedCheckpoint.toolOwnership === "hermes"
+          ? { toolOwnership: savedCheckpoint.toolOwnership }
+          : {}),
       };
     }
+    // New Hermes tasks use NeoWorker's Tool Host. Retain the ownership of a
+    // saved legacy session; silently switching an existing native-tool
+    // transcript would make side-effect recovery ambiguous.
+    const hostOwned = !this.hermesCheckpoint || this.hermesCheckpoint.toolOwnership === "neoworker";
     const options: HermesRuntimeOptions = {
       cwd: this.workspace.path,
       checkpoint: this.hermesCheckpoint,
+      ...(hostOwned ? {
+        ...resolveHermesHostLauncher(),
+        hostToolBridge: {
+          taskId: this.task.id,
+          requestTimeoutMs: 300_000,
+          getTools: () => this.getAvailableTools(),
+          execute: async ({ toolName, toolCallId, input, signal }) => {
+            this.enforceToolBudget(toolName);
+            this.totalToolCallCount++;
+            const correlation = { tool: toolName, toolUseId: toolCallId, toolCallId, runtime: "hermes" };
+            this.emitEvent("tool_call", { ...correlation, input });
+            try {
+              const outcome = await this.executeToolWithHeartbeat(
+                toolName,
+                input,
+                this.getToolTimeoutMs(toolName, input),
+                toolCallId,
+                signal,
+              );
+              this.emitEvent("tool_result", {
+                ...correlation, result: outcome.result, durationMs: outcome.durationMs,
+                envelope: outcome.envelope, policyTrace: outcome.policyTrace,
+              });
+              return outcome.toolHostResponse;
+            } catch (error) {
+              this.emitEvent("tool_error", { ...correlation, error: error instanceof Error ? error.message : String(error) });
+              throw error;
+            }
+          },
+        },
+      } : {}),
       onCheckpoint: async (saved) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_checkpoint", saved);
         this.hermesCheckpoint = { ...saved };
@@ -12324,7 +12365,8 @@ ${transcript}
     input: unknown,
     toolTimeoutMs: number,
     toolCallId?: string,
-  ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>>> {
+    externalSignal?: AbortSignal,
+  ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>> & { toolHostResponse: ToolHostResponse }> {
     const effectiveInput = this.preparePresentationWorkflowToolInput(
       toolName,
       input,
@@ -12343,10 +12385,11 @@ ${transcript}
     const parentSignal = this.abortController.signal;
     const toolAbort = new AbortController();
     const onParentAbort = () => toolAbort.abort();
-    if (parentSignal.aborted) {
+    if (parentSignal.aborted || externalSignal?.aborted) {
       toolAbort.abort();
     } else {
       parentSignal.addEventListener("abort", onParentAbort, { once: true });
+      externalSignal?.addEventListener("abort", onParentAbort, { once: true });
     }
 
     try {
@@ -12385,7 +12428,7 @@ ${transcript}
                 ...(args.followUp ? { followUp: args.followUp } : {}),
               }),
           },
-        ).then((execution) => execution.outcome),
+        ).then((execution) => ({ ...execution.outcome, toolHostResponse: execution.response })),
         toolTimeoutMs,
         `Tool ${toolName}`,
         () => toolAbort.abort(),
@@ -12396,6 +12439,7 @@ ${transcript}
       return coordinated;
     } finally {
       parentSignal.removeEventListener("abort", onParentAbort);
+      externalSignal?.removeEventListener("abort", onParentAbort);
     }
   }
 
