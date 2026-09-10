@@ -507,6 +507,9 @@ const DURABLE_LOG_METRICS = new Set([
   "tool_lifecycle",
   "hermes_runtime_transport",
   "hermes_runtime_retry",
+  "hermes_runtime_session_warm",
+  "hermes_runtime_session_reused",
+  "hermes_runtime_session_closed",
   // Retry/failover diagnostics explain why a later provider attempt happened.
   "llm_retry_reason",
 ]);

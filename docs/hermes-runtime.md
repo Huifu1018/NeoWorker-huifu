@@ -20,7 +20,9 @@ and session reuses that adapter, avoiding a second Python process launch,
 ACP initialization, and MCP server handshake. Failed, cancelled, paused, or
 workspace-mismatched turns close the old adapter instead of retaining a stale
 process; completed executors also release the runtime when the daemon evicts
-them from its cache.
+them from its cache. The warm, reused, and closed transitions are durable
+diagnostic metrics, so a slow task can be compared against actual session
+startup and reuse behavior after the fact.
 
 For host-owned Hermes tasks, a provider failure can be retried once with a bounded exponential delay when the current prompt has not advanced the NeoWorker Tool Host progress marker. Queue saturation, transient 5xx responses, connection resets and request timeouts use this path; explicit non-retryable responses and any prompt that started a host tool do not. The retry is recorded as `hermes_runtime_retry` and uses the saved session checkpoint, so it never resubmits an unknown side effect automatically.
 

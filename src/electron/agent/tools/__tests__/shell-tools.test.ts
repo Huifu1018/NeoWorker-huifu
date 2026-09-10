@@ -355,6 +355,27 @@ describe("ShellTools Integration", () => {
         "C:\\workspace\\node_modules\\.bin",
       ]));
     });
+
+    it("normalizes Windows Path casing and uses the configured system root", () => {
+      const built = buildSafeShellPath(
+        "win32",
+        "D:\\workspace\\node_modules\\.bin",
+        {
+          SystemRoot: "D:\\Windows",
+          ProgramFiles: "D:\\Program Files",
+          APPDATA: "D:\\Users\\tester\\AppData\\Roaming",
+        },
+      );
+      expect(built.split(";")).toEqual(
+        expect.arrayContaining([
+          "D:\\Windows\\System32",
+          "D:\\Program Files\\PowerShell\\7",
+          "D:\\Program Files\\nodejs",
+          "D:\\Users\\tester\\AppData\\Roaming\\npm",
+          "D:\\workspace\\node_modules\\.bin",
+        ]),
+      );
+    });
   });
 
   describe("Windows shell argument routing", () => {

@@ -360,6 +360,118 @@ function resolveTerminalShellExecutable(): string {
   return "/bin/sh";
 }
 
+function readEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+  key: string,
+): string | undefined {
+  const direct = env[key];
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const matchingKey = Object.keys(env).find(
+    (candidate) => candidate.toLowerCase() === key.toLowerCase(),
+  );
+  const value = matchingKey ? env[matchingKey] : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function buildWindowsPersistentPath(env: NodeJS.ProcessEnv): string {
+  const systemRoot = readEnvironmentValue(env, "SystemRoot") || "C:\\Windows";
+  const programFiles =
+    readEnvironmentValue(env, "ProgramW6432") ||
+    readEnvironmentValue(env, "ProgramFiles") ||
+    "C:\\Program Files";
+  const appData = readEnvironmentValue(env, "APPDATA");
+  const inheritedPath = readEnvironmentValue(env, "PATH") || "";
+  const candidates = [
+    path.win32.join(systemRoot, "System32"),
+    path.win32.join(systemRoot, "System32", "Wbem"),
+    path.win32.join(
+      systemRoot,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+    ),
+    path.win32.join(programFiles, "PowerShell", "7"),
+    path.win32.join(programFiles, "nodejs"),
+    ...(appData ? [path.win32.join(appData, "npm")] : []),
+    ...inheritedPath
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  ];
+  const seen = new Set<string>();
+  return candidates
+    .filter((entry) => {
+      const normalized = entry.toLowerCase();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .join(";");
+}
+
+export function buildPersistentShellEnvironment(
+  shell: string,
+  isTerminalTab: boolean,
+  platform: NodeJS.Platform = process.platform,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  if (platform === "win32") {
+    const systemRoot =
+      readEnvironmentValue(sourceEnv, "SystemRoot") || "C:\\Windows";
+    const system32 = path.win32.join(systemRoot, "System32");
+    const comspec =
+      readEnvironmentValue(sourceEnv, "COMSPEC") ||
+      path.win32.join(system32, "cmd.exe");
+    const temp =
+      readEnvironmentValue(sourceEnv, "TEMP") ||
+      readEnvironmentValue(sourceEnv, "TMP") ||
+      path.win32.join(systemRoot, "Temp");
+    const userProfile = readEnvironmentValue(sourceEnv, "USERPROFILE") || "";
+    const username = readEnvironmentValue(sourceEnv, "USERNAME") || "";
+    const pathext =
+      readEnvironmentValue(sourceEnv, "PATHEXT") ||
+      ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+    const result: NodeJS.ProcessEnv = {
+      ...sourceEnv,
+      SYSTEMROOT: systemRoot,
+      SystemRoot: systemRoot,
+      COMSPEC: comspec,
+      ComSpec: comspec,
+      PATH: buildWindowsPersistentPath(sourceEnv),
+      PATHEXT: pathext,
+      TEMP: temp,
+      TMP: temp,
+      USERPROFILE: userProfile,
+      USERNAME: username,
+      SHELL: shell,
+      PROMPT: isTerminalTab ? "$P$G" : "",
+      PS1: isTerminalTab ? "\\w % " : "",
+      PS2: isTerminalTab ? "> " : "",
+      PROMPT_COMMAND: "",
+    };
+    // Windows treats PATH/Path as the same variable. Remove alternate-case
+    // copies so a stale Electron PATH cannot win during child resolution.
+    for (const key of Object.keys(result)) {
+      if (key.toLowerCase() === "path" && key !== "PATH") delete result[key];
+    }
+    return result;
+  }
+
+  return {
+    ...sourceEnv,
+    HOME: readEnvironmentValue(sourceEnv, "HOME") || "",
+    SHELL: shell,
+    PS1: isTerminalTab ? "\\w % " : "",
+    PS2: isTerminalTab ? "> " : "",
+    PROMPT_COMMAND: "",
+    PATH:
+      readEnvironmentValue(sourceEnv, "PATH") ||
+      "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    LANG: readEnvironmentValue(sourceEnv, "LANG") || "en_US.UTF-8",
+    TERM: readEnvironmentValue(sourceEnv, "TERM") || "xterm-256color",
+  };
+}
+
 function getShellArgs(shell: string): string[] {
   if (process.platform === "win32") {
     const lower = shell.toLowerCase();
@@ -969,18 +1081,7 @@ export class ShellSessionManager {
     const child = spawn(shell, args, {
       cwd: targetCwd,
       detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        HOME: process.env.HOME || "",
-        SHELL: shell,
-        PS1: isTerminalTab ? "\\w % " : "",
-        PS2: isTerminalTab ? "> " : "",
-        PROMPT_COMMAND: "",
-        PROMPT: isTerminalTab ? "$P$G" : "",
-        PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
-        LANG: process.env.LANG || "en_US.UTF-8",
-        TERM: process.env.TERM || "xterm-256color",
-      },
+      env: buildPersistentShellEnvironment(shell, isTerminalTab),
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -1670,6 +1771,7 @@ export class ShellSessionManager {
 
 export const _testUtils = {
   buildCommandWrapper,
+  buildPersistentShellEnvironment,
   buildRehydrateCommands,
   getShellArgs,
   getTerminalShellArgs,

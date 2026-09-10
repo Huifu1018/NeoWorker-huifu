@@ -357,22 +357,54 @@ export function resolveWindowsShellExecutable(
   return env.COMSPEC || "cmd.exe";
 }
 
-function buildSafeShellPath(platform: NodeJS.Platform, envPath: string | undefined): string {
+function readEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+  key: string,
+): string | undefined {
+  const direct = env[key];
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  const matchingKey = Object.keys(env).find(
+    (candidate) => candidate.toLowerCase() === key.toLowerCase(),
+  );
+  const value = matchingKey ? env[matchingKey] : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function buildSafeShellPath(
+  platform: NodeJS.Platform,
+  envPath: string | undefined,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
+): string {
   if (platform === "win32") {
-    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    const systemRoot =
+      readEnvironmentValue(sourceEnv, "SystemRoot") || "C:\\Windows";
     const delimiter = ";";
     const inheritedPaths = String(envPath || "")
       .split(delimiter)
       .map((entry) => entry.trim())
       .filter(Boolean);
+    const programFiles =
+      readEnvironmentValue(sourceEnv, "ProgramW6432") ||
+      readEnvironmentValue(sourceEnv, "ProgramFiles") ||
+      "C:\\Program Files";
+    const appData = readEnvironmentValue(sourceEnv, "APPDATA");
     const systemPaths = [
       path.win32.join(systemRoot, "System32"),
       path.win32.join(systemRoot, "System32", "Wbem"),
       path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
-      "C:\\Program Files\\PowerShell\\7",
-      ...(process.env.APPDATA ? [path.win32.join(process.env.APPDATA, "npm")] : []),
+      path.win32.join(programFiles, "PowerShell", "7"),
+      path.win32.join(programFiles, "nodejs"),
+      ...(appData ? [path.win32.join(appData, "npm")] : []),
     ].filter(Boolean);
-    return Array.from(new Set([...systemPaths, ...inheritedPaths])).join(delimiter);
+    const seen = new Set<string>();
+    return [...systemPaths, ...inheritedPaths]
+      .filter((entry) => {
+        const normalized = entry.toLowerCase();
+        if (seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      })
+      .join(delimiter);
   }
 
   const basePaths = [
@@ -1441,7 +1473,12 @@ export class ShellTools {
             ...requestedEnv,
             // Keep Windows system and PowerShell directories available even
             // when a caller supplies a task-specific PATH.
-            PATH: buildSafeShellPath(process.platform, requestedEnv.PATH || process.env.PATH),
+            PATH: buildSafeShellPath(
+              process.platform,
+              readEnvironmentValue(requestedEnv, "PATH") ||
+                readEnvironmentValue(process.env, "PATH"),
+              { ...process.env, ...requestedEnv },
+            ),
           }
         : {
             // Essential system variables only (Unix/macOS)
@@ -1452,8 +1489,17 @@ export class ShellTools {
             TERM: process.env.TERM || "xterm-256color",
             TMPDIR: process.env.TMPDIR || "/tmp",
             ...requestedEnv,
-            PATH: buildSafeShellPath(process.platform, requestedEnv.PATH || process.env.PATH),
+            PATH: buildSafeShellPath(
+              process.platform,
+              readEnvironmentValue(requestedEnv, "PATH") ||
+                readEnvironmentValue(process.env, "PATH"),
+            ),
           };
+    if (process.platform === "win32") {
+      for (const key of Object.keys(safeEnv)) {
+        if (key.toLowerCase() === "path" && key !== "PATH") delete safeEnv[key];
+      }
+    }
 
     // Forward auth keys and runtime config for CLI agent commands.
     if (isCliAgentCommand && process.platform !== "win32") {

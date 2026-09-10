@@ -70,6 +70,37 @@ describe("shell-session-manager", () => {
     ]);
   });
 
+  it("builds a usable Windows persistent environment when Electron PATH is incomplete", () => {
+    const environment = _testUtils.buildPersistentShellEnvironment(
+      "D:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      false,
+      "win32",
+      {
+        SystemRoot: "D:\\Windows",
+        ProgramFiles: "D:\\Program Files",
+        APPDATA: "D:\\Users\\tester\\AppData\\Roaming",
+        Path: "D:\\workspace\\node_modules\\.bin",
+        USERNAME: "tester",
+      },
+    );
+
+    expect(environment.PATH?.split(";")).toEqual(
+      expect.arrayContaining([
+        "D:\\Windows\\System32",
+        "D:\\Windows\\System32\\Wbem",
+        "D:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+        "D:\\Program Files\\PowerShell\\7",
+        "D:\\Program Files\\nodejs",
+        "D:\\Users\\tester\\AppData\\Roaming\\npm",
+        "D:\\workspace\\node_modules\\.bin",
+      ]),
+    );
+    expect(environment.COMSPEC).toBe("D:\\Windows\\System32\\cmd.exe");
+    expect(environment.PATHEXT).toContain(".CMD");
+    expect(environment.TEMP).toBe("D:\\Windows\\Temp");
+    expect(environment.Path).toBeUndefined();
+  });
+
   it("clears the active run marker when cancellation races with initial dispatch", async () => {
     const manager = Object.create(ShellSessionManager.prototype) as unknown as {
       sessions: Map<string, unknown>;
