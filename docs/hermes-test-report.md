@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。当前代码交付提交为 `ed0f564`。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能和分块输出缓冲改动已通过本地专项验证，并已推送。
+更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。当前交付提交为 `a5519e3`。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能和分块输出缓冲改动已通过本地专项验证，并已推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -31,7 +31,7 @@
 | Hermes 流式输出与 follow-up 终态 | 通过专项测试 | ACP message chunks 改走临时 `llm_streaming` 事件，避免逐 token 持久化；Hermes follow-up 返回后进入统一终态收口，防止任务停留在 `executing` |
 | Hermes ACP 会话复用 | 通过专项测试 | 成功 turn 在同一工作区保留 60 秒热会话；后续消息复用 ACP/MCP 连接，失败、取消、暂停和工作区切换会关闭旧会话，减少重复启动开销 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
-| Hermes 宿主多步路由 | 历史真实模型验收通过；最新复测受外部 provider 阻断 | `node scripts/qa/run-hermes-live-hostchain.mjs` 曾使用本机 Hermes Agent v0.18.0 和真实模型，按顺序调用 `write_file`、`run_command`；最新复测收到外部 provider 的 HTTP 502 queue full，未把这次失败计为工具链成功 |
+| Hermes 宿主多步路由 | 最新真实验收通过 | `node scripts/qa/run-hermes-live-hostchain.mjs` 使用本机 Hermes Agent v0.18.0 和当前配置模型，按顺序调用 `write_file`、`run_command`；文件内容、Shell 输出、1 次审批、两条工具生命周期和 checkpoint 均符合预期，`unknownToolCallCount=0` |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
 | MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、异常结构化工具结果、200,000 字符模型输出上限 |
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
@@ -61,13 +61,12 @@
 
 - 新建 Hermes ACP 宿主工具任务需要安装 `hermes-agent==0.18.0` 的 Python 环境；包装器不会修改已安装 Hermes，其他版本在验证前拒绝启动。可通过 `NEOWORKER_HERMES_PYTHON` 指定解释器。
 - 普通 NeoWorker 任务仍使用原生 SessionRuntime/TurnKernel；只有显式选择 Hermes 外部 Runtime 的任务才进入 ACP。
-- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路曾由 `run-hermes-live-hostchain.mjs` 验收；最新真实复测受外部 provider HTTP 502 queue full 阻断，取消、暂停后的恢复和未知副作用确认由确定性回归及 Windows runner 覆盖。
+- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。最新 `run-hermes-live-hostchain.mjs` 已真实验收文件、Shell、审批和多步顺序；取消、暂停后的恢复和未知副作用确认由确定性回归及 Windows runner 覆盖。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 CI（2026-09-10，提交 `ed0f564`，run `34497421168`）为 854 个测试文件：800 通过、50 失败、4 跳过；8,590 个测试：8,463 通过、114 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime（15 个文件、190 通过、1 跳过）、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层、checkpoint guarded retry、流式输出、follow-up 终态、热会话复用、Windows PATH 兼容、checkpoint 查找边界和分块 Shell 输出定向测试均通过。
+- 全量 CI（2026-09-10，提交 `ed0f564`，run `34497421168`）为 854 个测试文件：800 通过、50 失败、4 跳过；8,590 个测试：8,463 通过、114 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime（15 个文件、190 通过、1 跳过）、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层、checkpoint guarded retry、流式输出、follow-up 终态、热会话复用、Windows PATH 兼容、checkpoint 查找边界和分块 Shell 输出定向测试均通过。之后的真实宿主多步验收也已通过。
 
 ## 下一步
 
-1. 在外部 provider 恢复后重跑真实宿主多步验收，并记录真实延迟、队列错误和恢复结果。
-2. 在安装包生成前完成 macOS ARM64 与 Windows x64 的安装后 smoke，确认包内 Hermes Runtime、Tool Host、Coordinator 和 Sandbox 与提交一致。
-3. 通过最终跨平台门禁后再统一生成 macOS ARM64 和 Windows x64 安装包。
+1. 在安装包生成前完成 macOS ARM64 与 Windows x64 的安装后 smoke，确认包内 Hermes Runtime、Tool Host、Coordinator 和 Sandbox 与提交一致。
+2. 通过最终跨平台门禁后再统一生成 macOS ARM64 和 Windows x64 安装包。
