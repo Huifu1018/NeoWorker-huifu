@@ -98,10 +98,20 @@ function terminateProcessTree(child: ChildProcess | null, signal: NodeJS.Signals
   if (process.platform === "win32") {
     try {
       execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { timeout: 5_000 });
-      return;
     } catch {
       // Fall through to direct process termination.
     }
+    // taskkill may report success before Node observes the process exit. A
+    // direct termination closes the child handle in that narrow window and
+    // is harmless when the tree was already reaped.
+    try {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
+    } catch {
+      // Ignore teardown races.
+    }
+    return;
   } else {
     try {
       process.kill(-child.pid, signal);
@@ -741,6 +751,10 @@ export class ShellSessionManager {
       runtime.exitStatusOverride = "inactive";
       terminateProcessTree(processToKill);
       await waitForProcessExit(processToKill);
+      if (processToKill?.exitCode === null && processToKill.signalCode === null) {
+        terminateProcessTree(processToKill, "SIGKILL");
+        await waitForProcessExit(processToKill);
+      }
 
       await this.persistState();
     } finally {
@@ -1325,6 +1339,10 @@ export class ShellSessionManager {
     }
     session.pending = [];
     await waitForProcessExit(processToKill);
+    if (processToKill?.exitCode === null && processToKill.signalCode === null) {
+      terminateProcessTree(processToKill, "SIGKILL");
+      await waitForProcessExit(processToKill);
+    }
     this.updateRuntimeInfo(session, { status: "inactive", lastTerminationReason: "error" });
     await this.persistState();
     return { ...session.info };
@@ -1353,6 +1371,10 @@ export class ShellSessionManager {
     session.busy = false;
     this.activeSessionRuns.delete(session.info.id);
     await waitForProcessExit(processToKill);
+    if (processToKill?.exitCode === null && processToKill.signalCode === null) {
+      terminateProcessTree(processToKill, "SIGKILL");
+      await waitForProcessExit(processToKill);
+    }
     this.sessions.delete(sessionId);
     await this.persistState();
     return { ...session.info, status: "ended" };
@@ -1394,6 +1416,10 @@ export class ShellSessionManager {
     session.info.lastTerminationReason = undefined;
     session.info.lastError = undefined;
     await waitForProcessExit(processToKill);
+    if (processToKill?.exitCode === null && processToKill.signalCode === null) {
+      terminateProcessTree(processToKill, "SIGKILL");
+      await waitForProcessExit(processToKill);
+    }
     this.updateRuntimeInfo(session, { status: "inactive" });
     await this.persistState();
     return { ...session.info };
@@ -1426,6 +1452,10 @@ export class ShellSessionManager {
     session.pending = [];
     this.activeSessionRuns.delete(session.info.id);
     await waitForProcessExit(processToKill);
+    if (processToKill?.exitCode === null && processToKill.signalCode === null) {
+      terminateProcessTree(processToKill, "SIGKILL");
+      await waitForProcessExit(processToKill);
+    }
     this.updateRuntimeInfo(session, { status: "ended" });
     await this.persistState();
     return { ...session.info };
