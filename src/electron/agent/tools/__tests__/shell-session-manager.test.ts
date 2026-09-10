@@ -6,7 +6,13 @@ import { ShellSessionManager } from "../shell-session-manager";
 describe("shell-session-manager", () => {
   it("does not use interactive shell startup on Unix sessions", () => {
     if (process.platform === "win32") {
-      expect(_testUtils.getShellArgs("powershell.exe")).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive"]);
+      expect(_testUtils.getShellArgs("powershell.exe")).toEqual([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        expect.stringContaining("[Console]::In.ReadLine()"),
+      ]);
       expect(_testUtils.getTerminalShellArgs("C:\\Windows\\System32\\cmd.exe")).toEqual(["/Q"]);
       return;
     }

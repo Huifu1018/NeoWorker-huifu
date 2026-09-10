@@ -227,10 +227,28 @@ function resolveTerminalShellExecutable(): string {
   return "/bin/sh";
 }
 
-function getShellArgs(shell: string): string[] {
+const POWERSHELL_STDIN_LOOP =
+  "while (($__neoworker_line = [Console]::In.ReadLine()) -ne $null) { " +
+  "if ($__neoworker_line.Length -eq 0) { continue }; " +
+  "try { Invoke-Expression $__neoworker_line } " +
+  "catch { [Console]::Error.WriteLine($_.Exception.Message) } }";
+
+function getShellArgs(shell: string, isTerminalTab = false): string[] {
   if (process.platform === "win32") {
     const lower = shell.toLowerCase();
     if (lower.includes("powershell") || lower.includes("pwsh")) {
+      if (!isTerminalTab) {
+        // Reading stdin as an explicit line loop keeps the task-scoped
+        // protocol non-interactive. Starting pwsh without -Command would
+        // emit prompts and echo every wrapper line into stdout.
+        return [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          POWERSHELL_STDIN_LOOP,
+        ];
+      }
       return ["-NoLogo", "-NoProfile", "-NonInteractive"];
     }
     return [];
@@ -412,22 +430,15 @@ function buildPowerShellCommandWrapper(targetCwd: string, command: string, comma
   // out of the PowerShell wrapper itself. Invoke-Expression is intentional:
   // the command has already passed NeoWorker's approval and sandbox policy.
   const encodedCommand = Buffer.from(command, "utf8").toString("base64");
+  // The task-scoped PowerShell process reads one protocol message per line.
+  // Keep the wrapper itself on one line so the interactive parser cannot
+  // emit continuation prompts or echo partial statements into stdout.
   return [
     "$ErrorActionPreference = 'Continue'",
     `$global:LASTEXITCODE = 0`,
     `Set-Location -LiteralPath ${quoteForPowerShell(targetCwd)}`,
     `$__neoworker_command = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${encodedCommand}'))`,
-    "try {",
-    "  Invoke-Expression $__neoworker_command",
-    // Capture the invocation result before evaluating any follow-up
-    // expressions. PowerShell's `$?` is mutable and can otherwise describe
-    // the type check below instead of the command that just ran.
-    "  $__neoworker_invocation_succeeded = $?",
-    "  if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { $__neoworker_exit_code = $LASTEXITCODE } elseif ($__neoworker_invocation_succeeded) { $__neoworker_exit_code = 0 } else { $__neoworker_exit_code = 1 }",
-    "} catch {",
-    "  [Console]::Error.WriteLine($_.Exception.Message)",
-    "  $__neoworker_exit_code = 1",
-    "}",
+    "try { Invoke-Expression $__neoworker_command; $__neoworker_invocation_succeeded = $?; if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { $__neoworker_exit_code = $LASTEXITCODE } elseif ($__neoworker_invocation_succeeded) { $__neoworker_exit_code = 0 } else { $__neoworker_exit_code = 1 } } catch { [Console]::Error.WriteLine($_.Exception.Message); $__neoworker_exit_code = 1 }",
     "Write-Output ''",
     "Write-Output '__NEOWORKER_STATE_START__'",
     "Write-Output ('__NEOWORKER_CWD__:' + (Get-Location).Path)",
@@ -437,7 +448,7 @@ function buildPowerShellCommandWrapper(targetCwd: string, command: string, comma
     "Get-ChildItem Env: | ForEach-Object { $_.Name + '=' + ($_.Value -replace \"`r?`n\", ' ') }",
     "Write-Output '__NEOWORKER_ENV_END__'",
     `Write-Output ('__NEOWORKER_DONE__:${commandId}:' + $__neoworker_exit_code)`,
-  ].join("\n");
+  ].join("; ");
 }
 
 function buildCmdCommandWrapper(targetCwd: string, command: string, commandId: string): string {
@@ -744,7 +755,9 @@ export class ShellSessionManager {
   private spawnProcess(runtime: ShellSessionRuntime, workspacePath: string): void {
     const isTerminalTab = runtime.info.scope === "tab";
     const shell = isTerminalTab ? resolveTerminalShellExecutable() : resolveShellExecutable();
-    const args = isTerminalTab ? getTerminalShellArgs(shell) : getShellArgs(shell);
+    const args = isTerminalTab
+      ? getTerminalShellArgs(shell)
+      : getShellArgs(shell, isTerminalTab);
     const child = spawn(shell, args, {
       cwd: runtime.info.cwd || workspacePath,
       detached: process.platform !== "win32",
