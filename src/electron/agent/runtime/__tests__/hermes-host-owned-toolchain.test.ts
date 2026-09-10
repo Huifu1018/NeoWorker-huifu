@@ -300,7 +300,7 @@ async function createHostHarness(options: {
 
 describe("Hermes host-owned NeoWorker toolchain", () => {
   afterEach(async () => {
-    for (const runtime of runtimes.splice(0)) runtime.close();
+    await Promise.all(runtimes.splice(0).map((runtime) => runtime.close()));
     await Promise.all(
       workspaces.splice(0).map((workspace) =>
         rm(workspace, { recursive: true, force: true }),

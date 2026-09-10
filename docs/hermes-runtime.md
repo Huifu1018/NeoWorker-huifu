@@ -26,7 +26,7 @@ Hermes Agent v0.18.0's ACP `session/new` contract accepts `mcpServers`, but its 
 
 The launcher resolves the interpreter from the installed `hermes` executable where possible. Set `NEOWORKER_HERMES_PYTHON` to an explicit interpreter path for a custom installation. The final desktop package includes the launcher as an external resource, and artifact smoke compares its bytes with the source being delivered.
 
-The real local Hermes 0.18.0 probe on 2026-09-10 listed exactly the supplied host probe tool and successfully invoked it once through a configured model, returning `NEOWORKER_HOST_OK`. This proves the ACP→MCP→host callback path and native-tool exclusion for that probe. A later real-model attempt returned HTTP 402 (insufficient balance) before any tool call; the wrapper preserves that provider failure as `field_meta.neoworker.runtimeError` so ACP `end_turn` cannot be mistaken for success. Full file/Shell/approval/cancellation scenarios still need end-to-end validation before closing the phase 2 gate.
+The real local Hermes 0.18.0 probe on 2026-09-10 listed exactly the supplied host probe tool and successfully invoked it once through a configured model, returning `NEOWORKER_HOST_OK`. A follow-up run of `node scripts/qa/run-hermes-live-hostchain.mjs` drove the real model through `write_file` and `run_command`; NeoWorker recorded one approval, persisted both tool lifecycles, produced the exact file and Shell output, and ended with no unknown tool call. This closes the live file/Shell/approval path. Cancellation, pause/resume and unknown-side-effect confirmation remain covered by deterministic tests and are the next cross-platform validation targets. A separate Model Proxy attempt can still return HTTP 402/502 when its provider account is unavailable; the wrapper preserves such provider failures as `field_meta.neoworker.runtimeError` so ACP `end_turn` cannot be mistaken for success.
 
 Tool results sent back to the model are capped at 200,000 characters. The full structured result remains available to task logs and evidence, while the model receives a valid truncated payload with an explicit marker.
 
@@ -49,3 +49,11 @@ npm test -- --run src/electron/agent/tools/__tests__/shell-tools.test.ts
 ```
 
 Do not automatically retry an interrupted ACP prompt: Hermes may already have performed a side effect. Restore the checkpoint and let the user explicitly continue.
+
+For a real model-driven host-chain check after `npm run build:electron`, run:
+
+```sh
+node scripts/qa/run-hermes-live-hostchain.mjs
+```
+
+The script uses temporary workspace and user-data directories, prints only structured validation metadata, and closes both the Hermes process and the persistent NeoWorker Shell session before exiting.

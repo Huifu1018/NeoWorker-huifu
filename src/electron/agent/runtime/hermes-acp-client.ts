@@ -279,8 +279,43 @@ export class HermesAcpClient {
     if (conn && !conn.closed) this.send(conn, { jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
   }
 
-  stop(): void {
-    if (this.connection) this.close(this.connection, new HermesAcpError("Hermes ACP stopped", "STOPPED"));
+  /**
+   * Stop the ACP process and wait until its stdio streams have closed.
+   *
+   * Callers may intentionally ignore the returned promise for fire-and-forget
+   * shutdown, but lifecycle owners should await it before deleting the
+   * workspace or starting a replacement session. Without the wait, a late
+   * child-process event can race with workspace cleanup and surface as an
+   * unrelated ENOENT/EBUSY failure.
+   */
+  async stop(): Promise<void> {
+    const conn = this.connection;
+    if (!conn) return;
+    const child = conn.child;
+    let timer: NodeJS.Timeout | undefined;
+    let settled = false;
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.off("close", finish);
+      resolveClosed();
+    };
+    if (child.exitCode !== null || child.signalCode !== null) {
+      finish();
+    } else {
+      child.once("close", finish);
+    }
+    this.close(conn, new HermesAcpError("Hermes ACP stopped", "STOPPED"));
+    if (!settled) {
+      timer = setTimeout(finish, 5_000);
+      timer.unref();
+    }
+    await closed;
   }
 
   private send(conn: Connection, message: AcpObject): void {

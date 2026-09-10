@@ -6,7 +6,11 @@ import { HermesRuntimeAdapter, type HermesSessionCheckpoint } from "../hermes-ru
 const fixture = path.join(__dirname, "fixtures", "hermes-acp-fixture.cjs");
 const options = { command: process.execPath, args: [fixture], cwd: __dirname, timeoutMs: 5000 };
 const cleanup: Array<() => void> = [];
-afterEach(() => { cleanup.splice(0).forEach((stop) => stop()); });
+afterEach(async () => {
+  await Promise.all(cleanup.splice(0).map(async (stop) => {
+    await stop();
+  }));
+});
 async function client() {
   const c = new HermesAcpClient();
   cleanup.push(() => c.stop());
@@ -356,7 +360,7 @@ describe('Hermes runtime session', () => {
   });
   it('loads a saved session across process restarts without appending replayed history', async () => {
     const first=runtime(); await first.connect();
-    const checkpoint=first.getCheckpoint(); first.close();
+    const checkpoint=first.getCheckpoint(); await first.close();
     const second=runtime({checkpoint});
     expect(await second.prompt('hello')).toMatchObject({assistantText:'你好 OK',sessionId:checkpoint?.sessionId});
   });

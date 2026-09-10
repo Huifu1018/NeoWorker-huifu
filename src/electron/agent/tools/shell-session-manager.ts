@@ -89,6 +89,46 @@ function normalizePathForShell(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
+function isUsableDirectory(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    return fs.statSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isWithinDirectory(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative))
+  );
+}
+
+function resolveRuntimeCwd(
+  runtimeCwd: string | undefined,
+  workspacePath: string,
+): { cwd: string; repaired: boolean } {
+  const workspaceRoot = path.resolve(workspacePath);
+  if (!isUsableDirectory(workspaceRoot)) {
+    throw new Error(`Shell workspace is unavailable: ${workspaceRoot}`);
+  }
+
+  const candidate = runtimeCwd ? path.resolve(runtimeCwd) : "";
+  if (
+    candidate &&
+    isUsableDirectory(candidate) &&
+    isWithinDirectory(workspaceRoot, candidate)
+  ) {
+    return { cwd: candidate, repaired: candidate !== runtimeCwd };
+  }
+
+  return { cwd: workspaceRoot, repaired: true };
+}
+
 function quoteForPosixShell(value: string): string {
   return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
@@ -803,12 +843,77 @@ export class ShellSessionManager {
     }
   }
 
+  private prepareRuntimeCwd(runtime: ShellSessionRuntime, workspacePath: string): string {
+    const resolved = resolveRuntimeCwd(
+      runtime.snapshot.cwd || runtime.info.cwd,
+      workspacePath,
+    );
+    if (
+      resolved.repaired ||
+      runtime.info.cwd !== resolved.cwd ||
+      runtime.snapshot.cwd !== resolved.cwd
+    ) {
+      runtime.snapshot = {
+        ...runtime.snapshot,
+        cwd: resolved.cwd,
+      };
+      this.updateRuntimeInfo(runtime, {
+        cwd: resolved.cwd,
+        lastError: undefined,
+      });
+    }
+    return resolved.cwd;
+  }
+
+  private handleProcessError(
+    runtime: ShellSessionRuntime,
+    child: ChildProcess,
+    error: unknown,
+  ): void {
+    // A replacement shell may already own this runtime after a timeout or
+    // reset. Ignore late errors from the old child in that case.
+    if (runtime.process !== child) return;
+
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error || "Unknown shell error"));
+    runtime.process = null;
+    runtime.ready = false;
+    runtime.busy = false;
+    runtime.buffer = "";
+    runtime.exitStatusOverride = undefined;
+
+    const pending = runtime.pending.splice(0);
+    for (const item of pending) {
+      clearTimeout(item.timeout);
+      try {
+        item.reject(normalizedError);
+      } catch {
+        // Ignore duplicate or late rejections.
+      }
+    }
+
+    const message = `Persistent shell process failed: ${normalizedError.message}`;
+    this.updateRuntimeInfo(runtime, {
+      status: "inactive",
+      retained: true,
+      lastExitCode: null,
+      lastTerminationReason: "error",
+      lastError: message,
+    });
+    this.emitTerminalOutput(runtime, {
+      stream: "stderr",
+      output: `\n[terminal error: ${normalizedError.message}]\n`,
+    });
+    void this.persistState().catch(() => undefined);
+  }
+
   private spawnProcess(runtime: ShellSessionRuntime, workspacePath: string): void {
     const isTerminalTab = runtime.info.scope === "tab";
     const shell = isTerminalTab ? resolveTerminalShellExecutable() : resolveShellExecutable();
     const args = isTerminalTab ? getTerminalShellArgs(shell) : getShellArgs(shell);
+    const targetCwd = this.prepareRuntimeCwd(runtime, workspacePath);
     const child = spawn(shell, args, {
-      cwd: runtime.info.cwd || workspacePath,
+      cwd: targetCwd,
       detached: process.platform !== "win32",
       env: {
         ...process.env,
@@ -829,6 +934,9 @@ export class ShellSessionManager {
     runtime.process = child;
     runtime.buffer = "";
     runtime.ready = true;
+    child.once("error", (error) => {
+      this.handleProcessError(runtime, child, error);
+    });
     if (process.platform === "win32") {
       if (!isTerminalTab && isWindowsPowerShell(shell)) {
         // Windows PowerShell 5 can emit the active system code page when its
@@ -1495,4 +1603,6 @@ export const _testUtils = {
   buildRehydrateCommands,
   getShellArgs,
   getTerminalShellArgs,
+  isUsableDirectory,
+  resolveRuntimeCwd,
 };

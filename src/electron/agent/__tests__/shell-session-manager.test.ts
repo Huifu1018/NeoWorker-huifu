@@ -99,6 +99,57 @@ describe("ShellSessionManager", () => {
     expect(persisted).not.toContain("NEOWORKER_TEST_SECRET");
   });
 
+  it("repairs a persisted cwd when the previous workspace was removed", async () => {
+    const staleWorkspace = fs.realpathSync(fs.mkdtempSync(path.join(userDataDir, "stale-")));
+    fs.rmSync(staleWorkspace, { recursive: true, force: true });
+    const now = Date.now();
+    fs.writeFileSync(
+      path.join(userDataDir, "shell-sessions.json"),
+      JSON.stringify({
+        sessions: [
+          {
+            id: "task:workspace-stale:task-stale",
+            taskId: "task-stale",
+            workspaceId: "workspace-stale",
+            scope: "task",
+            cwd: staleWorkspace,
+            status: "active",
+            retained: true,
+            commandCount: 3,
+            aliases: [],
+            envKeys: [],
+            createdAt: now,
+            updatedAt: now,
+            snapshot: { cwd: staleWorkspace, env: {}, aliases: {} },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const { ShellSessionManager } = await import("../tools/shell-session-manager");
+    const manager = ShellSessionManager.getInstance();
+    const result = await manager.runCommand({
+      taskId: "task-stale",
+      workspaceId: "workspace-stale",
+      workspacePath: workspaceDir,
+      command: "pwd",
+      timeoutMs: 10_000,
+      fallbackRunner: async () => ({
+        success: false,
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+        terminationReason: "error" as const,
+      }),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.stdout.trim()).toContain(workspaceDir);
+    expect(manager.getSessionInfo("task-stale", "workspace-stale")?.cwd).toBe(workspaceDir);
+    await manager.closeSession("task-stale", "workspace-stale");
+  }, 30_000);
+
   it("resets a timed-out session so later commands use a fresh shell", async () => {
     const { ShellSessionManager } = await import("../tools/shell-session-manager");
     const manager = ShellSessionManager.getInstance();

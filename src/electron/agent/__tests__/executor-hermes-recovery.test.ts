@@ -7,8 +7,8 @@ import type { HermesRuntimeAdapter } from "../runtime/hermes-runtime-adapter";
 const cwd = __dirname;
 const fixture = path.join(cwd, "../runtime/__tests__/fixtures/hermes-acp-fixture.cjs");
 const adapters: HermesRuntimeAdapter[] = [];
-afterEach(() => {
-  adapters.splice(0).forEach(adapter => adapter.close());
+afterEach(async () => {
+  await Promise.all(adapters.splice(0).map(adapter => adapter.close()));
   vi.restoreAllMocks();
 });
 
@@ -158,7 +158,7 @@ describe("Executor Hermes recovery", () => {
     const first = adapter(executor(events));
     await first.connect();
     const checkpoint = first.getCheckpoint();
-    first.close();
+    await first.close();
     const load = vi.spyOn(HermesAcpClient.prototype, "loadSession");
     const create = vi.spyOn(HermesAcpClient.prototype, "newSession");
     const restored = adapter(executor(events));

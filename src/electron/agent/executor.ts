@@ -4710,7 +4710,7 @@ export class TaskExecutor {
       this.finalizeTaskBestEffort(assistantText || "Hermes Agent completed without a final assistant message.", "hermes runtime completed");
     } finally {
       this.hermesRuntimeAdapter = null;
-      runtime.close();
+      await runtime.close();
     }
   }
 
@@ -4741,7 +4741,7 @@ export class TaskExecutor {
         }
       } finally {
         this.hermesRuntimeAdapter = null;
-        runtime.close();
+        await runtime.close();
       }
       return;
     }
@@ -46328,7 +46328,7 @@ Return ONLY a JSON object:
       try {
         if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
           await this.hermesRuntimeAdapter?.cancel();
-          this.hermesRuntimeAdapter?.close();
+          await this.hermesRuntimeAdapter?.close();
           this.hermesRuntimeAdapter = null;
         } else {
           await this.getAcpxRuntimeRunner().cancel();
@@ -46416,7 +46416,7 @@ Return ONLY a JSON object:
       this.finalizeTaskBestEffort(assistantText || "Hermes Agent resumed without a final assistant message.", "hermes runtime resumed");
     } finally {
       this.hermesRuntimeAdapter = null;
-      runtime.close();
+      await runtime.close();
     }
   }
 

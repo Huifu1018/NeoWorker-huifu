@@ -230,7 +230,7 @@ export class HermesRuntimeAdapter {
       this.connected = true;
       return this.getCheckpoint()!;
     } catch (error) {
-      this.client.stop();
+      await this.client.stop();
       await this.hostToolServer?.stop();
       this.hostToolServer = undefined;
       this.hostToolServerConfig = undefined;
@@ -290,7 +290,7 @@ export class HermesRuntimeAdapter {
       } catch (error) {
         // Never resubmit an interrupted prompt automatically: tools may already
         // have produced side effects. The user can restore the existing session.
-        this.client.stop();
+        await this.client.stop();
         this.connected = false;
         throw error;
       } finally {
@@ -332,14 +332,16 @@ export class HermesRuntimeAdapter {
       await Promise.race([
         active.catch(() => undefined),
         new Promise<void>((resolve) => {
-          force = setTimeout(() => { this.close(); resolve(); }, 3000);
+          force = setTimeout(() => {
+            void this.close().finally(resolve);
+          }, 3000);
         }),
       ]);
     } finally {
       if (force) clearTimeout(force);
       // A cancelled Hermes process may still emit updates or initiate a late
       // MCP call. Resume the persisted session on a fresh transport.
-      if (this.options.hostToolBridge) this.close();
+      if (this.options.hostToolBridge) await this.close();
     }
   }
 
@@ -423,15 +425,18 @@ export class HermesRuntimeAdapter {
     return this.getCheckpoint();
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.cancelRequested = true;
     this.acceptingUpdates = false;
     this.permissions.cancelPending();
-    this.client.stop();
-    void this.hostToolServer?.stop();
+    const hostToolServer = this.hostToolServer;
     this.hostToolServer = undefined;
     this.hostToolServerConfig = undefined;
     this.connected = false;
+    await Promise.allSettled([
+      this.client.stop(),
+      hostToolServer?.stop(),
+    ]);
   }
 
   private getMcpServers(): HermesAcpMcpServer[] {
