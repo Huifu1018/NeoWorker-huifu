@@ -54,18 +54,25 @@ export class ToolExecutionCoordinator {
       const result = executionWithRuntime?.result;
       const policyTrace = executionWithRuntime?.policyTrace;
       const modelReminder = this.getModelReminder(result);
+      const cancelled =
+        context.signal?.aborted === true ||
+        (result &&
+          typeof result === "object" &&
+          !Array.isArray(result) &&
+          ((result as { terminationReason?: unknown }).terminationReason === "user_stopped" ||
+            (result as { terminationReason?: unknown }).terminationReason === "cancelled"));
       const envelope = buildToolResultEnvelope({
         toolUseId,
         toolName,
-        status: result?.success === false ? "error" : "success",
+        status: cancelled ? "cancelled" : result?.success === false ? "error" : "success",
         result,
         retryable: false,
         policyTrace,
         modelReminder,
-        userSummary: `${toolName} ${result?.success === false ? "failed" : "completed"}`,
+        userSummary: `${toolName} ${cancelled ? "cancelled" : result?.success === false ? "failed" : "completed"}`,
       });
-      const succeeded = result?.success !== false;
-      emitLifecycle(succeeded ? "result" : "failed", {
+      const succeeded = !cancelled && result?.success !== false;
+      emitLifecycle(cancelled ? "cancelled" : succeeded ? "result" : "failed", {
         durationMs: Date.now() - startedAt,
         ...(succeeded ? {} : { error: this.getResultError(result) }),
       });

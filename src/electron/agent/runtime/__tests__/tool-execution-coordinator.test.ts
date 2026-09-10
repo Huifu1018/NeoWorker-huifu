@@ -55,6 +55,27 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     expect(output.envelope.status).toBe("error");
   });
 
+  it("preserves cancellation status when a shell reports it was stopped", async () => {
+    const events: Any[] = [];
+    const { coordinator } = coordinatorFor({
+      success: false,
+      stdout: "",
+      stderr: "",
+      exitCode: null,
+      terminationReason: "user_stopped",
+    });
+    const output = await coordinator.executeTool(
+      "run_command",
+      { command: "long-running-command" },
+      lifecycleContext(events),
+      "call-stopped",
+    );
+
+    expect(output.envelope.status).toBe("cancelled");
+    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
+      .toMatchObject({ toolCallId: "call-stopped" });
+  });
+
   it.each([
     [new Error("tool timed out"), "timed_out"],
     [new Error("request cancelled"), "cancelled"],

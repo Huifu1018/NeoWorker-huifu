@@ -2350,7 +2350,12 @@ export class ToolRegistry {
     register("voice_call", async ({ request }) => this.voiceCallTools.executeAction(request.input));
     register(
       "run_command",
-      async ({ request }) => this.shellTools.runCommand(request.input.command, request.input),
+      async ({ request }) =>
+        this.shellTools.runCommand(request.input.command, {
+          ...request.input,
+          signal:
+            request.runtime?.signal instanceof AbortSignal ? request.runtime.signal : undefined,
+        }),
       exclusiveSchedulerSpec,
     );
     register("git_status", async () => this.gitTools.gitStatus());
@@ -4183,7 +4188,12 @@ ${skillDescriptions}`;
     if (name === "voice_call") return await this.voiceCallTools.executeAction(input);
 
     // Shell tools
-    if (name === "run_command") return await this.shellTools.runCommand(input.command, input);
+    if (name === "run_command") {
+      return await this.shellTools.runCommand(input.command, {
+        ...input,
+        signal: _runtime?.signal instanceof AbortSignal ? _runtime.signal : undefined,
+      });
+    }
 
     // Git tools
     if (name === "git_status") return await this.gitTools.gitStatus();

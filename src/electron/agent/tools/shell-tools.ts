@@ -26,6 +26,29 @@ type RunCommandResult = {
   terminationReason?: CommandTerminationReason;
 };
 
+function createCancellationError(message = "Shell command cancelled"): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  (error as Error & { code?: string }).code = "CANCELLED";
+  return error;
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw createCancellationError();
+
+  let abortListener: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    abortListener = () => reject(createCancellationError());
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
 /**
  * Strip ANSI/VT control sequences and normalize line endings produced by the
  * `script` PTY wrapper used for CLI agent commands (e.g. codex, claude).
@@ -614,8 +637,12 @@ export class ShellTools {
     return `${cwd}::${normalized}`;
   }
 
-  private async waitForVerificationCommandResult(key: string): Promise<RunCommandResult | null> {
+  private async waitForVerificationCommandResult(
+    key: string,
+    signal?: AbortSignal,
+  ): Promise<RunCommandResult | null> {
     const now = Date.now();
+    if (signal?.aborted) throw createCancellationError();
     const recent = ShellTools.recentVerificationResults.get(key);
     if (recent && now - recent.completedAt <= ShellTools.verificationCommandTtlMs) {
       return { ...recent.result };
@@ -632,7 +659,7 @@ export class ShellTools {
     });
 
     while (Date.now() - running.startedAt <= ShellTools.verificationCommandTtlMs) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await awaitWithAbort(new Promise<void>((resolve) => setTimeout(resolve, 500)), signal);
       const completed = ShellTools.recentVerificationResults.get(key);
       if (completed && completed.completedAt >= running.startedAt) {
         return { ...completed.result };
@@ -692,6 +719,7 @@ export class ShellTools {
       timeout: number;
       promptPrefix: string;
       env?: Record<string, string>;
+      signal?: AbortSignal;
       policies: AdminPolicies;
     },
   ): Promise<{
@@ -704,6 +732,11 @@ export class ShellTools {
     terminationReason?: CommandTerminationReason;
   } | null> {
     const sandbox = await createSandbox(this.workspace);
+    if (options.signal?.aborted) {
+      sandbox.cleanup();
+      throw createCancellationError("Shell command cancelled before sandbox start.");
+    }
+    let abortListener: (() => void) | undefined;
     try {
       const policies = options.policies;
       const sandboxAllowed = policies.runtime.allowedSandboxTypes.includes(sandbox.type);
@@ -733,7 +766,7 @@ export class ShellTools {
             : "Configure the native macOS sandbox or Docker.";
         throw new Error(
           sandbox.type === "none"
-            ? `run_command cannot execute safely because no supported sandbox is available. ${platformHint}`
+            ? `run_command requires an OS-level sandbox because no supported sandbox is available. ${platformHint}`
             : `run_command sandbox type "${sandbox.type}" is blocked by admin policy. ${platformHint}`,
         );
       }
@@ -764,6 +797,12 @@ export class ShellTools {
       this.processSessionId++;
       this.clearEscalationTimeouts();
       this.userKillRequested = false;
+      abortListener = () => {
+        this.userKillRequested = true;
+        this.killProcess(true);
+      };
+      options.signal?.addEventListener("abort", abortListener, { once: true });
+      if (options.signal?.aborted) abortListener();
       const sandboxCwd =
         sandbox.type === "docker"
           ? resolveDockerSandboxCwd(this.workspace.path, options.cwd)
@@ -776,6 +815,10 @@ export class ShellTools {
         env: options.env,
         onProcess: (process) => {
           this.activeProcess = process;
+          if (options.signal?.aborted) {
+            this.userKillRequested = true;
+            this.killProcess(true);
+          }
         },
       });
 
@@ -868,6 +911,9 @@ export class ShellTools {
         terminationReason,
       };
     } finally {
+      if (options.signal && abortListener) {
+        options.signal.removeEventListener("abort", abortListener);
+      }
       this.activeProcess = null;
       this.clearEscalationTimeouts();
       this.userKillRequested = false;
@@ -1062,8 +1108,12 @@ export class ShellTools {
       cwd?: string;
       timeout?: number;
       env?: Record<string, string>;
+      signal?: AbortSignal;
     },
   ): Promise<RunCommandResult> {
+    const signal = options?.signal;
+    if (signal?.aborted) throw createCancellationError();
+
     // Check if command is blocked by guardrails BEFORE anything else
     const blockCheck = GuardrailManager.isCommandBlocked(command);
     if (blockCheck.blocked) {
@@ -1138,19 +1188,22 @@ export class ShellTools {
         });
       } else {
         // Request user approval before executing
-        approved = await this.daemon.requestApproval(
-          this.taskId,
-          "run_command",
-          bundleEligible
-            ? "Single approval bundle for this task: subsequent safe commands may run without another prompt until you deny or the task ends."
-            : "Review the shell command below before approving.",
-          {
-            command,
-            cwd: options?.cwd || this.workspace.path,
-            timeout: options?.timeout || DEFAULT_TIMEOUT,
-            approvalMode,
-            bundleScope: bundleEligible ? "safe_commands_in_this_task" : undefined,
-          },
+        approved = await awaitWithAbort(
+          this.daemon.requestApproval(
+            this.taskId,
+            "run_command",
+            bundleEligible
+              ? "Single approval bundle for this task: subsequent safe commands may run without another prompt until you deny or the task ends."
+              : "Review the shell command below before approving.",
+            {
+              command,
+              cwd: options?.cwd || this.workspace.path,
+              timeout: options?.timeout || DEFAULT_TIMEOUT,
+              approvalMode,
+              bundleScope: bundleEligible ? "safe_commands_in_this_task" : undefined,
+            },
+          ),
+          signal,
         );
 
         if (approved && signature) {
@@ -1180,7 +1233,7 @@ export class ShellTools {
     const cwd = resolveCommandCwd(this.workspace.path, options?.cwd);
     const verificationCommandKey = this.getVerificationCommandKey(command, cwd);
     if (verificationCommandKey) {
-      const reused = await this.waitForVerificationCommandResult(verificationCommandKey);
+      const reused = await this.waitForVerificationCommandResult(verificationCommandKey, signal);
       if (reused) return reused;
       this.markVerificationCommandRunning(verificationCommandKey);
     }
@@ -1198,11 +1251,13 @@ export class ShellTools {
         timeout,
         promptPrefix,
         env: options?.env,
+        signal,
         policies,
       });
       if (sandboxResult) {
         return this.recordVerificationCommandResult(verificationCommandKey, sandboxResult);
       }
+      if (signal?.aborted) throw createCancellationError();
     }
 
     if (persistentShellAllowed) {
@@ -1220,6 +1275,7 @@ export class ShellTools {
           command,
           cwd: options?.cwd,
           timeoutMs: Math.min(options?.timeout || DEFAULT_TIMEOUT, MAX_TIMEOUT),
+          signal,
           fallbackRunner: async () => ({
             success: false,
             stdout: "",
@@ -1275,6 +1331,9 @@ export class ShellTools {
           });
         }
       } catch (error) {
+        if (signal?.aborted || (error as { code?: unknown })?.code === "CANCELLED" || (error as Error)?.name === "AbortError") {
+          throw error;
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.daemon.logEvent(this.taskId, "command_output", {
           command,
@@ -1455,6 +1514,12 @@ export class ShellTools {
 
       // Store reference to active process for stdin support
       this.activeProcess = child;
+      const abortListener = () => {
+        this.userKillRequested = true;
+        this.killProcess(true);
+      };
+      signal?.addEventListener("abort", abortListener, { once: true });
+      if (signal?.aborted) abortListener();
       const stdoutDecoder = createProcessOutputDecoder(process.platform);
       const stderrDecoder = createProcessOutputDecoder(process.platform);
 
@@ -1518,6 +1583,7 @@ export class ShellTools {
           if (chunk) this.daemon.logEvent(this.taskId, "command_output", { command, type: "stderr", output: chunk });
         }
         clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortListener);
         this.activeProcess = null; // Clear active process reference
         // Clear any pending escalation timeouts to prevent killing reused PIDs
         this.clearEscalationTimeouts();
@@ -1576,6 +1642,7 @@ export class ShellTools {
 
       child.on("error", (error: Error) => {
         clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", abortListener);
         this.activeProcess = null; // Clear active process reference
         // Clear any pending escalation timeouts to prevent killing reused PIDs
         this.clearEscalationTimeouts();

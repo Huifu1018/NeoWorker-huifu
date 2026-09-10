@@ -64,6 +64,7 @@ export interface ShellRunRequest {
   scope?: ShellSessionScope;
   sessionId?: string;
   timeoutMs: number;
+  signal?: AbortSignal;
   onOutput?: (event: { stream: "stdout" | "stderr"; output: string }) => void;
   fallbackRunner: () => Promise<Omit<ShellCommandResult, "usedPersistentSession" | "sessionId" | "sessionEvent">>;
 }
@@ -308,6 +309,13 @@ function snapshotForPersistence(snapshot: ShellSnapshot): ShellSnapshot {
   };
 }
 
+function createCancellationError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  (error as Error & { code?: string }).code = "CANCELLED";
+  return error;
+}
+
 export class ShellSessionManager {
   private static instance: ShellSessionManager | null = null;
   private sessions = new Map<string, ShellSessionRuntime>();
@@ -500,14 +508,18 @@ export class ShellSessionManager {
     };
   }
 
-  private async invalidateRuntime(runtime: ShellSessionRuntime, reason: string): Promise<void> {
+  private async invalidateRuntime(
+    runtime: ShellSessionRuntime,
+    reason: string,
+    rejection: Error = new Error(reason),
+  ): Promise<void> {
     const pending = [...runtime.pending];
     runtime.pending = [];
 
     for (const item of pending) {
       clearTimeout(item.timeout);
       try {
-        item.reject(new Error(reason));
+        item.reject(rejection);
       } catch {
         // Ignore duplicate or late rejections.
       }
@@ -801,6 +813,9 @@ export class ShellSessionManager {
 
   async runCommand(request: ShellRunRequest): Promise<ShellCommandResult> {
     await this.ensureStateLoaded();
+    if (request.signal?.aborted) {
+      throw createCancellationError("Persistent shell command cancelled before start.");
+    }
 
     const session = this.getOrCreateRuntime({
       taskId: request.taskId,
@@ -831,6 +846,15 @@ export class ShellSessionManager {
         cwd: session.snapshot.cwd || request.workspacePath,
       });
       await this.persistState();
+    }
+    if (request.signal?.aborted) {
+      await this.invalidateRuntime(
+        session,
+        "Persistent shell command cancelled before dispatch.",
+        createCancellationError("Persistent shell command cancelled before dispatch."),
+      );
+      this.activeSessionRuns.delete(runKey);
+      throw createCancellationError("Persistent shell command cancelled before dispatch.");
     }
 
     if (!session.process?.stdin || !session.process.stdout) {
@@ -872,13 +896,15 @@ export class ShellSessionManager {
       `printf '__NEOWORKER_DONE__:%s:%s\\n' ${quoteForPosixShell(commandId)} "$__neoworker_exit_code"`,
     ].join("\n");
 
+    let abortListener: (() => void) | undefined;
     const commandPromise = new Promise<ShellCommandResult>((resolve, reject) => {
       session.busy = true;
       const timeout = setTimeout(() => {
-        session.busy = false;
-        session.pending = session.pending.filter((item) => item.commandId !== commandId);
-        void this.invalidateRuntime(session, "Persistent shell command timed out.");
-        reject(new Error("Persistent shell command timed out."));
+        void this.invalidateRuntime(
+          session,
+          "Persistent shell command timed out.",
+          new Error("Persistent shell command timed out."),
+        );
       }, commandTimeoutMs);
 
       session.pending.push({
@@ -891,7 +917,28 @@ export class ShellSessionManager {
         cwd: targetCwd,
         onOutput: request.onOutput,
       });
-      session.process!.stdin!.write(`${wrapper}\n`);
+      abortListener = () => {
+        void this.invalidateRuntime(
+          session,
+          "Persistent shell command cancelled.",
+          createCancellationError("Persistent shell command cancelled."),
+        );
+      };
+      if (request.signal) {
+        request.signal.addEventListener("abort", abortListener, { once: true });
+      }
+      if (request.signal?.aborted) {
+        abortListener();
+        return;
+      }
+      try {
+        session.process!.stdin!.write(`${wrapper}\n`);
+      } catch (error) {
+        clearTimeout(timeout);
+        session.busy = false;
+        session.pending = session.pending.filter((item) => item.commandId !== commandId);
+        reject(error);
+      }
       session.process!.stdin!.once("error", (error) => {
         clearTimeout(timeout);
         session.busy = false;
@@ -900,6 +947,9 @@ export class ShellSessionManager {
       });
     });
     return commandPromise.finally(() => {
+      if (request.signal && abortListener) {
+        request.signal.removeEventListener("abort", abortListener);
+      }
       this.activeSessionRuns.delete(runKey);
     });
   }

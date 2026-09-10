@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { spawn } from 'node:child_process';
 
 const sandboxMocks = vi.hoisted(() => ({
   sandbox: {
@@ -319,6 +320,54 @@ describe('ShellTools auto-approval', () => {
 
     expect(result.success).toBe(true);
     expect(fakeProcess.stdin.write).toHaveBeenCalledWith('input\n');
+    expect(shellTools.hasActiveProcess()).toBe(false);
+  });
+
+  it('cancels while approval is pending without starting the sandbox', async () => {
+    const controller = new AbortController();
+    (mockDaemon.requestApproval as any).mockImplementationOnce(() => new Promise(() => {}));
+
+    const pending = shellTools.runCommand(SAFE_CMD_1, {
+      cwd: process.cwd(),
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError', code: 'CANCELLED' });
+    expect(sandboxMocks.sandbox.execute).not.toHaveBeenCalled();
+  });
+
+  it('kills a running sandbox process tree when the execution signal aborts', async () => {
+    const controller = new AbortController();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    sandboxMocks.sandbox.execute.mockImplementationOnce(async (_command: string, _args: string[], options: any) => {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      options.onProcess(child);
+      started();
+      const code = await new Promise<number | null>((resolve) => child.once('close', resolve));
+      return {
+        exitCode: code,
+        stdout: '',
+        stderr: '',
+        killed: true,
+        timedOut: false,
+      };
+    });
+
+    const pending = shellTools.runCommand(SAFE_CMD_1, {
+      cwd: process.cwd(),
+      signal: controller.signal,
+    });
+    await ready;
+    controller.abort();
+
+    await expect(pending).resolves.toMatchObject({
+      success: false,
+      terminationReason: 'user_stopped',
+    });
     expect(shellTools.hasActiveProcess()).toBe(false);
   });
 
