@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -24,6 +25,28 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         lastError = error;
         if ((error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
         await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    if (lastError && process.platform === "win32") {
+      try {
+        console.error(
+          "[windows-shell-session:cleanup-processes]",
+          execFileSync(
+            "tasklist",
+            ["/FI", "IMAGENAME eq pwsh.exe", "/FO", "CSV", "/NH"],
+            { encoding: "utf8" },
+          ),
+        );
+        console.error(
+          "[windows-shell-session:cleanup-cmd-processes]",
+          execFileSync(
+            "tasklist",
+            ["/FI", "IMAGENAME eq cmd.exe", "/FO", "CSV", "/NH"],
+            { encoding: "utf8" },
+          ),
+        );
+      } catch {
+        // Best effort diagnostics only.
       }
     }
     if (lastError) throw lastError;
