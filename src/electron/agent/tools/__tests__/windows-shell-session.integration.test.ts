@@ -42,6 +42,9 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         truncated: false,
       }),
     });
+    if (!first.success || first.exitCode !== 0) {
+      console.error("[windows-shell-session:first]", JSON.stringify(first));
+    }
     expect(first).toMatchObject({
       success: true,
       exitCode: 0,
@@ -84,6 +87,9 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         truncated: false,
       }),
     });
+    if (failed.exitCode !== 17) {
+      console.error("[windows-shell-session:failed]", JSON.stringify(failed));
+    }
     expect(failed).toMatchObject({ success: false, exitCode: 17, usedPersistentSession: true });
 
     await expect(manager.runCommand({
