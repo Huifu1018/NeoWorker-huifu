@@ -150,6 +150,10 @@ describe("shell-session-manager", () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "neoworker-shell-output-"));
     const taskId = `persistent-output-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const workspaceId = `workspace-${taskId}`;
+    // Windows CI can deliver a 1.2 MB child-process stream more slowly than
+    // Unix runners. This test verifies bounded buffering and recovery, not a
+    // ten-second latency SLA, so allow the platform pipe enough time to flush.
+    const longOutputTimeoutMs = process.platform === "win32" ? 30_000 : 10_000;
     const fallbackRunner = async () => ({
       success: false,
       stdout: "",
@@ -164,7 +168,7 @@ describe("shell-session-manager", () => {
         workspaceId,
         workspacePath: workspace,
         command: "node -e \"process.stdout.write('x'.repeat(1200000))\"",
-        timeoutMs: 10_000,
+        timeoutMs: longOutputTimeoutMs,
         fallbackRunner,
       });
       expect(result).toMatchObject({
@@ -194,5 +198,5 @@ describe("shell-session-manager", () => {
       await manager.closeSession(taskId, workspaceId);
       await rm(workspace, { recursive: true, force: true });
     }
-  }, 20_000);
+  }, 45_000);
 });
