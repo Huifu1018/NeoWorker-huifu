@@ -46,6 +46,39 @@ readline.createInterface({input:process.stdin}).on('line', line => {
      })().catch(error => send({id,error:{code:-32001,message:error.message}}));
      break;
    }
+   if (params.prompt[0].text === 'host-dependency-install') {
+     void (async () => {
+       const server = mcpServers.find(item => item.name === 'neoworker');
+       const headers = Object.fromEntries(server.headers.map(item => [item.name, item.value]));
+       headers['content-type'] = 'application/json';
+       const request = async (id, name, arguments_) => {
+         const response = await fetch(server.url, {
+           method: 'POST', headers,
+           body: JSON.stringify({jsonrpc:'2.0', id, method:'tools/call', params:{name, arguments:arguments_}}),
+         });
+         return response.json();
+       };
+       const init = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{}})});
+       headers['mcp-session-id'] = init.headers.get('mcp-session-id');
+       const manifest = await request(2, 'write_file', {
+         path: 'package.json',
+         content: JSON.stringify({
+           private: true,
+           dependencies: {'neoworker-fixture-dep': 'file:./dep'},
+         }),
+       });
+       const dependency = await request(3, 'write_file', {
+         path: 'dep/package.json',
+         content: JSON.stringify({name:'neoworker-fixture-dep', version:'1.0.0', main:'index.js'}),
+       });
+       const install = await request(4, 'run_command', {
+         command: 'npm install ./dep --ignore-scripts --no-audit --no-fund --offline',
+       });
+       send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify({manifest,dependency,install})}}}});
+       result(id,{stopReason:'end_turn'}); promptId=undefined;
+     })().catch(error => send({id,error:{code:-32001,message:error.message}}));
+     break;
+   }
    if (params.prompt[0].text === 'host-multi-tool') {
      void (async () => {
        const server = mcpServers.find(item => item.name === 'neoworker');

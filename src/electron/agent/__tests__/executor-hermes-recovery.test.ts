@@ -152,6 +152,71 @@ describe("Executor Hermes recovery", () => {
     expect(runtime.close).toHaveBeenCalledOnce();
   });
 
+  it("applies the bounded provider retry when Hermes resume fails before host progress", async () => {
+    const events: Array<{ type: string; payload?: Any }> = [];
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-resume-transient",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const failure = new HermesAcpError(
+      "HTTP 502: The request queue is full",
+      "HERMES_RUNTIME_ERROR",
+    );
+    const runtime = {
+      prompt: vi.fn(async () => {
+        throw failure;
+      }),
+      retry: vi.fn(async () => ({
+        assistantText: "resumed after provider retry",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })),
+      getCheckpoint: vi.fn(() => checkpoint),
+      getToolProgressRevision: vi.fn(() => 0),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "resume-transient-hermes" };
+    instance.paused = true;
+    instance.waitingForUserInput = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = checkpoint;
+    instance.getAcpxExternalRuntimeConfig = () => ({ agent: "hermes" });
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.getLifecycleMutex = () => ({
+      runExclusive: (fn: () => Promise<void>) => fn(),
+    });
+    instance.emitEvent = vi.fn((type: string, payload?: Any) => {
+      events.push({ type, payload });
+    });
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.resume.call(instance);
+
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    expect(runtime.retry).toHaveBeenCalledOnce();
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "resumed after provider retry",
+      "hermes runtime resumed",
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "log",
+        payload: expect.objectContaining({
+          metric: "hermes_runtime_retry",
+          safeBeforeToolDispatch: true,
+        }),
+      }),
+    ]));
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it("uses a guarded retry prompt when initial execution finds a persisted checkpoint", async () => {
     const checkpoint = {
       schema: "neoworker_hermes_acp_v1",
@@ -271,6 +336,71 @@ describe("Executor Hermes recovery", () => {
         }),
       }),
     ]));
+  });
+
+  it("does not send the retry request when cancellation arrives during backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      const checkpoint = {
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: "session-cancel-backoff",
+        cwd,
+        agentVersion: "fixture",
+        toolOwnership: "neoworker",
+      } as const;
+      const failure = new HermesAcpError(
+        "HTTP 502: The request queue is full",
+        "HERMES_RUNTIME_ERROR",
+      );
+      let rejectPrompt!: (error: unknown) => void;
+      let checkpointAvailable = false;
+      const runtime = {
+        getCheckpoint: vi.fn(() => checkpointAvailable ? checkpoint : undefined),
+        getToolProgressRevision: vi.fn(() => 0),
+        prompt: vi.fn(
+          () => {
+            checkpointAvailable = true;
+            return new Promise<never>((_resolve, reject) => {
+              rejectPrompt = reject;
+            });
+          },
+        ),
+        retry: vi.fn(),
+        close: vi.fn(async () => undefined),
+      };
+      const instance = executor([]) as Any;
+      instance.task = { id: "cancel-backoff-hermes", rawPrompt: "Cancel the retry." };
+      instance.paused = false;
+      instance.cancelled = false;
+      instance.taskCompleted = false;
+      instance.hermesCheckpoint = undefined;
+      instance.taskContextNotes = [];
+      instance.daemon.updateTaskStatus = vi.fn();
+      instance.getContractPrompt = () => "";
+      instance.buildAppliedSkillContext = () => "";
+      instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+      instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+      instance.finalizeTaskBestEffort = vi.fn();
+      instance.abortController = new AbortController();
+
+      const pending = TaskExecutor.prototype.executeWithHermesRuntime.call(
+        instance,
+        "cancel-retry",
+      );
+      const pendingAssertion = expect(pending).rejects.toBe(failure);
+      rejectPrompt(failure);
+      await Promise.resolve();
+      await Promise.resolve();
+      instance.cancelled = true;
+      instance.abortController.abort();
+      await vi.advanceTimersByTimeAsync(500);
+
+      await pendingAssertion;
+      expect(runtime.retry).not.toHaveBeenCalled();
+      expect(runtime.close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not retry a transient Hermes failure after host progress changed", async () => {

@@ -21,14 +21,14 @@
 | 持久 Shell 会话失效 cwd 自愈 | 通过集成回归 | 工作区被删除或迁移后，启动前会把失效 cwd 修复到当前工作区；子进程 `error` 会结构化结束挂起命令，不再产生未处理 `spawn ENOENT` |
 | 持久 Shell 长输出边界 | 通过集成回归 | 持久会话内部缓冲限制为 1,000,000 字符，结果限制为 100KB 并保留尾部；长输出后下一条命令可继续执行 |
 | Windows Hermes 启动路径 | 通过单元验证 | `hermes-host-launcher.test.ts` 覆盖显式 Python、Hermes shebang 和带引号 PATH 目录，避免含空格的虚拟环境路径回退到错误解释器 |
-| Windows runner 执行链 | 已加入 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上执行 Electron 构建与 Hermes/Tool Host/Shell 专项测试，不提前打包 |
+| Windows runner 执行链 | 通过 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上完成 Electron 构建与 Hermes/Tool Host/Shell 专项测试；最新运行通过 15 个测试文件、181 个测试，跳过 1 个平台限定测试 |
 | 长任务与故障注入 | 通过专项验证 | `hermes-fault-injection.test.ts` 验证 32 项只读任务受并发上限约束、失败读取不污染缓存、副作用调用即使请求并发也保持串行 |
 | 普通 CI 打包门禁 | 已收紧 | push/PR 只执行编译和执行链验证；仅手动 `workflow_dispatch` 才运行打包步骤，且矩阵打包依赖 Windows 执行链 job 通过 |
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器；适配器提供 `start/prompt/cancel/pause/resume/retry/checkpoint/close` 稳定生命周期接口 |
 | Hermes Prompt 分层与恢复路由 | 已接入并通过专项测试 | Executor 使用有界的 Runtime/工作区/任务/上下文/技能提示层；后续消息只发送最新指令；已有 checkpoint 时改走 guarded `retry()`，避免初始任务重复提交 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
-| Hermes 宿主多步路由 | 真实模型验收通过 | `node scripts/qa/run-hermes-live-hostchain.mjs` 使用本机 Hermes Agent v0.18.0 和真实模型，按顺序调用 `write_file`、`run_command`；1 次审批通过，文件内容和 Shell 输出精确匹配，Tool Host/Tool 生命周期日志齐全，checkpoint 无未知副作用 |
+| Hermes 宿主多步路由 | 历史真实模型验收通过；最新复测受外部 provider 阻断 | `node scripts/qa/run-hermes-live-hostchain.mjs` 曾使用本机 Hermes Agent v0.18.0 和真实模型，按顺序调用 `write_file`、`run_command`；最新复测收到外部 provider 的 HTTP 502 queue full，未把这次失败计为工具链成功 |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
 | MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、异常结构化工具结果、200,000 字符模型输出上限 |
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
@@ -43,7 +43,7 @@
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |
 | 调度取消边界 | 通过专项验证 | 并行队列中未获得执行资格的调用不会触发派发事件、工具计数或“已启动”日志 |
-| Windows 实机执行场景 | 已加入 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令；持久 PowerShell 会话另验证跨命令环境、退出码、超时回收和同 cwd 自愈 |
+| Windows 实机执行场景 | 通过 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令；持久 PowerShell 会话另验证跨命令环境、退出码、超时回收和同 cwd 自愈 |
 | Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 和外部 AbortSignal 已接通；活动 Tool Host 调用会立即挂起，checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | 本机 Hermes Model Proxy | 另一路径未就绪 | `hermes proxy status` 显示 Nous Portal/xAI OAuth 均未登录；8645 当前返回 502。本轮真实多步验收使用 ACP 宿主模式的已配置模型入口，不把 Model Proxy 的未登录状态误记为 ACP 失败 |
@@ -58,13 +58,13 @@
 
 - 新建 Hermes ACP 宿主工具任务需要安装 `hermes-agent==0.18.0` 的 Python 环境；包装器不会修改已安装 Hermes，其他版本在验证前拒绝启动。可通过 `NEOWORKER_HERMES_PYTHON` 指定解释器。
 - 普通 NeoWorker 任务仍使用原生 SessionRuntime/TurnKernel；只有显式选择 Hermes 外部 Runtime 的任务才进入 ACP。
-- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路已经由 `run-hermes-live-hostchain.mjs` 验收；取消、暂停后的恢复和未知副作用确认仍以确定性回归为准，待 Windows 实机再补一轮。
+- 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路曾由 `run-hermes-live-hostchain.mjs` 验收；最新真实复测受外部 provider HTTP 502 queue full 阻断，取消、暂停后的恢复和未知副作用确认由确定性回归及 Windows runner 覆盖。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 CI（2026-09-10，提交 `56be3f9`）为 854 个测试文件：796 通过、54 失败、4 跳过；失败集中在既有 mailbox/managed/memory/renderer/Office 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
+- 全量 CI（2026-09-10，提交 `bf67d97`）为 854 个测试文件：796 通过、54 失败、4 跳过；8,580 个测试：8,402 通过、165 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
 
 ## 下一步
 
-1. 用同一真实宿主脚本继续覆盖依赖安装、审批拒绝和中途取消后的恢复，并保留未知副作用确认结果。
-2. 在 Windows 实机/runner 上执行 Hermes ACP、PowerShell/cmd、Unicode 输出、失效工作目录自愈和进程树回收。
-3. 完成跨平台实机验证后再生成 macOS ARM64 和 Windows x64 安装包。
+1. 在外部 provider 恢复后重跑真实宿主多步验收，并记录真实延迟、队列错误和恢复结果。
+2. 在安装包生成前完成 macOS ARM64 与 Windows x64 的安装后 smoke，确认包内 Hermes Runtime、Tool Host、Coordinator 和 Sandbox 与提交一致。
+3. 通过最终跨平台门禁后再统一生成 macOS ARM64 和 Windows x64 安装包。

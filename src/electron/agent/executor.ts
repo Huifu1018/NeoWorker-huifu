@@ -4745,11 +4745,35 @@ export class TaskExecutor {
           reason,
           safeBeforeToolDispatch: true,
         });
-        if (this.cancelled || this.paused) throw error;
-        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        await this.waitForHermesRetryDelay(delayMs, error);
         attempt += 1;
       }
     }
+  }
+
+  /**
+   * Keep transient retry backoff cancellable. A user cancellation can happen
+   * after the provider error but before the bounded retry delay elapses; in
+   * that window no follow-up request should be sent.
+   */
+  private async waitForHermesRetryDelay(delayMs: number, originalError: unknown): Promise<void> {
+    if (this.cancelled || this.paused) throw originalError;
+    const signal = this.abortController?.signal;
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      timer = setTimeout(finish, delayMs);
+      signal?.addEventListener("abort", finish, { once: true });
+      if (signal?.aborted) finish();
+    });
+    if (this.cancelled || this.paused || signal?.aborted) throw originalError;
   }
 
   private async executeWithAcpxRuntime(initialPrompt: string): Promise<void> {
@@ -46552,10 +46576,15 @@ Return ONLY a JSON object:
           workspacePath: this.workspace.path,
         });
       const toolProgress = runtime.getCheckpoint()?.toolProgress;
-      const result =
-        toolProgress?.unknownToolCallIds?.length || toolProgress?.activeToolCallIds?.length
-          ? await runtime.retry(continuation)
-          : await runtime.prompt(continuation);
+      const isResuming = Boolean(
+        toolProgress?.unknownToolCallIds?.length ||
+        toolProgress?.activeToolCallIds?.length,
+      );
+      const result = await this.runHermesPromptWithTransientRetry(
+        runtime,
+        continuation,
+        isResuming,
+      );
       this.hermesCheckpoint = runtime.getCheckpoint();
       const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
       if (assistantText) {

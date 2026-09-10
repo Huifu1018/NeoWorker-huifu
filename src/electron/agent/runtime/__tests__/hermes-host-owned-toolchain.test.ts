@@ -449,6 +449,60 @@ describe("Hermes host-owned NeoWorker toolchain", () => {
       .resolves.toBe("process.stdout.write('hello from Hermes')");
   });
 
+  it("installs a local dependency through the approved host Shell path", async () => {
+    const { runtime, workspacePath, daemon, events } = await createHostHarness();
+
+    const result = await runtime.prompt("host-dependency-install");
+    const assistant = JSON.parse(result.assistantText) as {
+      manifest: { result?: { content?: Array<{ text?: string }> } };
+      dependency: { result?: { content?: Array<{ text?: string }> } };
+      install: { result?: { content?: Array<{ text?: string }> } };
+    };
+    const installPayload = JSON.parse(
+      assistant.install.result?.content?.[0]?.text || "{}",
+    );
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(installPayload).toMatchObject({
+      success: true,
+      exitCode: 0,
+      terminationReason: "normal",
+    });
+    expect(daemon.requestApproval).toHaveBeenCalledTimes(1);
+    await expect(
+      readFile(path.join(workspacePath, "package.json"), "utf8"),
+    ).resolves.toContain("neoworker-fixture-dep");
+    await expect(
+      readFile(
+        path.join(
+          workspacePath,
+          "node_modules",
+          "neoworker-fixture-dep",
+          "package.json",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain('"name":"neoworker-fixture-dep"');
+
+    const toolLifecycle = events
+      .map((event) => event.payload)
+      .filter((payload) => payload?.metric === "tool_lifecycle");
+    expect(toolLifecycle).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          tool: "run_command",
+          status: "approval",
+          approvalStatus: "granted",
+          approvalType: "run_command",
+        }),
+        expect.objectContaining({
+          tool: "run_command",
+          status: "result",
+        }),
+      ]),
+    );
+  });
+
   it("cancels a pending host approval without starting Shell and resumes the checkpoint", async () => {
     const harness = await createHostHarness({ pendingApproval: true });
     const pending = harness.runtime.prompt("host-multi-tool");
