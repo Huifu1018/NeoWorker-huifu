@@ -65,6 +65,34 @@ describe("Executor Hermes recovery", () => {
     expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
   });
 
+  it("keeps sequential file and Shell steps inside the NeoWorker Tool Host", async () => {
+    fixtureTransport();
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [
+      { name: "write_file", description: "Write a file", input_schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } },
+      { name: "run_command", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } },
+    ];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(async (name, input, _timeout, toolCallId) => ({
+      toolHostResponse: {
+        schemaVersion: "neoworker_tool_host_v1", requestId: `response-${name}`, toolCallId,
+        status: "success", result: name === "write_file" ? { path: input.path, bytesWritten: input.content.length } : { stdout: "hello from Hermes", exitCode: 0 },
+      },
+      result: name === "write_file" ? { path: input.path, bytesWritten: input.content.length } : { stdout: "hello from Hermes", exitCode: 0 },
+      status: "success", durationMs: 1, envelope: {}, policyTrace: [],
+    }));
+    const runtime = adapter(instance);
+    const result = await runtime.prompt("host-multi-tool");
+    expect(instance.executeToolWithHeartbeat).toHaveBeenCalledTimes(2);
+    expect(instance.executeToolWithHeartbeat.mock.calls.map(([name]) => name)).toEqual(["write_file", "run_command"]);
+    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "write_file", runtime: "hermes" }));
+    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+    const assistant = JSON.parse(result.assistantText);
+    expect(assistant.write.result.content[0].text).toContain("bytesWritten");
+    expect(assistant.shell.result.content[0].text).toContain("hello from Hermes");
+    expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
+  });
+
   it("propagates desktop pause to the active Hermes adapter", async () => {
     const pause = vi.fn(async () => undefined);
     const events: unknown[] = [];

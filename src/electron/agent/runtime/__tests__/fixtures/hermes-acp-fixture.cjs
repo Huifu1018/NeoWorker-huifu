@@ -46,6 +46,27 @@ readline.createInterface({input:process.stdin}).on('line', line => {
      })().catch(error => send({id,error:{code:-32001,message:error.message}}));
      break;
    }
+   if (params.prompt[0].text === 'host-multi-tool') {
+     void (async () => {
+       const server = mcpServers.find(item => item.name === 'neoworker');
+       const headers = Object.fromEntries(server.headers.map(item => [item.name, item.value]));
+       headers['content-type'] = 'application/json';
+       const request = async (id, name, arguments_) => {
+         const response = await fetch(server.url, {
+           method: 'POST', headers,
+           body: JSON.stringify({jsonrpc:'2.0', id, method:'tools/call', params:{name, arguments:arguments_}}),
+         });
+         return response.json();
+       };
+       const init = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{}})});
+       headers['mcp-session-id'] = init.headers.get('mcp-session-id');
+       const write = await request(2, 'write_file', {path:'hermes-host.txt', content:'hello from Hermes'});
+       const shell = await request(3, 'run_command', {command:'node -e "process.stdout.write(\'hello from Hermes\')"'});
+       send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:JSON.stringify({write,shell})}}}});
+       result(id,{stopReason:'end_turn'}); promptId=undefined;
+     })().catch(error => send({id,error:{code:-32001,message:error.message}}));
+     break;
+   }
    if (params.prompt[0].text === 'wait') break;
    if (['delayed-stream', 'foreign-stream', 'stream-without-result'].includes(params.prompt[0].text)) {
      send({method:'session/update', params:{
