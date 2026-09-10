@@ -726,6 +726,7 @@ export class ShellSessionManager {
 
     runtime.exitStatusOverride = "inactive";
     terminateProcessTree(processToKill);
+    await waitForProcessExit(processToKill);
 
     await this.persistState();
   }
