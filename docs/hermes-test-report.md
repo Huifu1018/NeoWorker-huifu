@@ -64,6 +64,8 @@
 
 GitHub Actions 运行页：[macOS ARM64](https://github.com/Huifu1018/NeoWorker-huifu/actions/runs/34503347147) · [Windows x64](https://github.com/Huifu1018/NeoWorker-huifu/actions/runs/34501098120)。
 
+Windows artifact 的构建提交为 `9140b64`；之后到当前提交的改动只涉及 macOS artifact 上传和文档，不改变 Electron、Hermes、Tool Host 或 Shell 运行时代码。
+
 ## 已知边界
 
 - 新建 Hermes ACP 宿主工具任务需要安装 `hermes-agent==0.18.0` 的 Python 环境；包装器不会修改已安装 Hermes，其他版本在验证前拒绝启动。可通过 `NEOWORKER_HERMES_PYTHON` 指定解释器。
