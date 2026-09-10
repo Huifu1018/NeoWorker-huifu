@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -27,42 +26,6 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     }
-    if (lastError && process.platform === "win32") {
-      try {
-        console.error(
-          "[windows-shell-session:cleanup-processes]",
-          execFileSync(
-            "tasklist",
-            ["/FI", "IMAGENAME eq pwsh.exe", "/FO", "CSV", "/NH"],
-            { encoding: "utf8" },
-          ),
-        );
-        console.error(
-          "[windows-shell-session:cleanup-cmd-processes]",
-          execFileSync(
-            "tasklist",
-            ["/FI", "IMAGENAME eq cmd.exe", "/FO", "CSV", "/NH"],
-            { encoding: "utf8" },
-          ),
-        );
-        console.error(
-          "[windows-shell-session:cleanup-process-details]",
-          execFileSync(
-            "powershell.exe",
-            [
-              "-NoLogo",
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('pwsh.exe','cmd.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List",
-            ],
-            { encoding: "utf8" },
-          ),
-        );
-      } catch {
-        // Best effort diagnostics only.
-      }
-    }
     if (lastError) throw lastError;
   };
 
@@ -74,20 +37,7 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
   });
 
   afterEach(async () => {
-    const key = `task:${workspaceId}:${taskId}`;
-    const runtime = (manager as unknown as { sessions: Map<string, { process?: { pid?: number; exitCode?: number | null }; info: unknown }> }).sessions.get(key);
-    console.error("[windows-shell-session:before-close]", JSON.stringify({
-      key,
-      pid: runtime?.process?.pid,
-      exitCode: runtime?.process?.exitCode,
-      info: runtime?.info,
-    }));
-    const closed = await manager.closeSession(taskId, workspaceId);
-    console.error("[windows-shell-session:after-close]", JSON.stringify({
-      closed,
-      pid: runtime?.process?.pid,
-      exitCode: runtime?.process?.exitCode,
-    }));
+    await manager.closeSession(taskId, workspaceId);
     await removeWorkspaceEventually(workspace);
   });
 
