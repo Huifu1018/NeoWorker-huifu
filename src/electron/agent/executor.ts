@@ -12420,6 +12420,12 @@ ${transcript}
     toolCallId?: string,
     externalSignal?: AbortSignal,
     checkpoint?: Record<string, unknown>,
+    executionContext?: {
+      phase?: "step" | "follow_up";
+      followUp?: boolean;
+      stepId?: string;
+      targetPaths?: string[];
+    },
   ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>> & { toolHostResponse: ToolHostResponse }> {
     const effectiveInput = this.preparePresentationWorkflowToolInput(
       toolName,
@@ -12459,10 +12465,10 @@ ${transcript}
           toolHostRequest,
           {
             taskId: this.task.id,
-            stepId: this.currentStepId || undefined,
-            phase: "step",
-            targetPaths: undefined,
-            followUp: false,
+            stepId: executionContext?.stepId || this.currentStepId || undefined,
+            phase: executionContext?.phase || "step",
+            targetPaths: executionContext?.targetPaths,
+            followUp: executionContext?.followUp === true,
             toolPolicyContext: this.getToolPolicyContext(),
             signal: toolAbort.signal,
             emitEvent: (type, payload) => this.emitEvent(type, payload),
@@ -13184,6 +13190,15 @@ ${transcript}
           opts.toolName,
           retryInput,
           opts.toolTimeoutMs,
+          undefined,
+          undefined,
+          undefined,
+          {
+            phase: opts.followUp ? "follow_up" : "step",
+            followUp: opts.followUp === true,
+            stepId: opts.stepId,
+            targetPaths: opts.targetPaths,
+          },
         );
         const retryResult = retryExecution.result;
         const retrySucceeded = !(retryResult && retryResult.success === false);
@@ -44809,6 +44824,13 @@ Return ONLY a JSON object:
                                   content.input,
                                   toolTimeoutMs,
                                   content.id,
+                                  undefined,
+                                  undefined,
+                                  {
+                                    phase: "follow_up",
+                                    followUp: true,
+                                    stepId: this.currentStepId || undefined,
+                                  },
                                 );
                               result = coordinated.result;
                               runtimeEnvelope = coordinated.envelope;
