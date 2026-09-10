@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。当前交付提交为 `a5519e3`。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能和分块输出缓冲改动已通过本地专项验证，并已推送。
+更新时间：2026-09-11。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。当前交付提交为 `9140b64`。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能、分块输出缓冲和跨平台安装包校验改动已通过验证，并已推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -34,9 +34,9 @@
 | Hermes 宿主多步路由 | 最新真实验收通过 | `node scripts/qa/run-hermes-live-hostchain.mjs` 使用本机 Hermes Agent v0.18.0 和当前配置模型，按顺序调用 `write_file`、`run_command`；文件内容、Shell 输出、1 次审批、两条工具生命周期和 checkpoint 均符合预期，`unknownToolCallCount=0` |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
 | MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、异常结构化工具结果、200,000 字符模型输出上限 |
-| macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
-| Windows x64 安装包 | 延后 | 需要 Windows runner 和安装后 smoke；当前不把旧构建结果当作本轮交付证据 |
-| 安装包 Runtime 内容 | 已加入最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 在 macOS/Windows 安装后检查 `app.asar` 内 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
+| macOS ARM64 安装包 | 通过 | CI run [`34498859440`](https://github.com/Huifu1018/NeoWorker-huifu/actions/runs/34498859440) 完成构建、DMG 挂载、版本、签名、Numbat、Runtime 内容和启动 smoke |
+| Windows x64 安装包 | 通过 | CI run [`34501098120`](https://github.com/Huifu1018/NeoWorker-huifu/actions/runs/34501098120) 完成构建、无 API key 扫描、安装、版本、Runtime 内容和启动 smoke，并上传测试包 |
+| 安装包 Runtime 内容 | 通过最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 已统一 macOS/Windows 的 ASAR 路径分隔符，并在两个平台安装后检查 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Tool Host 日志持久化 | 通过专项验证 | `log` 事件保留 `tool_host_lifecycle`；记录 taskId、phase、幂等键、开始/结束时间和结果/错误状态；重启查询按 taskId/toolCallId 直接命中最新记录，不受 200 条历史窗口影响；无终态时继续拒绝副作用重放 |
 | Tool Host 拒绝路径 | 通过专项验证 | toolCallId/input 冲突和重启后的未知副作用都会写入结构化 error response，再拒绝执行或自动重放，避免请求日志停留在非终态 |
@@ -55,7 +55,9 @@
 
 ## 安装包
 
-本轮开发尚未生成新的安装包。按照开发计划，macOS ARM64 和 Windows x64 包会在运行时、Shell、恢复、性能和跨平台实机验证完成后统一构建，并核验包内 Runtime 与提交一致。
+本轮已完成最终跨平台打包验证。macOS ARM64 DMG 在 run `34498859440` 中构建并通过安装后 smoke；Windows x64 安装器在 run `34501098120` 中构建、安装后 smoke 通过，artifact 名称为 `NeoWorker-0.1.8-3-windows-x64`。Windows smoke 失败过一次，原因是校验脚本在 Windows 上没有把 ASAR 反斜杠路径转换为统一格式，已在提交 `9140b64` 修复并复验通过。
+
+当前 macOS workflow 只做 smoke，没有上传 artifact，因此 macOS DMG 已被 CI 验证但没有保留为可下载附件。若要交付可下载的 macOS 文件，剩余工作只是给该 workflow 增加 artifact 上传并重新执行一次 macOS 打包；这不涉及源代码或 Runtime 改动。
 
 ## 已知边界
 
@@ -68,5 +70,5 @@
 
 ## 下一步
 
-1. 在安装包生成前完成 macOS ARM64 与 Windows x64 的安装后 smoke，确认包内 Hermes Runtime、Tool Host、Coordinator 和 Sandbox 与提交一致。
-2. 通过最终跨平台门禁后再统一生成 macOS ARM64 和 Windows x64 安装包。
+1. 使用已上传的 Windows artifact 做安装测试。
+2. 如需直接下载 macOS DMG，补充 macOS workflow 的 artifact 上传步骤并执行一次交付打包。
