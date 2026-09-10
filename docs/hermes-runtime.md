@@ -24,6 +24,12 @@ them from its cache. The warm, reused, and closed transitions are durable
 diagnostic metrics, so a slow task can be compared against actual session
 startup and reuse behavior after the fact.
 
+Checkpoint persistence is bounded at the timeline lookup boundary. The
+executor reads only the newest task event to capture the current log sequence,
+and each checkpoint creates one tool-progress snapshot before copying its
+bounded ID lists. A long task therefore does not make every host-tool
+checkpoint scan or clone the entire task history.
+
 For host-owned Hermes tasks, a provider failure can be retried once with a bounded exponential delay when the current prompt has not advanced the NeoWorker Tool Host progress marker. Queue saturation, transient 5xx responses, connection resets and request timeouts use this path; explicit non-retryable responses and any prompt that started a host tool do not. The retry is recorded as `hermes_runtime_retry` and uses the saved session checkpoint, so it never resubmits an unknown side effect automatically.
 
 `HermesRuntimeOptions.onPermissionRequest` receives the operation details, offered options, and an AbortSignal. Return the selected option ID or null. `HermesPermissionBridge` validates the active session and options and dismisses on timeout, cancellation or handler failure. Generic `onRequest` callbacks cannot approve permission requests. The production executor wires this handler to the daemon task approval service; UI integrations must still close any pending approval surface when the signal aborts.
