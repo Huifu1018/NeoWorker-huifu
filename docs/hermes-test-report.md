@@ -18,6 +18,7 @@
 | Windows Shell 路由 | 通过单元与 runner 集成验证 | PowerShell → Windows PowerShell → cmd.exe 选择、持久 Shell 包装器、跨 chunk UTF-8/代码页编码、路径处理测试通过；npm/npx `.cmd/.bat` 包装器转换为 `node.exe + *-cli.js`，保持 `shell:false` |
 | Windows Shell 环境继承 | 通过单元验证 | 自定义环境变量不再覆盖系统 PATH；PowerShell 原生命令统一使用 UTF-8 编码 |
 | 持久 Shell 会话失效 cwd 自愈 | 通过集成回归 | 工作区被删除或迁移后，启动前会把失效 cwd 修复到当前工作区；子进程 `error` 会结构化结束挂起命令，不再产生未处理 `spawn ENOENT` |
+| 持久 Shell 长输出边界 | 通过集成回归 | 持久会话内部缓冲限制为 1,000,000 字符，结果限制为 100KB 并保留尾部；长输出后下一条命令可继续执行 |
 | Windows Hermes 启动路径 | 通过单元验证 | `hermes-host-launcher.test.ts` 覆盖显式 Python、Hermes shebang 和带引号 PATH 目录，避免含空格的虚拟环境路径回退到错误解释器 |
 | Windows runner 执行链 | 已加入 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上执行 Electron 构建与 Hermes/Tool Host/Shell 专项测试，不提前打包 |
 | 长任务与故障注入 | 通过专项验证 | `hermes-fault-injection.test.ts` 验证 32 项只读任务受并发上限约束、失败读取不污染缓存、副作用调用即使请求并发也保持串行 |

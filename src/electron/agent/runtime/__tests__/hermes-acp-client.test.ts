@@ -107,11 +107,13 @@ describe("Hermes ACP subprocess transport", () => {
     await c.start(delayedOptions);
     expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });
 
-    const startedAt = Date.now();
     const firstStop = c.stop();
     const secondStop = c.stop();
-    await Promise.all([firstStop, secondStop]);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+    // `stop()` must share one lifecycle promise. This is the portable
+    // invariant; Windows may terminate a SIGTERM'ed Node child immediately,
+    // while Unix fixtures can intentionally delay close delivery.
+    expect(secondStop).toBe(firstStop);
+    await firstStop;
 
     await c.start(delayedOptions);
     expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });

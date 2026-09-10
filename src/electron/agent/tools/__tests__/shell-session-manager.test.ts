@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { _testUtils } from "../shell-session-manager";
 import { ShellSessionManager } from "../shell-session-manager";
@@ -68,7 +71,14 @@ describe("shell-session-manager", () => {
   });
 
   it("clears the active run marker when cancellation races with initial dispatch", async () => {
-    const manager = Object.create(ShellSessionManager.prototype) as any;
+    const manager = Object.create(ShellSessionManager.prototype) as unknown as {
+      sessions: Map<string, unknown>;
+      activeSessionRuns: Set<string>;
+      stateLoaded: boolean;
+      spawnProcess: (runtime: { process: ChildProcess | null }) => void;
+      persistState: () => Promise<void>;
+      runCommand: ShellSessionManager["runCommand"];
+    };
     manager.sessions = new Map();
     manager.activeSessionRuns = new Set();
     manager.stateLoaded = true;
@@ -79,7 +89,7 @@ describe("shell-session-manager", () => {
       stdin: { write: vi.fn() },
       stdout: {},
     } as unknown as ChildProcess;
-    manager.spawnProcess = vi.fn((runtime: any) => {
+    manager.spawnProcess = vi.fn((runtime: { process: ChildProcess | null }) => {
       runtime.process = fakeProcess;
     });
     let persistCount = 0;
@@ -103,4 +113,55 @@ describe("shell-session-manager", () => {
     expect(manager.activeSessionRuns.size).toBe(0);
     expect(fakeProcess.stdin.write).not.toHaveBeenCalled();
   });
+
+  it("bounds long persistent output and recovers for the next command", async () => {
+    const manager = ShellSessionManager.getInstance();
+    const workspace = await mkdtemp(path.join(tmpdir(), "neoworker-shell-output-"));
+    const taskId = `persistent-output-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const workspaceId = `workspace-${taskId}`;
+    const fallbackRunner = async () => ({
+      success: false,
+      stdout: "",
+      stderr: "fallback should not run",
+      exitCode: null,
+      terminationReason: "error" as const,
+      truncated: false,
+    });
+    try {
+      const result = await manager.runCommand({
+        taskId,
+        workspaceId,
+        workspacePath: workspace,
+        command: "node -e \"process.stdout.write('x'.repeat(1200000))\"",
+        timeoutMs: 10_000,
+        fallbackRunner,
+      });
+      expect(result).toMatchObject({
+        success: true,
+        exitCode: 0,
+        usedPersistentSession: true,
+        truncated: true,
+      });
+      expect(result.stdout.length).toBeLessThanOrEqual(100 * 1024);
+      expect(result.stdout).toContain("Output truncated by persistent shell");
+
+      const recovered = await manager.runCommand({
+        taskId,
+        workspaceId,
+        workspacePath: workspace,
+        command: "node -e \"process.stdout.write('recovered')\"",
+        timeoutMs: 5_000,
+        fallbackRunner,
+      });
+      expect(recovered).toMatchObject({
+        success: true,
+        exitCode: 0,
+        usedPersistentSession: true,
+      });
+      expect(recovered.stdout).toContain("recovered");
+    } finally {
+      await manager.closeSession(taskId, workspaceId);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 20_000);
 });

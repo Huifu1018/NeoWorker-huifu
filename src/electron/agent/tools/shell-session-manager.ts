@@ -25,6 +25,7 @@ type ShellSessionRuntime = {
   process: ChildProcess | null;
   invalidation?: Promise<void>;
   buffer: string;
+  bufferTruncated: boolean;
   ready: boolean;
   busy: boolean;
   pending: Array<{
@@ -76,6 +77,10 @@ const COMMAND_TIMEOUT_FALLBACK_MS = 60_000;
 const COMMAND_TIMEOUT_MAX_MS = 5 * 60 * 1000;
 const TAB_COMMAND_TIMEOUT_MAX_MS = 24 * 60 * 60 * 1000;
 const MAX_TERMINAL_TABS_PER_WORKSPACE = 12;
+const MAX_PERSISTENT_BUFFER_CHARS = 1_000_000;
+const MAX_PERSISTENT_RESULT_CHARS = 100 * 1024;
+const PERSISTENT_OUTPUT_TRUNCATION_MARKER =
+  "\n[Output truncated by persistent shell]\n";
 
 function safeJsonParse<T>(value: string, fallback: T): T {
   try {
@@ -248,6 +253,51 @@ function stripPowerShellProtocolEcho(text: string): string {
     .split(/\r?\n/)
     .filter((line) => !protocolEcho.test(line.trim()))
     .join("\n");
+}
+
+function appendBoundedRuntimeBuffer(
+  runtime: ShellSessionRuntime,
+  output: string,
+): void {
+  if (!output) return;
+  const next = runtime.buffer + output;
+  if (next.length <= MAX_PERSISTENT_BUFFER_CHARS) {
+    runtime.buffer = next;
+    return;
+  }
+
+  // Keep the beginning for command diagnostics and the tail where state,
+  // exit markers and build errors are emitted. The marker makes truncation
+  // explicit without allowing a long-running process to grow the buffer
+  // without bound.
+  const retained = Math.max(
+    0,
+    MAX_PERSISTENT_BUFFER_CHARS - PERSISTENT_OUTPUT_TRUNCATION_MARKER.length,
+  );
+  const head = Math.floor(retained * 0.2);
+  const tail = retained - head;
+  runtime.buffer =
+    next.slice(0, head) +
+    PERSISTENT_OUTPUT_TRUNCATION_MARKER +
+    next.slice(-tail);
+  runtime.bufferTruncated = true;
+}
+
+function boundPersistentVisibleOutput(
+  output: string,
+  bufferTruncated: boolean,
+): { output: string; truncated: boolean } {
+  if (!bufferTruncated && output.length <= MAX_PERSISTENT_RESULT_CHARS) {
+    return { output, truncated: false };
+  }
+  const retained = Math.max(
+    0,
+    MAX_PERSISTENT_RESULT_CHARS - PERSISTENT_OUTPUT_TRUNCATION_MARKER.length,
+  );
+  return {
+    output: PERSISTENT_OUTPUT_TRUNCATION_MARKER + output.slice(-retained),
+    truncated: true,
+  };
 }
 
 export function isLikelyInteractiveCommand(command: string): boolean {
@@ -641,6 +691,7 @@ export class ShellSessionManager {
           process: null,
           invalidation: undefined,
           buffer: "",
+          bufferTruncated: false,
           ready: false,
           busy: false,
           pending: [],
@@ -745,6 +796,7 @@ export class ShellSessionManager {
         process: null,
         invalidation: undefined,
         buffer: "",
+        bufferTruncated: false,
         ready: false,
         busy: false,
         pending: [],
@@ -799,6 +851,7 @@ export class ShellSessionManager {
       runtime.ready = false;
       runtime.busy = false;
       runtime.buffer = "";
+      runtime.bufferTruncated = false;
       runtime.snapshot = {
         cwd: previousCwd,
         env: {},
@@ -880,6 +933,7 @@ export class ShellSessionManager {
     runtime.ready = false;
     runtime.busy = false;
     runtime.buffer = "";
+    runtime.bufferTruncated = false;
     runtime.exitStatusOverride = undefined;
 
     const pending = runtime.pending.splice(0);
@@ -933,6 +987,7 @@ export class ShellSessionManager {
     runtime.shell = shell;
     runtime.process = child;
     runtime.buffer = "";
+    runtime.bufferTruncated = false;
     runtime.ready = true;
     child.once("error", (error) => {
       this.handleProcessError(runtime, child, error);
@@ -955,7 +1010,7 @@ export class ShellSessionManager {
     child.stdout?.on("data", (chunk: Buffer) => {
       const output = chunk.toString("utf-8");
       if (runtime.pending.length > 0) {
-        runtime.buffer += output;
+        appendBoundedRuntimeBuffer(runtime, output);
       }
       this.emitTerminalOutput(runtime, { stream: "stdout", output });
       for (const pending of runtime.pending) {
@@ -966,7 +1021,7 @@ export class ShellSessionManager {
     child.stderr?.on("data", (chunk: Buffer) => {
       const output = chunk.toString("utf-8");
       if (runtime.pending.length > 0) {
-        runtime.buffer += output;
+        appendBoundedRuntimeBuffer(runtime, output);
       }
       this.emitTerminalOutput(runtime, { stream: "stderr", output });
       for (const pending of runtime.pending) {
@@ -1007,7 +1062,9 @@ export class ShellSessionManager {
 
     const raw = runtime.buffer;
     runtime.buffer = "";
-    const parsed = this.parseShellOutput(raw, runtime);
+    const wasBufferTruncated = runtime.bufferTruncated;
+    runtime.bufferTruncated = false;
+    const parsed = this.parseShellOutput(raw, runtime, wasBufferTruncated);
     const diff = diffSnapshot(runtime.snapshot, {
       cwd: parsed.cwd,
       env: parsed.env,
@@ -1060,6 +1117,7 @@ export class ShellSessionManager {
       stdout: parsed.visible,
       stderr: "",
       exitCode: parsed.exitCode,
+      truncated: parsed.truncated,
       terminationReason: parsed.exitCode === 0 ? "normal" : ("error" as CommandTerminationReason),
       usedPersistentSession: true,
       sessionId: runtime.info.id,
@@ -1089,12 +1147,14 @@ export class ShellSessionManager {
   private parseShellOutput(
     raw: string,
     runtime: ShellSessionRuntime,
+    bufferTruncated = false,
   ): {
     visible: string;
     cwd: string;
     env: Record<string, string>;
     aliases: Record<string, string>;
     exitCode: number | null;
+    truncated: boolean;
   } {
     // PowerShell/cmd may append a prompt or other whitespace after the
     // sentinel. Use a greedy command-id capture so IDs containing colons do
@@ -1176,13 +1236,18 @@ export class ShellSessionManager {
     const cleanedVisible = stripPowerShellProtocolEcho(visible)
       .replace(/__NEOWORKER_[A-Z_]+__.*/g, "")
       .replace(/^\s+|\s+$/g, "");
+    const boundedVisible = boundPersistentVisibleOutput(
+      cleanedVisible,
+      bufferTruncated,
+    );
 
     return {
-      visible: cleanedVisible,
+      visible: boundedVisible.output,
       cwd,
       env,
       aliases,
       exitCode,
+      truncated: boundedVisible.truncated,
     };
   }
 
@@ -1250,6 +1315,10 @@ export class ShellSessionManager {
         ? request.cwd
         : path.resolve(session.snapshot.cwd || request.workspacePath, request.cwd)
       : session.snapshot.cwd || request.workspacePath;
+    // A new command owns a fresh protocol buffer. Any bytes left after a
+    // previous process error or cancellation must never satisfy its marker.
+    session.buffer = "";
+    session.bufferTruncated = false;
     const wrapper = buildCommandWrapper(
       session.shell || resolveShellExecutable(),
       targetCwd,
@@ -1544,6 +1613,7 @@ export class ShellSessionManager {
     session.process = null;
     session.ready = false;
     session.buffer = "";
+    session.bufferTruncated = false;
     session.busy = false;
     session.snapshot = { cwd: session.info.cwd, env: {}, aliases: {} };
     session.info.commandCount = 0;
