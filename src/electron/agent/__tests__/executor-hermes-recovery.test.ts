@@ -63,6 +63,7 @@ describe("Executor Hermes recovery", () => {
     expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
     expect(instance.enforceToolBudget).toHaveBeenCalledWith("run_command");
     expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+    expect(instance.daemon.logEvent.mock.calls.some(([, type]) => type === "hermes_runtime_transport")).toBe(true);
   });
 
   it("keeps sequential file and Shell steps inside the NeoWorker Tool Host", async () => {

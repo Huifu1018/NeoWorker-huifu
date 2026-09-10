@@ -52,6 +52,34 @@ describe("Hermes ACP subprocess transport", () => {
   it("preserves remote error code and data", async () => {
     await expect((await client()).request('error', {})).rejects.toMatchObject({ code: -32001, data: {retryable:false} });
   });
+  it("emits bounded transport telemetry without response bodies", async () => {
+    const events: Any[] = [];
+    const c = new HermesAcpClient();
+    cleanup.push(() => c.stop());
+    await c.start({ ...options, onTransportEvent: (event) => events.push(event) });
+    await c.request("echo", { telemetry: true });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: "request_started",
+        method: "echo",
+        requestId: expect.any(String),
+        startedAt: expect.any(Number),
+        timeoutMs: 5000,
+        firstByteTimeoutMs: 30000,
+      }),
+      expect.objectContaining({
+        phase: "first_byte",
+        method: "echo",
+        firstByteElapsedMs: expect.any(Number),
+      }),
+      expect.objectContaining({
+        phase: "response",
+        method: "echo",
+        durationMs: expect.any(Number),
+      }),
+    ]));
+    expect(events.some((event) => Object.prototype.hasOwnProperty.call(event, "response"))).toBe(false);
+  });
   it("rejects all pending calls when a process exits", async () => {
     const c = await client();
     const results = Promise.allSettled([c.request('wait', {}), c.request('exit', {})]);
@@ -81,9 +109,14 @@ describe("Hermes ACP subprocess transport", () => {
     await expect(request).rejects.toMatchObject({code:'CANCELLED'});
   });
   it("reports a first-byte timeout separately from the total timeout", async () => {
+    const events: Any[] = [];
     const c = new HermesAcpClient(); cleanup.push(() => c.stop());
-    await c.start({ ...options, firstByteTimeoutMs: 30 });
+    await c.start({ ...options, firstByteTimeoutMs: 30, onTransportEvent: (event) => events.push(event) });
     await expect(c.request("wait", {}, { timeoutMs: 1000 })).rejects.toMatchObject({ code: "FIRST_BYTE_TIMEOUT" });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: "timeout", code: "FIRST_BYTE_TIMEOUT", method: "wait" }),
+      expect.objectContaining({ phase: "connection_closed", code: "FIRST_BYTE_TIMEOUT" }),
+    ]));
   });
   it("accepts a matching streamed event before a slow final response", async () => {
     const c = new HermesAcpClient(); cleanup.push(() => c.stop());

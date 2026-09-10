@@ -9571,6 +9571,9 @@ ${transcript}
       onUpdate: (update) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);
       },
+      onTransportEvent: (event) => {
+        this.daemon.logEvent(this.task.id, "hermes_runtime_transport", event);
+      },
       onPermissionRequest: this.daemon.createHermesPermissionHandler(this.task.id),
     };
     return new HermesRuntimeAdapter(options);

@@ -498,6 +498,18 @@ function parseSessionRetentionDurationMs(raw: unknown): number | undefined {
   return Math.floor(value * multipliers[unit]);
 }
 
+const DURABLE_LOG_METRICS = new Set([
+  // Restart recovery uses this record to decide whether a side effect may be
+  // replayed, so it must survive the normal high-frequency log filter.
+  "tool_host_lifecycle",
+  // Coordinator and ACP transport traces make a task's execution causal
+  // chain reconstructable without persisting model response bodies.
+  "tool_lifecycle",
+  "hermes_runtime_transport",
+  // Retry/failover diagnostics explain why a later provider attempt happened.
+  "llm_retry_reason",
+]);
+
 /**
  * AgentDaemon is the core orchestrator that manages task execution
  * It coordinates between the database, task executors, and UI
@@ -6540,14 +6552,14 @@ export class AgentDaemon extends EventEmitter {
       }
     }
 
-    // Drop high-frequency telemetry from timeline persistence/rendering. The
-    // Tool Host lifecycle is durable execution state, however: it is used to
-    // decide whether a side effect may be replayed after restart.
+    // Drop high-frequency telemetry from timeline persistence/rendering. A
+    // small allowlist of execution diagnostics remains durable so restart
+    // recovery and post-mortem tracing have a reliable causal chain.
     if (
       type === "log" &&
       typeof payloadObj.metric === "string" &&
       payloadObj.metric.trim().length > 0 &&
-      payloadObj.metric !== "tool_host_lifecycle"
+      !DURABLE_LOG_METRICS.has(payloadObj.metric)
     ) {
       return;
     }

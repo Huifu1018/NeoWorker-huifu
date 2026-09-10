@@ -3,6 +3,28 @@ import { StringDecoder } from "node:string_decoder";
 
 export type AcpObject = Record<string, unknown>;
 export interface HermesAcpNotification { method: string; params: AcpObject }
+export interface HermesAcpTransportEvent {
+  phase:
+    | "request_started"
+    | "first_byte"
+    | "response"
+    | "error"
+    | "timeout"
+    | "cancelled"
+    | "connection_closed"
+    | "protocol_error"
+    | "spawn_error";
+  requestId?: string;
+  method?: string;
+  code?: string | number;
+  reason?: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  firstByteElapsedMs?: number;
+  timeoutMs?: number;
+  firstByteTimeoutMs?: number;
+}
 export interface HermesAcpClientOptions {
   command?: string;
   args?: string[];
@@ -14,6 +36,8 @@ export interface HermesAcpClientOptions {
   maxFrameBytes?: number;
   /** MCP servers to attach to every ACP session. */
   mcpServers?: HermesAcpMcpServer[];
+  /** Structured transport telemetry; response bodies are never included. */
+  onTransportEvent?: (event: HermesAcpTransportEvent) => void;
 }
 export type HermesAcpMcpServer = {
   type: "http" | "sse";
@@ -52,6 +76,7 @@ interface Connection {
   firstByteTimeoutMs: number;
   maxFrameBytes: number;
   closed: boolean;
+  onTransportEvent?: (event: HermesAcpTransportEvent) => void;
 }
 
 function object(value: unknown): value is AcpObject {
@@ -82,6 +107,7 @@ export class HermesAcpClient {
       buffer: "", closed: false, timeoutMs: options.timeoutMs ?? 120_000,
       firstByteTimeoutMs: options.firstByteTimeoutMs ?? 30_000,
       maxFrameBytes: options.maxFrameBytes ?? 8 * 1024 * 1024,
+      onTransportEvent: options.onTransportEvent,
     };
     this.connection = conn;
     // Drain stderr even without a log subscriber: a full pipe stalls Hermes.
@@ -97,6 +123,16 @@ export class HermesAcpClient {
       const ready = () => { cleanup(); resolve(); };
       const failed = (error: Error) => {
         cleanup();
+        try {
+          options.onTransportEvent?.({
+            phase: "spawn_error",
+            reason: error.message,
+            code: (error as NodeJS.ErrnoException).code,
+            endedAt: Date.now(),
+          });
+        } catch {
+          // Telemetry must never change the transport outcome.
+        }
         // Normalize launcher failures so the executor can distinguish a missing
         // Hermes installation from a protocol or task failure and apply its
         // configured fallback policy.
@@ -125,12 +161,40 @@ export class HermesAcpClient {
       return Promise.reject(new Error("Invalid ACP first-byte timeout"));
     }
     const id = String(++this.sequence);
+    const startedAt = Date.now();
+    this.emitTransport(conn, {
+      phase: "request_started",
+      requestId: id,
+      method,
+      startedAt,
+      timeoutMs,
+      firstByteTimeoutMs: conn.firstByteTimeoutMs,
+    });
     return new Promise<T>((resolve, reject) => {
+      let firstByteSeen = false;
+      let terminal = false;
       const cleanup = () => {
         clearTimeout(timer);
         clearTimeout(firstByteTimer);
         opts.signal?.removeEventListener("abort", aborted);
         conn.pending.delete(id);
+      };
+      const emitTerminal = (
+        phase: HermesAcpTransportEvent["phase"],
+        extra: Partial<HermesAcpTransportEvent> = {},
+      ) => {
+        if (terminal) return;
+        terminal = true;
+        const endedAt = Date.now();
+        this.emitTransport(conn, {
+          phase,
+          requestId: id,
+          method,
+          startedAt,
+          endedAt,
+          durationMs: endedAt - startedAt,
+          ...extra,
+        });
       };
       const interrupt = (code: "CANCELLED" | "REQUEST_TIMEOUT" | "FIRST_BYTE_TIMEOUT") => {
         if (!conn.pending.has(id)) return;
@@ -144,6 +208,10 @@ export class HermesAcpClient {
           code,
         );
         const pending = conn.pending.get(id)!;
+        emitTerminal(code === "CANCELLED" ? "cancelled" : "timeout", {
+          code,
+          reason: failure.message,
+        });
         pending.reject(failure);
         this.close(conn, failure);
       };
@@ -154,9 +222,32 @@ export class HermesAcpClient {
       conn.pending.set(id, {
         activitySessionId: (method === 'session/prompt' || method === 'session/load') && typeof params.sessionId === 'string'
           ? params.sessionId : undefined,
-        resolve: (value) => { cleanup(); resolve(value as T); },
-        reject: (error) => { cleanup(); reject(error); },
-        firstByte: () => clearTimeout(firstByteTimer),
+        resolve: (value) => {
+          emitTerminal("response");
+          cleanup();
+          resolve(value as T);
+        },
+        reject: (error) => {
+          emitTerminal("error", {
+            code: error instanceof HermesAcpError ? error.code : undefined,
+            reason: error.message,
+          });
+          cleanup();
+          reject(error);
+        },
+        firstByte: () => {
+          if (firstByteSeen) return;
+          firstByteSeen = true;
+          clearTimeout(firstByteTimer);
+          this.emitTransport(conn, {
+            phase: "first_byte",
+            requestId: id,
+            method,
+            startedAt,
+            endedAt: Date.now(),
+            firstByteElapsedMs: Date.now() - startedAt,
+          });
+        },
       });
       opts.signal?.addEventListener("abort", aborted, { once: true });
       this.send(conn, { jsonrpc: "2.0", id, method, params });
@@ -282,6 +373,11 @@ export class HermesAcpClient {
   }
 
   private protocolFailure(conn: Connection, message: string): void {
+    this.emitTransport(conn, {
+      phase: "protocol_error",
+      reason: message,
+      endedAt: Date.now(),
+    });
     this.close(conn, new HermesAcpError(message, "PROTOCOL_ERROR"));
   }
 
@@ -289,6 +385,12 @@ export class HermesAcpClient {
     if (conn.closed) return;
     conn.closed = true;
     if (this.connection === conn) this.connection = undefined;
+    this.emitTransport(conn, {
+      phase: "connection_closed",
+      code: error instanceof HermesAcpError ? error.code : undefined,
+      reason: error.message,
+      endedAt: Date.now(),
+    });
     for (const request of conn.pending.values()) request.reject(error);
     conn.pending.clear();
     for (const request of conn.inbound.values()) request.abort();
@@ -302,6 +404,17 @@ export class HermesAcpClient {
       }, 1500);
       force.unref();
       conn.child.once("exit", () => clearTimeout(force));
+    }
+  }
+
+  private emitTransport(
+    conn: Connection,
+    event: HermesAcpTransportEvent,
+  ): void {
+    try {
+      conn.onTransportEvent?.(event);
+    } catch {
+      // Logging hooks are observers. A faulty observer must not break ACP.
     }
   }
 }
