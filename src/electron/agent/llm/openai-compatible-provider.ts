@@ -379,9 +379,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
     let cachedTokens: number | undefined;
     let cacheWriteTokens: number | undefined;
     let finishReason: string = "end_turn";
+    let sawDataFrame = false;
+    let sawDoneFrame = false;
+    let sawFinishReason = false;
     const toolCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
     const consume = (data: string): void => {
-      if (!data || data === "[DONE]") return;
+      if (!data) return;
+      if (data === "[DONE]") {
+        sawDoneFrame = true;
+        return;
+      }
+      sawDataFrame = true;
       let payload: Any;
       try { payload = JSON.parse(data); } catch { return; }
       if (payload.usage) {
@@ -405,9 +413,12 @@ export class OpenAICompatibleProvider implements LLMProvider {
         if (typeof call?.function?.arguments === "string") current.arguments += call.function.arguments;
         toolCalls.set(index, current);
       }
-      if (choice?.finish_reason === "tool_calls") finishReason = "tool_use";
-      else if (choice?.finish_reason === "length") finishReason = "max_tokens";
-      else if (choice?.finish_reason === "content_filter") finishReason = "stop_sequence";
+      if (typeof choice?.finish_reason === "string" && choice.finish_reason.trim()) {
+        sawFinishReason = true;
+        if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
+        else if (choice.finish_reason === "length") finishReason = "max_tokens";
+        else if (choice.finish_reason === "content_filter") finishReason = "stop_sequence";
+      }
     };
     const flush = (line: string): void => {
       const trimmed = line.trim();
@@ -429,6 +440,21 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (buffer) flush(buffer);
     } finally {
       reader.releaseLock();
+    }
+    // A provider can close a successful SSE response with either the OpenAI
+    // [DONE] sentinel or a terminal finish_reason. If neither is observed,
+    // the response is only a prefix of the model turn. Treat it as retryable
+    // transport failure instead of manufacturing an end_turn response, which
+    // could expose a partial answer or incomplete tool arguments as success.
+    if (sawDataFrame && !sawDoneFrame && !sawFinishReason) {
+      throw new OpenAICompatibleProviderError(
+        `${this.providerName} API stream ended before a terminal frame`,
+        {
+          providerName: this.providerName,
+          code: "STREAM_INCOMPLETE",
+          retryable: true,
+        },
+      );
     }
     const message: Any = { content: text };
     if (toolCalls.size > 0) {

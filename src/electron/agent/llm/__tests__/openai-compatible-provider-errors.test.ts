@@ -149,6 +149,35 @@ describe("OpenAICompatibleProvider error metadata", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({ stream: true });
   });
 
+  it("rejects a stream that ends before a terminal frame", async () => {
+    const encoder = new TextEncoder();
+    const frames = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "partial output" } }] })}\n\n`,
+    ];
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: {
+        getReader: () => ({
+          read: async () => frames.length > 0
+            ? { done: false, value: encoder.encode(frames.shift()!) }
+            : { done: true, value: undefined },
+          releaseLock: vi.fn(),
+        }),
+      },
+    }));
+
+    await expect(createProvider().createMessage({
+      ...createRequest(),
+      onStreamProgress: vi.fn(),
+    })).rejects.toMatchObject({
+      code: "STREAM_INCOMPLETE",
+      retryable: true,
+      message: expect.stringContaining("before a terminal frame"),
+    });
+  });
+
   it("marks a disconnected stream retryable", async () => {
     const transportError = new Error("stream disconnected");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
