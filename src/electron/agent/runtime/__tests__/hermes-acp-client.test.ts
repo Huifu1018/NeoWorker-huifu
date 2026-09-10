@@ -128,6 +128,55 @@ describe("Hermes ACP subprocess transport", () => {
 });
 
 describe('Hermes runtime session', () => {
+  it('pauses an active host call and restores the checkpoint on a fresh transport', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let toolSignal: AbortSignal | undefined;
+    let calls = 0;
+    const r = runtime({ hostToolBridge: {
+      taskId: 'pause-host',
+      getTools: () => [{ name: 'run_command', description: 'Run a command', input_schema: { type: 'object', properties: {} } }],
+      execute: async call => {
+        calls++;
+        toolSignal = call.signal;
+        started();
+        return new Promise(() => {});
+      },
+    } });
+    const pending = r.prompt('host-tool');
+    await ready;
+    const checkpoint = r.getCheckpoint();
+    await r.pause();
+    expect(await pending).toMatchObject({ stopReason: 'cancelled' });
+    expect(toolSignal?.aborted).toBe(true);
+    expect(r.getCheckpoint()).toEqual(checkpoint);
+    expect(await r.resume('next')).toMatchObject({ stopReason: 'end_turn', assistantText: '你好 OK', sessionId: checkpoint?.sessionId });
+    expect(calls).toBe(1);
+  });
+  it('propagates an external abort to an active host call before allowing a later turn', async () => {
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let toolSignal: AbortSignal | undefined;
+    let calls = 0;
+    const controller = new AbortController();
+    const r = runtime({ hostToolBridge: {
+      taskId: 'abort-host',
+      getTools: () => [{ name: 'run_command', description: 'Run a command', input_schema: { type: 'object', properties: {} } }],
+      execute: async call => {
+        calls++;
+        toolSignal = call.signal;
+        started();
+        return new Promise(() => {});
+      },
+    } });
+    const pending = r.prompt('host-tool', controller.signal);
+    await ready;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(toolSignal?.aborted).toBe(true);
+    expect(await r.prompt('next')).toMatchObject({ stopReason: 'end_turn', assistantText: '你好 OK' });
+    expect(calls).toBe(1);
+  });
   it('treats a structured runtime failure as an error even when ACP returns end_turn', async () => {
     const r = runtime();
     await expect(r.prompt('provider-error')).rejects.toMatchObject({

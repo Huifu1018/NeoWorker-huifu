@@ -104,6 +104,7 @@ export class HermesRuntimeAdapter {
           ...this.options.hostToolBridge,
           taskId: this.options.hostToolBridge.taskId,
         });
+        this.hostToolServer.suspendToolCalls();
         const endpoint = await this.hostToolServer.start();
         this.hostToolServerConfig = {
           type: "http",
@@ -169,11 +170,34 @@ export class HermesRuntimeAdapter {
     this.cancelRequested = prePaused;
     if (!prePaused) this.paused = false;
     const run = async () => {
-      const checkpoint = await this.connect();
-      if (this.cancelRequested) return { assistantText: "", stopReason: "cancelled", sessionId: checkpoint.sessionId };
-      this.text = "";
-      this.acceptingUpdates = true;
+      // An AbortSignal can fire while ACP is still connecting or while the
+      // remote agent is waiting for a tool response.  Suspend the host before
+      // the transport observes the abort so no late file/Shell call can start
+      // after the caller has asked us to stop.
+      let signalAborted = false;
+      const onAbort = () => {
+        signalAborted = true;
+        this.cancelRequested = true;
+        this.acceptingUpdates = false;
+        this.permissions.cancelPending();
+        this.hostToolServer?.suspendToolCalls();
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
       try {
+        const checkpoint = await this.connect();
+        if (signalAborted || signal?.aborted) {
+          // Keep AbortSignal cancellation observable as a rejected prompt;
+          // callers use the error code to distinguish it from pause(), whose
+          // internal cancel intentionally resolves with stopReason=cancelled.
+          throw new HermesAcpError("Hermes ACP prompt cancelled", "CANCELLED");
+        }
+        if (this.cancelRequested) {
+          return { assistantText: "", stopReason: "cancelled", sessionId: checkpoint.sessionId };
+        }
+        this.hostToolServer?.resumeToolCalls();
+        this.text = "";
+        this.acceptingUpdates = true;
         const result = await this.client.prompt(checkpoint.sessionId, text, {
           timeoutMs: this.options.timeoutMs ?? 300_000, signal,
         });
@@ -195,6 +219,8 @@ export class HermesRuntimeAdapter {
         this.connected = false;
         throw error;
       } finally {
+        signal?.removeEventListener("abort", onAbort);
+        this.hostToolServer?.suspendToolCalls();
         this.acceptingUpdates = false;
         this.permissions.cancelPending();
       }
@@ -209,8 +235,13 @@ export class HermesRuntimeAdapter {
     this.cancelRequested = true;
     this.acceptingUpdates = false;
     this.permissions.cancelPending();
+    this.hostToolServer?.suspendToolCalls();
     // Cancel after any in-flight initialize/session load, before prompt output.
     if (this.connecting) await this.connecting.catch(() => undefined);
+    // ACP cancellation is advisory for the remote Agent Loop. Abort the
+    // task-scoped MCP calls immediately so a tool that ignores ACP cancel
+    // cannot keep a NeoWorker side effect alive until the hard close timeout.
+    this.hostToolServer?.suspendToolCalls();
     if (this.checkpoint) this.client.cancel(this.checkpoint.sessionId);
     let force: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -222,6 +253,9 @@ export class HermesRuntimeAdapter {
       ]);
     } finally {
       if (force) clearTimeout(force);
+      // A cancelled Hermes process may still emit updates or initiate a late
+      // MCP call. Resume the persisted session on a fresh transport.
+      if (this.options.hostToolBridge) this.close();
     }
   }
 

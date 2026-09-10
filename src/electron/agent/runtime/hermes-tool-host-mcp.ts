@@ -78,6 +78,7 @@ export class HermesToolHostMcpServer {
   private readonly maxRequestBytes: number;
   private readonly requestTimeoutMs: number;
   private readonly activeCalls = new Set<AbortController>();
+  private acceptingToolCalls = true;
   private readonly sessions = new Set<string>();
 
   constructor(private readonly options: HermesToolHostMcpOptions) {
@@ -126,14 +127,26 @@ export class HermesToolHostMcpServer {
     this.server = undefined;
     this.port = undefined;
     this.sessions.clear();
+    this.suspendToolCalls();
     if (!server) return;
-    for (const controller of this.activeCalls) controller.abort();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
   getPort(): number | undefined {
     return this.port;
+  }
+
+  /** Reject late calls as well as aborting those already dispatched. */
+  suspendToolCalls(): void {
+    this.acceptingToolCalls = false;
+    for (const controller of this.activeCalls) {
+      controller.abort(new Error("NeoWorker tool host request cancelled"));
+    }
+  }
+
+  resumeToolCalls(): void {
+    this.acceptingToolCalls = true;
   }
 
   private async handleHttpRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
@@ -167,7 +180,7 @@ export class HermesToolHostMcpServer {
         this.writeJson(response, 404, jsonRpcError(null, -32001, "Unknown MCP session"));
         return;
       }
-      const result = await this.handleMessage(parsed, sessionId);
+      const result = await this.handleMessage(parsed, sessionId, request, response);
       if (initializing) {
         this.sessions.add(sessionId);
         response.setHeader("Mcp-Session-Id", sessionId);
@@ -183,7 +196,12 @@ export class HermesToolHostMcpServer {
     }
   }
 
-  private async handleMessage(message: unknown, sessionId: string): Promise<Record<string, unknown> | undefined> {
+  private async handleMessage(
+    message: unknown,
+    sessionId: string,
+    httpRequest?: http.IncomingMessage,
+    response?: http.ServerResponse,
+  ): Promise<Record<string, unknown> | undefined> {
     if (!isRecord(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
       throw new Error("Invalid MCP JSON-RPC request");
     }
@@ -204,7 +222,7 @@ export class HermesToolHostMcpServer {
         return jsonRpcResult(id, { tools: this.options.getTools().map(toolToMcp) });
       case "tools/call":
         try {
-          return jsonRpcResult(id, await this.callTool(id, params, sessionId));
+          return jsonRpcResult(id, await this.callTool(id, params, sessionId, httpRequest, response));
         } catch (error) {
           return jsonRpcError(id, -32602, error instanceof Error ? error.message : String(error));
         }
@@ -215,7 +233,16 @@ export class HermesToolHostMcpServer {
     }
   }
 
-  private async callTool(id: JsonRpcId, params: Record<string, unknown>, sessionId: string): Promise<Record<string, unknown>> {
+  private async callTool(
+    id: JsonRpcId,
+    params: Record<string, unknown>,
+    sessionId: string,
+    httpRequest?: http.IncomingMessage,
+    response?: http.ServerResponse,
+  ): Promise<Record<string, unknown>> {
+    if (!this.acceptingToolCalls) {
+      return { content: [{ type: "text", text: "NeoWorker tool execution is suspended" }], isError: true };
+    }
     const name = typeof params.name === "string" ? params.name.trim() : "";
     if (!name) throw new Error("Tool name is required");
     if (!this.options.getTools().some((tool) => tool.name === name)) {
@@ -228,16 +255,24 @@ export class HermesToolHostMcpServer {
     const toolCallId = `hermes-mcp:${JSON.stringify([this.options.taskId, sessionId, typeof id, id])}`;
     const controller = new AbortController();
     this.activeCalls.add(controller);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const abortOnRequest = () => controller.abort(new Error("MCP client disconnected"));
+    const abortOnResponseClose = () => {
+      if (!response?.writableEnded) abortOnRequest();
+    };
+    httpRequest?.once("aborted", abortOnRequest);
+    response?.once("close", abortOnResponseClose);
+    let onAbort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const timeout = setTimeout(() => {
+      controller.abort(new Error("NeoWorker tool host request timed out"));
+    }, this.requestTimeoutMs);
     try {
       const outcome = await Promise.race([
+        cancelled,
         this.options.execute({ toolName: name, toolCallId, input, signal: controller.signal }),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => {
-            controller.abort();
-            reject(new Error("NeoWorker tool host request timed out"));
-          }, this.requestTimeoutMs);
-        }),
       ]);
       const text = buildToolResultEnvelope({
         toolUseId: toolCallId,
@@ -256,7 +291,10 @@ export class HermesToolHostMcpServer {
         isError: true,
       };
     } finally {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
+      controller.signal.removeEventListener("abort", onAbort);
+      httpRequest?.off("aborted", abortOnRequest);
+      response?.off("close", abortOnResponseClose);
       this.activeCalls.delete(controller);
     }
   }
@@ -291,6 +329,7 @@ export class HermesToolHostMcpServer {
   }
 
   private writeJson(response: http.ServerResponse, status: number, payload: unknown): void {
+    if (response.destroyed || response.writableEnded) return;
     response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(payload));
   }

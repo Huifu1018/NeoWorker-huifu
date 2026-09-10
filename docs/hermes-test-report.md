@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接改动仍在工作区，完成验证后再提交。
+更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接改动已通过本地专项验证，随当前提交推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -9,7 +9,7 @@
 | 项目 | 结果 | 证据 |
 | --- | --- | --- |
 | Electron、Daemon、CLI 编译 | 通过 | `npm run build:electron`、`npm run build:daemon`、`npm run build:cli` |
-| Hermes ACP 传输 | 通过 | ACP 子进程 fixture：28 项测试通过，含首字节/总时限、取消和恢复边界 |
+| Hermes ACP 传输 | 通过 | ACP 子进程 fixture：31 项测试通过，含首字节/总时限、取消、外部 AbortSignal 和恢复边界 |
 | Hermes 权限桥接 | 通过 | 会话校验、选项校验、取消和超时测试通过 |
 | Hermes Provider | 通过专项验证 | `Hermes Model Proxy` 使用 8645 的模型-only 转发入口；`Hermes Agent` 的 8642 API Server 被明确标注为外部 Agent Runtime |
 | Provider 辅助请求超时 | 通过 | 连接测试与模型刷新默认 15 秒超时；超时不会无限阻塞 Electron |
@@ -23,7 +23,7 @@
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
 | Hermes 宿主多步路由 | 通过确定性回归 | ACP fixture 依次调用 `write_file` 和 `run_command`；两次调用都经过同一 NeoWorker Tool Host，并生成独立的工具生命周期事件；真实模型多步验收仍待供应商余额恢复 |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
-| MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、重连 ID 隔离、200,000 字符模型输出上限 |
+| MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、200,000 字符模型输出上限 |
 | macOS ARM64 安装包 | 延后 | 按开发计划，待全部开发与跨平台实机验证完成后再打包 |
 | Windows x64 安装包 | 延后 | 需要 Windows runner 和安装后 smoke；当前不把旧构建结果当作本轮交付证据 |
 | 安装包 Runtime 内容 | 已加入最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 在 macOS/Windows 安装后检查 `app.asar` 内 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
@@ -34,7 +34,7 @@
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |
 | 调度取消边界 | 通过专项验证 | 并行队列中未获得执行资格的调用不会触发派发事件、工具计数或“已启动”日志 |
 | Windows 实机执行场景 | 已加入 CI | Windows runner 直接验证工作目录、Unicode/参数、非零退出、离线 npm、本进程树超时与后续恢复命令 |
-| Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 已接通；checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
+| Hermes session 暂停恢复 | 通过专项测试 | executor pause/resume 和外部 AbortSignal 已接通；活动 Tool Host 调用会立即挂起，checkpoint 保留、session 恢复和未知副作用不重放；桌面暂停回归测试通过 |
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | 本机 Hermes Model Proxy | 环境未就绪 | `hermes proxy status` 显示 Nous Portal/xAI OAuth 均未登录；8645 当前返回 502，待登录后执行真实多步文件/Shell 验证 |
 | NeoWorker Tool Host 协议 | 通过专项测试 | `neoworker_tool_host_v1` 固定 requestId/toolCallId/schemaVersion/status/result/error；模型分派的原生工具调用统一经过审批、沙箱、超时、日志和结果边界；重复 toolCallId 不重复执行副作用 |

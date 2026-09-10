@@ -12,6 +12,8 @@ The ACP adapter is opt-in through the task's external runtime configuration; ord
 
 The daemon exposes `createHermesPermissionHandler(taskId)`, which delegates to the existing `requestApproval` path. In host-owned ACP sessions, tool execution also goes through the regular NeoWorker tool policy, approval, sandbox, timeout and lifecycle path. ACP permission callbacks alone are not a sandbox and remain relevant to legacy sessions.
 
+The adapter keeps the task-scoped MCP Tool Host suspended until an ACP prompt is active. Pause, cancel, or an externally aborted `AbortSignal` immediately aborts active host calls and rejects late `tools/call` requests. A cancelled host-owned prompt closes its transport after the ACP cancel handshake; resume reconnects to the persisted checkpoint on a fresh transport so late updates or calls from the cancelled turn cannot start a new side effect.
+
 ## ACP Tool Host boundary
 
 Hermes Agent v0.18.0's ACP `session/new` contract accepts `mcpServers`, but its server creates each session with the built-in `hermes-acp` toolset. That toolset includes native `terminal`, `read_file`, `write_file`, `patch`, and `process` tools. The current ACP contract has no request field for replacing that toolset or forwarding native tool calls to the client. Registering a NeoWorker MCP server therefore adds tools but does not, by itself, transfer ownership of those side effects.

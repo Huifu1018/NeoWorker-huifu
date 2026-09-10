@@ -119,6 +119,42 @@ describe("HermesToolHostMcpServer", () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  it("cancels active calls, rejects late dispatches and permits explicit resume", async () => {
+    let signal: AbortSignal | undefined;
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    const execute = vi.fn(async (call): Promise<ToolHostResponse> => {
+      signal = call.signal;
+      started();
+      // Even an uncooperative handler cannot leave the HTTP response hanging.
+      return new Promise(() => {});
+    });
+    const server = new HermesToolHostMcpServer({
+      taskId: "cancel", getTools: () => [tool], requestTimeoutMs: 60_000, execute,
+    });
+    servers.push(server);
+    const endpoint = await server.start();
+    const token = endpoint.headers[0]!.value.replace(/^Bearer /, "");
+    const init = await post(server, token, { jsonrpc: "2.0", id: 1, method: "initialize" });
+    const pending = post(server, token, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "run_command", arguments: {} } }, init.headers.get("mcp-session-id")!);
+    await ready;
+    server.suspendToolCalls();
+    const cancelled = await pending;
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({ result: { isError: true } });
+    expect(signal?.aborted).toBe(true);
+    const ping = await post(server, token, { jsonrpc: "2.0", id: 3, method: "ping" }, init.headers.get("mcp-session-id")!);
+    expect(ping.status).toBe(200);
+    const late = await post(server, token, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "run_command", arguments: {} } }, init.headers.get("mcp-session-id")!);
+    expect(await late.json()).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("suspended") }] } });
+    expect(execute).toHaveBeenCalledOnce();
+    execute.mockResolvedValueOnce({ requestId: "resumed", toolCallId: "resumed", schemaVersion: "neoworker_tool_host_v1", status: "success", result: { exitCode: 0 } });
+    server.resumeToolCalls();
+    const resumed = await post(server, token, { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "run_command", arguments: {} } }, init.headers.get("mcp-session-id")!);
+    expect(await resumed.json()).toMatchObject({ result: { isError: false } });
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("separates reused RPC ids across MCP reconnects and caps model output", async () => {
     const largeResult = { stdout: "x".repeat(300_000), exitCode: 0, success: true };
     const execute = vi.fn(async ({ toolCallId }): Promise<ToolHostResponse> => ({
