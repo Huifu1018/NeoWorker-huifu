@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接改动已通过本地专项验证，随当前提交推送。
+更新时间：2026-09-10。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。本轮桥接改动已通过本地专项验证，随提交 `eda8622` 推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
@@ -39,6 +39,7 @@
 | 本机 Hermes ACP | 通过 | Hermes Agent v0.18.0：`hermes acp --check`、`initialize` 与 `session/new` 均成功 |
 | 本机 Hermes Model Proxy | 环境未就绪 | `hermes proxy status` 显示 Nous Portal/xAI OAuth 均未登录；8645 当前返回 502，待登录后执行真实多步文件/Shell 验证 |
 | NeoWorker Tool Host 协议 | 通过专项测试 | `neoworker_tool_host_v1` 固定 requestId/toolCallId/schemaVersion/status/result/error；模型分派的原生工具调用统一经过审批、沙箱、超时、日志和结果边界；重复 toolCallId 不重复执行副作用 |
+| 评测与时间线门禁 | 通过 | 在允许空评测数据库的 CI 参数下，`reliability-regressions` 评测和 `timeline-reliability-gate` 均通过；当前环境没有可执行评测样例 |
 
 ## 安装包
 
@@ -51,7 +52,7 @@
 - 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。确定性回归已经证明 NeoWorker 侧真实文件/Shell/审批/沙箱/日志链路，真实模型驱动的文件/Shell/审批/取消完整场景仍待验证，阶段 2 尚未关闭。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 Vitest 当前为 847 个测试文件：787 通过、59 失败、1 跳过；8480 个测试：8312 通过、163 失败、3 跳过、2 todo。失败主要是既有 Renderer 文案/快照、数据库初始化、外部 SecureSettings 和环境迁移测试；本轮执行链专项未出现新增回归。
+- 全量 Vitest（2026-09-10 15:02）为 852 个测试文件：793 通过、57 失败、2 跳过；8518 个测试：8350 通过、159 失败、7 跳过、2 todo。失败主要是既有 Renderer 文案/快照、数据库初始化、外部 SecureSettings 和环境迁移测试；本轮执行链专项未出现新增回归。`npm run lint` 为 0 错误、510 个既有警告。
 
 ## 下一步
 
