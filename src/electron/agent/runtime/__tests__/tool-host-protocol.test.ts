@@ -143,8 +143,20 @@ describe("NeoWorker tool host protocol", () => {
     const first = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "a" } });
     const conflicting = createToolHostRequest({ taskId: "task-1", toolName: "write_file", toolCallId: "call-1", input: { path: "b" } });
     await host.execute(first, context);
-    await expect(host.execute(conflicting, context)).rejects.toBeInstanceOf(ToolHostRequestConflictError);
+    const events: Any[] = [];
+    await expect(host.execute(conflicting, {
+      ...context,
+      emitEvent: (_type: string, payload: Any) => events.push(payload),
+    })).rejects.toBeInstanceOf(ToolHostRequestConflictError);
     expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: "tool_host_lifecycle",
+        status: "response",
+        responseStatus: "error",
+        errorType: "TOOL_CALL_ID_CONFLICT",
+      }),
+    ]));
   });
 
   it("keeps a rejected side-effect promise fail-closed on retransmission", async () => {
@@ -263,8 +275,20 @@ describe("NeoWorker tool host protocol", () => {
     const requestRecord = events.find((payload) => payload.status === "request");
     await expect(new NeoWorkerToolHost(coordinator).execute(
       { ...recordRequest, requestId: "retry-request" },
-      { ...context, loadToolHostRecord: () => ({ status: "running", fingerprint: requestRecord.fingerprint }) },
+      {
+        ...context,
+        emitEvent: (_type: string, payload: Any) => events.push(payload),
+        loadToolHostRecord: () => ({ status: "running", fingerprint: requestRecord.fingerprint }),
+      },
     )).rejects.toBeInstanceOf(ToolHostUnknownOutcomeError);
     expect(coordinator.executeTool).toHaveBeenCalledTimes(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metric: "tool_host_lifecycle",
+        status: "response",
+        responseStatus: "error",
+        errorType: "TOOL_CALL_OUTCOME_UNKNOWN",
+      }),
+    ]));
   });
 });

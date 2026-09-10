@@ -124,15 +124,17 @@ export class NeoWorkerToolHost {
       ? (context.loadToolHostRecord?.(normalized.toolCallId) as PersistedToolHostRecord | undefined)
       : undefined;
     emitHostLifecycle("request", { schemaVersion: normalized.schemaVersion });
-    if (cached && cached.fingerprint !== fingerprint) {
-      // A stable toolCallId is an idempotency key. Reusing it for another
-      // operation would make a transport retry indistinguishable from a new
-      // side effect, so fail closed instead of returning the old result.
-      throw new ToolHostRequestConflictError(normalized.toolCallId);
-    }
-    let outcomePromise = cached?.promise;
-    if (cached) emitHostLifecycle("deduplicated");
-    if (!cached && persisted) {
+    let outcomePromise: Promise<CoordinatedToolExecutionResult> | undefined;
+    try {
+      if (cached && cached.fingerprint !== fingerprint) {
+        // A stable toolCallId is an idempotency key. Reusing it for another
+        // operation would make a transport retry indistinguishable from a new
+        // side effect, so fail closed instead of returning the old result.
+        throw new ToolHostRequestConflictError(normalized.toolCallId);
+      }
+      outcomePromise = cached?.promise;
+      if (cached) emitHostLifecycle("deduplicated");
+      if (!cached && persisted) {
         if (persisted.fingerprint !== fingerprint) {
           throw new ToolHostRequestConflictError(normalized.toolCallId);
         }
@@ -140,19 +142,18 @@ export class NeoWorkerToolHost {
           throw new ToolHostUnknownOutcomeError(normalized.toolCallId);
         }
         outcomePromise = Promise.resolve(persisted.outcome);
-    }
-    if (!outcomePromise) {
-      outcomePromise = this.coordinator.executeTool(
-        normalized.toolName,
-        normalized.input,
-        context,
-        normalized.toolCallId,
-      );
-      // Keep rejected promises too. Once a side-effecting coordinator call
-      // has started, its final state is unknown; automatic replay is unsafe.
-      this.inFlightOrCompleted.set(executionKey, { fingerprint, promise: outcomePromise });
-    }
-    try {
+      }
+      if (!outcomePromise) {
+        outcomePromise = this.coordinator.executeTool(
+          normalized.toolName,
+          normalized.input,
+          context,
+          normalized.toolCallId,
+        );
+        // Keep rejected promises too. Once a side-effecting coordinator call
+        // has started, its final state is unknown; automatic replay is unsafe.
+        this.inFlightOrCompleted.set(executionKey, { fingerprint, promise: outcomePromise });
+      }
       const outcome = await outcomePromise;
       const error = outcome.error
         ? {
