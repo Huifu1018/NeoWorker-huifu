@@ -31,7 +31,7 @@
 | 安装包 Runtime 内容 | 已加入最终 smoke 门禁 | `smoke-desktop-artifacts.mjs` 在 macOS/Windows 安装后检查 `app.asar` 内 Hermes ACP、Tool Host、Coordinator 和 Sandbox 模块 |
 | 工具结果边界 | 通过 | 模型 payload 上限 200,000 字符，完整结构化结果仍保留 |
 | Tool Host 日志持久化 | 通过专项验证 | `log` 事件保留 `tool_host_lifecycle`；重启查询按 taskId/toolCallId 直接命中最新记录，不受 200 条历史窗口影响；无终态时继续拒绝副作用重放 |
-| Hermes 断点工具进度 | 通过专项验证 | checkpoint 保存活动、完成、失败和未知 toolCallId 及最后日志序号；`retry()` 对未知或重启时仍活动的调用要求显式确认 |
+| Hermes 断点工具进度 | 通过专项验证 | checkpoint 保存活动、完成、失败和未知 toolCallId 及最后日志序号；`resume()`/`retry()` 对未知或重启时仍活动的调用要求显式确认 |
 | 只读工具重复调用 | 通过专项验证 | 同一批次内对规范化输入的 `read_parallel + idempotent` 调用复用成功结果；失败、写入和 Shell 调用不缓存 |
 | 工具并发边界 | 通过专项验证 | 只有明确 `readOnly` 的幂等只读工具进入并行批次；写文件、Shell、安装依赖及其他副作用调用保持串行 |
 | 取消后的恢复边界 | 通过专项验证 | 已取消或终止的工具不会再进入工作区路径恢复，避免取消变慢或重复触发副作用 |

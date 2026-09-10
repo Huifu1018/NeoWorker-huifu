@@ -4727,7 +4727,8 @@ export class TaskExecutor {
       this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
       this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
       try {
-        const result = runtime.checkpoint()?.toolProgress?.unknownToolCallIds?.length
+        const toolProgress = runtime.getCheckpoint()?.toolProgress;
+        const result = (toolProgress?.unknownToolCallIds?.length || toolProgress?.activeToolCallIds?.length)
           ? await runtime.retry(followUp)
           : await runtime.prompt(followUp);
         this.hermesCheckpoint = runtime.getCheckpoint();
@@ -46370,9 +46371,13 @@ Return ONLY a JSON object:
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", { message: "Resuming Hermes session from checkpoint" });
     try {
-      const result = await runtime.prompt(
-        "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.",
-      );
+      const continuation =
+        "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.";
+      const toolProgress = runtime.getCheckpoint()?.toolProgress;
+      const result =
+        toolProgress?.unknownToolCallIds?.length || toolProgress?.activeToolCallIds?.length
+          ? await runtime.retry(continuation)
+          : await runtime.prompt(continuation);
       this.hermesCheckpoint = runtime.getCheckpoint();
       const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
       if (assistantText) {

@@ -347,6 +347,13 @@ export class HermesRuntimeAdapter {
 
   async resume(prompt = "Continue the task from the last checkpoint. Do not repeat side effects whose result is unknown."): Promise<HermesPromptResult> {
     if (!this.paused) throw new HermesAcpError("Hermes session is not paused", "SESSION_NOT_PAUSED");
+    // A process can be restarted while a host call is still marked active in
+    // the persisted checkpoint. Treat that marker as an unknown side effect
+    // and use the same confirmation gate as retry(), rather than silently
+    // continuing a potentially duplicated operation.
+    if (this.getUnknownToolCallIds().length > 0) {
+      return this.retry(prompt);
+    }
     this.paused = false;
     return this.prompt(prompt);
   }
@@ -367,12 +374,7 @@ export class HermesRuntimeAdapter {
         "NO_CHECKPOINT",
       );
     }
-    const unknownToolCallIds = Array.from(new Set([
-      ...(checkpoint.toolProgress?.unknownToolCallIds ?? []),
-      // A process can terminate while a call is still active. Treat that
-      // persisted active marker as unknown on the next retry.
-      ...(checkpoint.toolProgress?.activeToolCallIds ?? []),
-    ]));
+    const unknownToolCallIds = this.getUnknownToolCallIds(checkpoint);
     if (unknownToolCallIds.length > 0) {
       if (signal?.aborted) {
         throw new HermesAcpError("Hermes retry cancelled", "CANCELLED");
@@ -446,6 +448,18 @@ export class HermesRuntimeAdapter {
     this.lastToolCallId = typeof progress.lastToolCallId === "string"
       ? progress.lastToolCallId
       : undefined;
+  }
+
+  private getUnknownToolCallIds(
+    checkpoint = this.getCheckpoint(),
+  ): string[] {
+    if (!checkpoint) return [];
+    return Array.from(new Set([
+      ...(checkpoint.toolProgress?.unknownToolCallIds ?? []),
+      // A process can terminate while a call is still active. Treat that
+      // persisted active marker as unknown on the next resume or retry.
+      ...(checkpoint.toolProgress?.activeToolCallIds ?? []),
+    ]));
   }
 
   private updateToolProgress(

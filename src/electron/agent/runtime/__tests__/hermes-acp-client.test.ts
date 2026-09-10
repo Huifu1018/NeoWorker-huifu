@@ -284,6 +284,43 @@ describe('Hermes runtime session', () => {
       stopReason: 'end_turn',
     });
   });
+  it('requires confirmation when resume sees an active call restored from a checkpoint', async () => {
+    const confirm = vi.fn().mockResolvedValue(false);
+    const r = runtime({
+      checkpoint: {
+        schema: 'neoworker_hermes_acp_v1',
+        sessionId: 'fixture-session',
+        cwd: __dirname,
+        agentVersion: 'fixture',
+        toolOwnership: 'hermes',
+        toolProgress: {
+          activeToolCallIds: ['persisted-active-call'],
+          completedToolCallIds: [],
+          failedToolCallIds: [],
+          unknownToolCallIds: [],
+          lastToolCallId: 'persisted-active-call',
+        },
+      },
+      onRetryConfirmation: confirm,
+    });
+    await r.pause();
+    await expect(r.resume('continue after restart')).rejects.toMatchObject({
+      code: 'RETRY_CONFIRMATION_REQUIRED',
+    });
+    expect(confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        unknownToolCallIds: ['persisted-active-call'],
+        sessionId: 'fixture-session',
+      }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    confirm.mockResolvedValue(true);
+    expect(await r.resume('continue after confirmation')).toMatchObject({
+      assistantText: '你好 OK',
+      stopReason: 'end_turn',
+      sessionId: 'fixture-session',
+    });
+  });
   it('loads a saved session across process restarts without appending replayed history', async () => {
     const first=runtime(); await first.connect();
     const checkpoint=first.getCheckpoint(); first.close();
