@@ -77,6 +77,7 @@ export class HermesRuntimeAdapter {
   private readonly completedToolCallIds = new Set<string>();
   private readonly failedToolCallIds = new Set<string>();
   private readonly unknownToolCallIds = new Set<string>();
+  private toolProgressRevision = 0;
   private lastToolCallId?: string;
   private checkpointWrite: Promise<void> = Promise.resolve();
   private activePrompt?: Promise<HermesPromptResult>;
@@ -420,6 +421,14 @@ export class HermesRuntimeAdapter {
     return this.snapshotCheckpoint();
   }
 
+  /**
+   * Monotonic host-tool progress marker used by the executor to decide whether
+   * a transient provider failure happened before any side effect was started.
+   */
+  getToolProgressRevision(): number {
+    return this.toolProgressRevision;
+  }
+
   /** Stable checkpoint accessor used by runtime integrations. */
   checkpoint(): HermesSessionCheckpoint | undefined {
     return this.getCheckpoint();
@@ -481,6 +490,7 @@ export class HermesRuntimeAdapter {
   ): void {
     const normalized = toolCallId.trim();
     if (!normalized) return;
+    this.toolProgressRevision += 1;
     this.lastToolCallId = normalized;
     this.activeToolCallIds.delete(normalized);
     this.completedToolCallIds.delete(normalized);

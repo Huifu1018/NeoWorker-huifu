@@ -4647,6 +4647,111 @@ export class TaskExecutor {
     };
   }
 
+  private isHermesTransientRuntimeError(error: unknown): boolean {
+    const record =
+      error && typeof error === "object"
+        ? (error as { code?: unknown; data?: unknown; message?: unknown })
+        : {};
+    const code = typeof record.code === "string" ? record.code : "";
+    const data =
+      record.data && typeof record.data === "object" && !Array.isArray(record.data)
+        ? (record.data as { retryable?: unknown })
+        : undefined;
+    if (data?.retryable === false) return false;
+    if (
+      code === "CANCELLED" ||
+      code === "RETRY_CONFIRMATION_REQUIRED" ||
+      code === "HERMES_UNAVAILABLE" ||
+      code === "PROCESS_SPAWN_FAILED"
+    ) {
+      return false;
+    }
+    if (
+      code === "REQUEST_TIMEOUT" ||
+      code === "FIRST_BYTE_TIMEOUT" ||
+      code === "PROCESS_EXITED"
+    ) {
+      return true;
+    }
+    const message = String(record.message || error || "");
+    return /(?:queue\s+is\s+full|temporar(?:y|ily)|overload|rate\s*limit|too\s+many\s+requests|connection\s+(?:reset|refused|closed)|fetch\s+failed|timed?\s*out|HTTP\s+(?:429|502|503|504)\b|ECONN(?:RESET|REFUSED|ABORTED))/i.test(
+      `${code} ${message}`,
+    );
+  }
+
+  private getHermesToolProgressToken(runtime: HermesRuntimeAdapter): string {
+    const revisionGetter = (runtime as Any)?.getToolProgressRevision;
+    if (typeof revisionGetter === "function") {
+      return `revision:${String(revisionGetter.call(runtime))}`;
+    }
+    const progress = runtime.getCheckpoint()?.toolProgress;
+    return JSON.stringify({
+      activeToolCallIds: progress?.activeToolCallIds || [],
+      completedToolCallIds: progress?.completedToolCallIds || [],
+      failedToolCallIds: progress?.failedToolCallIds || [],
+      unknownToolCallIds: progress?.unknownToolCallIds || [],
+    });
+  }
+
+  private async runHermesPromptWithTransientRetry(
+    runtime: HermesRuntimeAdapter,
+    prompt: string,
+    isResuming: boolean,
+  ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
+    const progressBefore = this.getHermesToolProgressToken(runtime);
+    const maxAttempts = 2;
+    let attempt = 0;
+
+    while (true) {
+      try {
+        if (attempt === 0) {
+          return isResuming
+            ? await runtime.retry(prompt)
+            : await runtime.prompt(prompt);
+        }
+        return await runtime.retry(prompt);
+      } catch (error) {
+        const hostOwned =
+          runtime.getCheckpoint()?.toolOwnership === "neoworker";
+        const noToolProgress =
+          progressBefore === this.getHermesToolProgressToken(runtime);
+        if (
+          attempt >= maxAttempts - 1 ||
+          !hostOwned ||
+          !noToolProgress ||
+          !this.isHermesTransientRuntimeError(error)
+        ) {
+          throw error;
+        }
+
+        const delayMs = Math.min(2_000, 500 * 2 ** attempt);
+        const reason = String(
+          (error as { message?: unknown })?.message || error || "Hermes provider transient failure",
+        ).slice(0, 400);
+        this.emitEvent("progress_update", {
+          phase: "hermes_runtime",
+          state: "retrying",
+          attempt: attempt + 1,
+          maxAttempts,
+          delayMs,
+          message: `Hermes provider transient failure; retrying in ${delayMs}ms`,
+        });
+        this.emitEvent("log", {
+          metric: "hermes_runtime_retry",
+          taskId: this.task.id,
+          attempt: attempt + 1,
+          maxAttempts,
+          delayMs,
+          reason,
+          safeBeforeToolDispatch: true,
+        });
+        if (this.cancelled || this.paused) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        attempt += 1;
+      }
+    }
+  }
+
   private async executeWithAcpxRuntime(initialPrompt: string): Promise<void> {
     const runner = this.getAcpxRuntimeRunner();
     const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
@@ -4719,9 +4824,11 @@ export class TaskExecutor {
         mode: isResuming ? "checkpoint_retry" : "initial_prompt",
         checkpointSessionId: checkpoint?.sessionId,
       });
-      const result = isResuming
-        ? await runtime.retry(prompt)
-        : await runtime.prompt(prompt);
+      const result = await this.runHermesPromptWithTransientRetry(
+        runtime,
+        prompt,
+        isResuming,
+      );
       this.hermesCheckpoint = runtime.getCheckpoint();
       if (this.paused && result.stopReason === "cancelled") {
         this.daemon.updateTaskStatus(this.task.id, "paused");

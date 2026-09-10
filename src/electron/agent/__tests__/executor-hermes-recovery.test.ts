@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
 import { TaskExecutor } from "../executor";
-import { HermesAcpClient } from "../runtime/hermes-acp-client";
+import { HermesAcpClient, HermesAcpError } from "../runtime/hermes-acp-client";
 import type { HermesRuntimeAdapter } from "../runtime/hermes-runtime-adapter";
 
 const cwd = __dirname;
@@ -205,6 +205,172 @@ describe("Executor Hermes recovery", () => {
       "hermes runtime completed",
     );
     expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
+  it("retries a transient Hermes provider failure once when no host tool started", async () => {
+    const events: Array<{ type: string; payload?: Any }> = [];
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-transient",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    let savedCheckpoint: Any;
+    const runtime = {
+      getCheckpoint: vi.fn(() => savedCheckpoint),
+      getToolProgressRevision: vi.fn(() => 0),
+      prompt: vi.fn(async () => {
+        savedCheckpoint = checkpoint;
+        throw new HermesAcpError(
+          "HTTP 502: The request queue is full",
+          "HERMES_RUNTIME_ERROR",
+        );
+      }),
+      retry: vi.fn(async () => ({
+        assistantText: "recovered after provider retry",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "transient-hermes", rawPrompt: "Run a transient test." };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    instance.emitEvent = vi.fn((type: string, payload?: Any) => {
+      events.push({ type, payload });
+    });
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "transient-provider-error",
+    );
+
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    expect(runtime.retry).toHaveBeenCalledOnce();
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "recovered after provider retry",
+      "hermes runtime completed",
+    );
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "log",
+        payload: expect.objectContaining({
+          metric: "hermes_runtime_retry",
+          safeBeforeToolDispatch: true,
+        }),
+      }),
+    ]));
+  });
+
+  it("does not retry a transient Hermes failure after host progress changed", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-side-effect",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    let savedCheckpoint: Any;
+    let revision = 0;
+    const failure = new HermesAcpError(
+      "HTTP 502: The request queue is full",
+      "HERMES_RUNTIME_ERROR",
+    );
+    const runtime = {
+      getCheckpoint: vi.fn(() => savedCheckpoint),
+      getToolProgressRevision: vi.fn(() => revision),
+      prompt: vi.fn(async () => {
+        savedCheckpoint = checkpoint;
+        revision = 1;
+        throw failure;
+      }),
+      retry: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "side-effect-hermes", rawPrompt: "Run a side effect." };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await expect(
+      TaskExecutor.prototype.executeWithHermesRuntime.call(
+        instance,
+        "side-effect-provider-error",
+      ),
+    ).rejects.toBe(failure);
+
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    expect(runtime.retry).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry a Hermes provider error explicitly marked non-retryable", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-non-retryable",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    let savedCheckpoint: Any;
+    const failure = new HermesAcpError(
+      "HTTP 402: Insufficient Balance",
+      "HERMES_RUNTIME_ERROR",
+      { retryable: false },
+    );
+    const runtime = {
+      getCheckpoint: vi.fn(() => savedCheckpoint),
+      getToolProgressRevision: vi.fn(() => 0),
+      prompt: vi.fn(async () => {
+        savedCheckpoint = checkpoint;
+        throw failure;
+      }),
+      retry: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "non-retryable-hermes", rawPrompt: "Provider quota test." };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await expect(
+      TaskExecutor.prototype.executeWithHermesRuntime.call(
+        instance,
+        "non-retryable-provider-error",
+      ),
+    ).rejects.toBe(failure);
+
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    expect(runtime.retry).not.toHaveBeenCalled();
   });
 
   it("restores a persisted session after executor recreation instead of creating a conversation", async () => {

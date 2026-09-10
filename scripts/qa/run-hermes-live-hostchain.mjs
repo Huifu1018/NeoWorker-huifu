@@ -148,6 +148,7 @@ try {
     checkpoint?.toolOwnership === "neoworker" &&
     checkpoint?.toolProgress?.unknownToolCallIds?.length === 0 &&
     metrics.some((entry) => entry.metric === "tool_host_lifecycle" && entry.status === "response") &&
+    metrics.some((entry) => entry.metric === "tool_lifecycle" && entry.status === "approval") &&
     metrics.some((entry) => entry.metric === "tool_lifecycle" && entry.status === "result");
 
   console.log(

@@ -15,6 +15,7 @@
 | OpenAI 兼容流式响应边界 | 通过专项验证 | 流式响应在输出部分内容后提前断开时返回 `STREAM_INCOMPLETE` 且标记为可重试，避免把截断文本或不完整工具参数当成成功 |
 | Provider 辅助请求超时 | 通过 | 连接测试与模型刷新默认 15 秒超时；超时不会无限阻塞 Electron |
 | Hermes ACP 传输遥测 | 通过专项验证 | `hermes_runtime_transport` 记录请求、首字节、响应、超时、取消、协议错误和断链阶段及耗时；不记录响应正文，避免把模型内容写入诊断日志 |
+| Hermes provider 瞬态失败恢复 | 通过专项验证 | host-owned 任务在未启动任何 Tool Host 调用时，对 queue full/5xx/连接重置/超时执行一次 500ms 退避重试；有工具进度变化或 `retryable:false` 时禁止自动重放 |
 | Windows Shell 路由 | 通过单元与 runner 集成验证 | PowerShell → Windows PowerShell → cmd.exe 选择、持久 Shell 包装器、跨 chunk UTF-8/代码页编码、路径处理测试通过；npm/npx `.cmd/.bat` 包装器转换为 `node.exe + *-cli.js`，保持 `shell:false` |
 | Windows Shell 环境继承 | 通过单元验证 | 自定义环境变量不再覆盖系统 PATH；PowerShell 原生命令统一使用 UTF-8 编码 |
 | 持久 Shell 会话失效 cwd 自愈 | 通过集成回归 | 工作区被删除或迁移后，启动前会把失效 cwd 修复到当前工作区；子进程 `error` 会结构化结束挂起命令，不再产生未处理 `spawn ENOENT` |
