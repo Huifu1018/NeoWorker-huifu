@@ -1,6 +1,6 @@
 # Hermes 集成验证记录
 
-更新时间：2026-09-11。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。当前交付提交为 `9f328b5`。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能、分块输出缓冲和跨平台安装包校验改动已通过验证，并已推送。
+更新时间：2026-09-11。当前开发分支：`codex/hermes-neoworker`；交付远端为 `Huifu1018/NeoWorker-huifu`。运行时代码交付基线为 `9140b64`；之后的提交只补充 CI artifact 上传和交付文档。本轮桥接、恢复、断点、Shell 稳定性、checkpoint 性能、分块输出缓冲和跨平台安装包校验改动已通过验证，并已推送。
 
 阶段 0 基线快照见 [hermes-baseline-report.md](./hermes-baseline-report.md)，其中记录了当前全量 type-check/Vitest 的失败数量及与 Hermes 专项结果的区分规则。
 
