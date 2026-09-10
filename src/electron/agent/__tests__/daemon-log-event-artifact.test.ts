@@ -94,7 +94,12 @@ describe("AgentDaemon.logEvent artifact normalization", () => {
   it("persists coordinator and transport diagnostics needed for causal tracing", () => {
     const daemonLike = createDaemonLike();
 
-    for (const metric of ["tool_lifecycle", "hermes_runtime_transport", "llm_retry_reason"]) {
+    for (const metric of [
+      "tool_lifecycle",
+      "hermes_runtime_transport",
+      "hermes_runtime_retry",
+      "llm_retry_reason",
+    ]) {
       AgentDaemon.prototype.logEvent.call(daemonLike, "task-1", "log", {
         metric,
         phase: "result",
@@ -102,9 +107,14 @@ describe("AgentDaemon.logEvent artifact normalization", () => {
       });
     }
 
-    expect(daemonLike.persistTimelineEvent).toHaveBeenCalledTimes(3);
+    expect(daemonLike.persistTimelineEvent).toHaveBeenCalledTimes(4);
     expect((daemonLike.persistTimelineEvent as Any).mock.calls.map(([event]) => event.payload.metric))
-      .toEqual(["tool_lifecycle", "hermes_runtime_transport", "llm_retry_reason"]);
+      .toEqual([
+        "tool_lifecycle",
+        "hermes_runtime_transport",
+        "hermes_runtime_retry",
+        "llm_retry_reason",
+      ]);
   });
 
   it("does not reopen a timeline stage for post-completion events", () => {
