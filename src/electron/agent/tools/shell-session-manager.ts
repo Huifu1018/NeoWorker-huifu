@@ -106,7 +106,14 @@ function terminateProcessTree(child: ChildProcess | null, signal: NodeJS.Signals
     // is harmless when the tree was already reaped.
     try {
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill();
+        child.kill("SIGKILL");
+      }
+    } catch {
+      // Ignore teardown races.
+    }
+    try {
+      if (child.exitCode === null && child.signalCode === null && child.pid) {
+        process.kill(child.pid, "SIGKILL");
       }
     } catch {
       // Ignore teardown races.
@@ -164,6 +171,11 @@ function terminatePersistedShellProcess(pid: number): void {
   if (process.platform === "win32") {
     try {
       execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { timeout: 5_000 });
+    } catch {
+      // The previous process may already be gone.
+    }
+    try {
+      process.kill(pid, "SIGKILL");
     } catch {
       // The previous process may already be gone.
     }
