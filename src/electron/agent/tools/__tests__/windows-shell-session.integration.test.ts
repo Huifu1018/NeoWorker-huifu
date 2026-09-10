@@ -45,6 +45,20 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
             { encoding: "utf8" },
           ),
         );
+        console.error(
+          "[windows-shell-session:cleanup-process-details]",
+          execFileSync(
+            "powershell.exe",
+            [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('pwsh.exe','cmd.exe') } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List",
+            ],
+            { encoding: "utf8" },
+          ),
+        );
       } catch {
         // Best effort diagnostics only.
       }
