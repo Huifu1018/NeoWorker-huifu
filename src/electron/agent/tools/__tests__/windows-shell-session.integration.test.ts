@@ -74,7 +74,20 @@ describe.skipIf(process.platform !== "win32")("Windows persistent shell session"
   });
 
   afterEach(async () => {
-    await manager.closeSession(taskId, workspaceId);
+    const key = `task:${workspaceId}:${taskId}`;
+    const runtime = (manager as unknown as { sessions: Map<string, { process?: { pid?: number; exitCode?: number | null }; info: unknown }> }).sessions.get(key);
+    console.error("[windows-shell-session:before-close]", JSON.stringify({
+      key,
+      pid: runtime?.process?.pid,
+      exitCode: runtime?.process?.exitCode,
+      info: runtime?.info,
+    }));
+    const closed = await manager.closeSession(taskId, workspaceId);
+    console.error("[windows-shell-session:after-close]", JSON.stringify({
+      closed,
+      pid: runtime?.process?.pid,
+      exitCode: runtime?.process?.exitCode,
+    }));
     await removeWorkspaceEventually(workspace);
   });
 
