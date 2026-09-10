@@ -15,6 +15,8 @@ export interface HermesToolHostMcpOptions {
     toolCallId: string;
     input: unknown;
     signal: AbortSignal;
+    /** Bounded NeoWorker recovery snapshot captured before dispatch. */
+    checkpoint?: Record<string, unknown>;
   }) => Promise<ToolHostResponse>;
   /** Bind to an ephemeral loopback port by default. */
   port?: number;

@@ -58,9 +58,24 @@ describe("Executor Hermes recovery", () => {
     const result = await runtime.prompt("host-tool");
     expect(instance.executeToolWithHeartbeat).toHaveBeenCalledWith(
       "run_command", { command: "echo host" }, 1000, expect.stringContaining("hermes-mcp:"), expect.any(AbortSignal),
+      expect.objectContaining({
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: "fixture-session",
+      }),
     );
     expect(JSON.parse(result.assistantText)).toMatchObject({ result: { isError: false, content: [{ text: '{"stdout":"host\\n","exitCode":0}' }] } });
     expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
+    const dispatchCheckpoint = instance.executeToolWithHeartbeat.mock.calls[0]?.[5];
+    expect(dispatchCheckpoint).toMatchObject({
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "fixture-session",
+      toolProgress: {
+        activeToolCallIds: [expect.stringContaining("hermes-mcp:")],
+      },
+    });
+    expect(runtime.getCheckpoint()?.toolProgress?.completedToolCallIds).toEqual([
+      expect.stringContaining("hermes-mcp:"),
+    ]);
     expect(instance.enforceToolBudget).toHaveBeenCalledWith("run_command");
     expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
     expect(instance.daemon.logEvent.mock.calls.some(([, type]) => type === "hermes_runtime_transport")).toBe(true);

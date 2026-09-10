@@ -9524,7 +9524,7 @@ ${transcript}
           taskId: this.task.id,
           requestTimeoutMs: 300_000,
           getTools: () => this.getAvailableTools(),
-          execute: async ({ toolName, toolCallId, input, signal }) => {
+          execute: async ({ toolName, toolCallId, input, signal, checkpoint }) => {
             this.enforceToolBudget(toolName);
             this.totalToolCallCount++;
             const correlation = { tool: toolName, toolUseId: toolCallId, toolCallId, runtime: "hermes" };
@@ -9536,6 +9536,7 @@ ${transcript}
                 this.getToolTimeoutMs(toolName, input),
                 toolCallId,
                 signal,
+                checkpoint,
               );
               this.emitEvent("tool_result", {
                 ...correlation, result: outcome.result, durationMs: outcome.durationMs,
@@ -12418,6 +12419,7 @@ ${transcript}
     toolTimeoutMs: number,
     toolCallId?: string,
     externalSignal?: AbortSignal,
+    checkpoint?: Record<string, unknown>,
   ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>> & { toolHostResponse: ToolHostResponse }> {
     const effectiveInput = this.preparePresentationWorkflowToolInput(
       toolName,
@@ -12450,6 +12452,7 @@ ${transcript}
         toolName,
         ...(toolCallId ? { toolCallId } : {}),
         input: effectiveInput as Any,
+        ...(checkpoint ? { checkpoint } : {}),
       });
       const coordinated = await withTimeout(
         this.toolHost.execute(

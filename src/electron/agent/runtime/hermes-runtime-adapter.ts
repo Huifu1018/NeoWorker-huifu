@@ -145,8 +145,12 @@ export class HermesRuntimeAdapter {
             // fails, fail closed so a side effect is never started without a
             // recovery marker.
             await this.persistCheckpoint();
+            const dispatchCheckpoint = this.getCheckpointPayload();
             try {
-              const response = await bridge.execute(input);
+              const response = await bridge.execute({
+                ...input,
+                ...(dispatchCheckpoint ? { checkpoint: dispatchCheckpoint } : {}),
+              });
               this.updateToolProgress(
                 input.toolCallId,
                 response.status === "success"
@@ -156,7 +160,11 @@ export class HermesRuntimeAdapter {
                     : "failed",
               );
               await this.persistCheckpoint();
-              return response;
+              const responseCheckpoint = this.getCheckpointPayload();
+              return {
+                ...response,
+                ...(responseCheckpoint ? { checkpoint: responseCheckpoint } : {}),
+              };
             } catch (error) {
               // A transport/runtime rejection does not tell us whether a
               // side effect reached the host. Keep it in the checkpoint and
@@ -510,6 +518,30 @@ export class HermesRuntimeAdapter {
         : {}),
       ...(Number.isFinite(logSequence)
         ? { logSequence: Math.max(0, Math.floor(logSequence as number)) }
+        : {}),
+    };
+  }
+
+  /**
+   * Convert the internal checkpoint into the versioned host protocol shape.
+   * The returned object is a fresh bounded snapshot so a bridge cannot mutate
+   * the adapter's recovery state while a tool is running.
+   */
+  private getCheckpointPayload(): Record<string, unknown> | undefined {
+    const checkpoint = this.getCheckpoint();
+    if (!checkpoint) return undefined;
+    return {
+      ...checkpoint,
+      ...(checkpoint.toolProgress
+        ? {
+            toolProgress: {
+              ...checkpoint.toolProgress,
+              activeToolCallIds: [...checkpoint.toolProgress.activeToolCallIds],
+              completedToolCallIds: [...checkpoint.toolProgress.completedToolCallIds],
+              failedToolCallIds: [...checkpoint.toolProgress.failedToolCallIds],
+              unknownToolCallIds: [...checkpoint.toolProgress.unknownToolCallIds],
+            },
+          }
         : {}),
     };
   }

@@ -15,12 +15,22 @@ describe("NeoWorker tool host protocol", () => {
       taskId: "task-1",
       toolName: "read_file",
       input: { path: "README.md" },
+      checkpoint: {
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: "session-1",
+        cwd: "/workspace",
+        agentVersion: "fixture",
+      },
     });
     expect(request).toMatchObject({
       toolCallId: expect.stringContaining("read_file:"),
       requestId: expect.stringContaining("task-1:"),
       schemaVersion: TOOL_HOST_SCHEMA_VERSION,
       toolName: "read_file",
+      checkpoint: {
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: "session-1",
+      },
     });
   });
 
@@ -42,7 +52,25 @@ describe("NeoWorker tool host protocol", () => {
     };
     const coordinator = { executeTool: vi.fn().mockResolvedValue(outcome) } as Any;
     const host = new NeoWorkerToolHost(coordinator);
-    const request = createToolHostRequest({ taskId: "task-1", toolName: "read_file", toolCallId: "call-1", input: {} });
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-1",
+      cwd: "/workspace",
+      agentVersion: "fixture",
+      toolProgress: {
+        activeToolCallIds: ["call-1"],
+        completedToolCallIds: [],
+        failedToolCallIds: [],
+        unknownToolCallIds: [],
+      },
+    };
+    const request = createToolHostRequest({
+      taskId: "task-1",
+      toolName: "read_file",
+      toolCallId: "call-1",
+      input: {},
+      checkpoint,
+    });
     const execution = await host.execute(request, context);
     expect(coordinator.executeTool).toHaveBeenCalledWith("read_file", {}, context, "call-1");
     expect(execution.outcome).toBe(outcome);
@@ -52,6 +80,7 @@ describe("NeoWorker tool host protocol", () => {
       schemaVersion: TOOL_HOST_SCHEMA_VERSION,
       status: "success",
       result: outcome.result,
+      checkpoint,
     });
   });
 
