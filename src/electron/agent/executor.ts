@@ -135,6 +135,11 @@ import {
 import { HermesAcpError } from "./runtime/hermes-acp-client";
 import { resolveHermesHostLauncher } from "./runtime/hermes-host-launcher";
 import {
+  buildHermesFollowUpPrompt,
+  buildHermesInitialPrompt,
+  buildHermesRecoveryPrompt,
+} from "./runtime/hermes-task-prompt";
+import {
   buildWorkerRolePrompt,
   resolveWorkerRoleKind,
 } from "./runtime/worker-role-registry";
@@ -4694,7 +4699,29 @@ export class TaskExecutor {
       // A pause can race with runtime construction. Mark the adapter before
       // prompting so it creates/persists a checkpoint but never starts tools.
       if (this.paused) await runtime.pause();
-      const result = await runtime.prompt(initialPrompt || this.getContractPrompt() || "");
+      const checkpoint = runtime.getCheckpoint();
+      const isResuming = Boolean(checkpoint?.sessionId);
+      const prompt = isResuming
+        ? buildHermesRecoveryPrompt({
+            taskPrompt: this.getContractPrompt() || initialPrompt || "",
+            workspacePath: this.workspace.path,
+          })
+        : buildHermesInitialPrompt({
+            taskPrompt: this.getContractPrompt() || initialPrompt || "",
+            workspacePath: this.workspace.path,
+            contextNotes: this.taskContextNotes,
+            appliedSkillContext: this.buildAppliedSkillContext(),
+          });
+      this.emitEvent("log", {
+        message: isResuming
+          ? "Hermes runtime resuming from checkpoint with guarded retry."
+          : "Hermes runtime starting with bounded host/task context.",
+        mode: isResuming ? "checkpoint_retry" : "initial_prompt",
+        checkpointSessionId: checkpoint?.sessionId,
+      });
+      const result = isResuming
+        ? await runtime.retry(prompt)
+        : await runtime.prompt(prompt);
       this.hermesCheckpoint = runtime.getCheckpoint();
       if (this.paused && result.stopReason === "cancelled") {
         this.daemon.updateTaskStatus(this.task.id, "paused");
@@ -4722,7 +4749,13 @@ export class TaskExecutor {
     if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
       const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
       this.hermesRuntimeAdapter = runtime;
-      const followUp = this.buildQuotedAssistantContextMessage(message, quotedAssistantMessage);
+      const followUp = buildHermesFollowUpPrompt({
+        message: this.buildQuotedAssistantContextMessage(
+          message,
+          quotedAssistantMessage,
+        ),
+        workspacePath: this.workspace.path,
+      });
       this.daemon.updateTaskStatus(this.task.id, "executing");
       this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
       this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
@@ -46400,7 +46433,11 @@ Return ONLY a JSON object:
     this.emitEvent("executing", { message: "Resuming Hermes session from checkpoint" });
     try {
       const continuation =
-        "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.";
+        buildHermesFollowUpPrompt({
+          message:
+            "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.",
+          workspacePath: this.workspace.path,
+        });
       const toolProgress = runtime.getCheckpoint()?.toolProgress;
       const result =
         toolProgress?.unknownToolCallIds?.length || toolProgress?.activeToolCallIds?.length

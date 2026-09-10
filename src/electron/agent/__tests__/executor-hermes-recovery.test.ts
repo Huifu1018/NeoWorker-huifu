@@ -152,6 +152,61 @@ describe("Executor Hermes recovery", () => {
     expect(runtime.close).toHaveBeenCalledOnce();
   });
 
+  it("uses a guarded retry prompt when initial execution finds a persisted checkpoint", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-recover",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+      toolProgress: {
+        activeToolCallIds: ["active-1"],
+        completedToolCallIds: [],
+        failedToolCallIds: [],
+        unknownToolCallIds: [],
+      },
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      retry: vi.fn(async (prompt: string) => ({
+        assistantText: "recovered",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+        prompt,
+      })),
+      prompt: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "initial-recovery", rawPrompt: "Build the project." };
+    instance.hermesCheckpoint = checkpoint;
+    instance.paused = false;
+    instance.taskContextNotes = ["Persisted task context"];
+    instance.appliedSkills = [];
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "Build the project.",
+    );
+
+    expect(runtime.retry).toHaveBeenCalledWith(
+      expect.stringContaining("<neoworker_recovery_v1>"),
+    );
+    expect(runtime.retry.mock.calls[0][0]).toContain(
+      "Do not automatically repeat a tool call whose side effect result is unknown",
+    );
+    expect(runtime.prompt).not.toHaveBeenCalled();
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "recovered",
+      "hermes runtime completed",
+    );
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
   it("restores a persisted session after executor recreation instead of creating a conversation", async () => {
     fixtureTransport();
     const events: Array<{ payload: unknown }> = [];

@@ -4,6 +4,7 @@ import { HermesAcpClient } from "../hermes-acp-client";
 import { HermesRuntimeAdapter, type HermesSessionCheckpoint } from "../hermes-runtime-adapter";
 
 const fixture = path.join(__dirname, "fixtures", "hermes-acp-fixture.cjs");
+const delayedShutdownFixture = path.join(__dirname, "fixtures", "hermes-acp-delayed-shutdown.cjs");
 const options = { command: process.execPath, args: [fixture], cwd: __dirname, timeoutMs: 5000 };
 const cleanup: Array<() => void> = [];
 afterEach(async () => {
@@ -94,6 +95,27 @@ describe("Hermes ACP subprocess transport", () => {
     await expect(c.request('wait', {}, 100)).rejects.toMatchObject({code:'REQUEST_TIMEOUT'});
     await c.start(options);
     expect(await c.request('echo', {restarted:true})).toEqual({restarted:true});
+  });
+  it("shares shutdown and waits before starting a replacement process", async () => {
+    const c = new HermesAcpClient();
+    const delayedOptions = {
+      command: process.execPath,
+      args: [delayedShutdownFixture],
+      cwd: __dirname,
+      timeoutMs: 5000,
+    };
+    await c.start(delayedOptions);
+    expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });
+
+    const startedAt = Date.now();
+    const firstStop = c.stop();
+    const secondStop = c.stop();
+    await Promise.all([firstStop, secondStop]);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150);
+
+    await c.start(delayedOptions);
+    expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });
+    await c.stop();
   });
   it("rejects a missing executable and permits a subsequent start", async () => {
     const c = new HermesAcpClient(); cleanup.push(() => c.stop());

@@ -86,11 +86,13 @@ function object(value: unknown): value is AcpObject {
 /** Bidirectional ACP transport. No filesystem or shell permissions are implied. */
 export class HermesAcpClient {
   private connection?: Connection;
+  private stopping?: Promise<void>;
   private sequence = 0;
   onNotification?: (notification: HermesAcpNotification) => void;
   onRequest?: (method: string, params: AcpObject, context: AcpRequestContext) => Promise<unknown>;
 
   async start(options: HermesAcpClientOptions): Promise<void> {
+    if (this.stopping) await this.stopping;
     if (this.connection && !this.connection.closed) {
       throw new HermesAcpError("Hermes ACP is already running", "ALREADY_RUNNING");
     }
@@ -288,9 +290,19 @@ export class HermesAcpClient {
    * child-process event can race with workspace cleanup and surface as an
    * unrelated ENOENT/EBUSY failure.
    */
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    if (this.stopping) return this.stopping;
     const conn = this.connection;
-    if (!conn) return;
+    if (!conn) return Promise.resolve();
+    const stopPromise = this.stopConnection(conn);
+    const stopping = stopPromise.finally(() => {
+      if (this.stopping === stopping) this.stopping = undefined;
+    });
+    this.stopping = stopping;
+    return stopping;
+  }
+
+  private async stopConnection(conn: Connection): Promise<void> {
     const child = conn.child;
     let timer: NodeJS.Timeout | undefined;
     let settled = false;
