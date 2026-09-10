@@ -21,7 +21,7 @@
 | 持久 Shell 会话失效 cwd 自愈 | 通过集成回归 | 工作区被删除或迁移后，启动前会把失效 cwd 修复到当前工作区；子进程 `error` 会结构化结束挂起命令，不再产生未处理 `spawn ENOENT` |
 | 持久 Shell 长输出边界 | 通过集成回归 | 持久会话内部缓冲限制为 1,000,000 字符，结果限制为 100KB 并保留尾部；长输出后下一条命令可继续执行 |
 | Windows Hermes 启动路径 | 通过单元验证 | `hermes-host-launcher.test.ts` 覆盖显式 Python、Hermes shebang 和带引号 PATH 目录，避免含空格的虚拟环境路径回退到错误解释器 |
-| Windows runner 执行链 | 通过 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上完成 Electron 构建与 Hermes/Tool Host/Shell 专项测试；最新运行通过 15 个测试文件、181 个测试，跳过 1 个平台限定测试 |
+| Windows runner 执行链 | 通过 CI | `.github/workflows/ci.yml` 的 `windows-agent-runtime` 在 `windows-latest` 上完成 Electron 构建与 Hermes/Tool Host/Shell 专项测试；最新运行通过 15 个测试文件、184 个测试，跳过 1 个平台限定测试 |
 | 长任务与故障注入 | 通过专项验证 | `hermes-fault-injection.test.ts` 验证 32 项只读任务受并发上限约束、失败读取不污染缓存、副作用调用即使请求并发也保持串行 |
 | 普通 CI 打包门禁 | 已收紧 | push/PR 只执行编译和执行链验证；仅手动 `workflow_dispatch` 才运行打包步骤，且矩阵打包依赖 Windows 执行链 job 通过 |
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
@@ -61,7 +61,7 @@
 - 新建 ACP 任务已接入 NeoWorker Tool Host；旧 checkpoint 的原生工具所有权保持不变。真实模型文件/Shell/审批链路曾由 `run-hermes-live-hostchain.mjs` 验收；最新真实复测受外部 provider HTTP 502 queue full 阻断，取消、暂停后的恢复和未知副作用确认由确定性回归及 Windows runner 覆盖。
 - Hermes API Server（8642）是完整的 Hermes Agent Runtime，会执行 Hermes-native 工具；该路径不满足 NeoWorker 本地副作用所有权要求，现已在 Provider 描述和文档中明确标注。
 - Hermes Model Proxy（8645）只是凭据转发器，不运行 Agent Loop。使用该入口时，NeoWorker 原生 SessionRuntime 收到模型返回的工具调用，并通过版本化 Tool Host 边界执行，因此文件系统、Shell、审批、沙箱和任务日志由 NeoWorker 负责。
-- 全量 CI（2026-09-10，提交 `bf67d97`）为 854 个测试文件：796 通过、54 失败、4 跳过；8,580 个测试：8,402 通过、165 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
+- 全量 CI（2026-09-10，提交 `d78f7b8`）为 854 个测试文件：796 通过、54 失败、4 跳过；8,583 个测试：8,405 通过、165 失败、11 跳过、2 todo。失败集中在既有 mailbox/managed/memory/renderer/Office/node-pty 等环境或基线测试，本轮 Hermes、Shell 和 Windows runner 专项未出现新增回归。Windows Agent Runtime、Electron 构建、严格类型检查、lint 和 secret scan 均通过；本地新增的生命周期、暂停恢复重试、取消退避、依赖安装、并发 shutdown、Prompt 分层和 checkpoint guarded retry 定向测试均通过。
 
 ## 下一步
 
