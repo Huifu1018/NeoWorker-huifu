@@ -286,8 +286,17 @@ export class HermesToolHostMcpServer {
         isError: outcome.status !== "success",
       };
     } catch (error) {
+      // Keep transport/runtime failures machine-readable just like ordinary
+      // ToolHost responses. Hermes can then distinguish a failed call from a
+      // malformed MCP response and decide whether to inspect or recover.
+      const text = buildToolResultEnvelope({
+        toolUseId: toolCallId,
+        toolName: name,
+        status: controller.signal.aborted ? "cancelled" : "error",
+        error,
+      }).modelPayload;
       return {
-        content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+        content: [{ type: "text", text }],
         isError: true,
       };
     } finally {

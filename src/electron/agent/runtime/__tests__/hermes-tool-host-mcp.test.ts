@@ -115,8 +115,44 @@ describe("HermesToolHostMcpServer", () => {
     const token = endpoint.headers[0]!.value.replace(/^Bearer /, "");
     const init = await post(server, token, { jsonrpc: "2.0", id: 1, method: "initialize" });
     const call = await post(server, token, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "run_command", arguments: {} } }, init.headers.get("mcp-session-id")!);
-    expect(await call.json()).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("timed out") }] } });
+    const payload = await call.json() as Any;
+    expect(payload).toMatchObject({ result: { isError: true } });
+    expect(JSON.parse(payload.result.content[0].text)).toMatchObject({
+      error: expect.stringContaining("timed out"),
+    });
     expect(signal?.aborted).toBe(true);
+  });
+
+  it("serializes rejected host dispatches as structured tool errors", async () => {
+    const server = new HermesToolHostMcpServer({
+      taskId: "dispatch-error",
+      getTools: () => [tool],
+      execute: async () => {
+        throw Object.assign(new Error("TOOL_CALL_OUTCOME_UNKNOWN"), {
+          code: "TOOL_CALL_OUTCOME_UNKNOWN",
+        });
+      },
+    });
+    servers.push(server);
+    const endpoint = await server.start();
+    const token = endpoint.headers[0]!.value.replace(/^Bearer /, "");
+    const init = await post(server, token, { jsonrpc: "2.0", id: 1, method: "initialize" });
+    const call = await post(
+      server,
+      token,
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "run_command", arguments: { command: "echo never" } },
+      },
+      init.headers.get("mcp-session-id")!,
+    );
+    const payload = await call.json() as Any;
+    expect(payload).toMatchObject({ result: { isError: true } });
+    expect(JSON.parse(payload.result.content[0].text)).toMatchObject({
+      error: "TOOL_CALL_OUTCOME_UNKNOWN",
+    });
   });
 
   it("cancels active calls, rejects late dispatches and permits explicit resume", async () => {

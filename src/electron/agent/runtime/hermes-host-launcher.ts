@@ -14,14 +14,18 @@ export function resolveHermesPythonCommand(
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   const names = platform === "win32" ? ["hermes.exe", "hermes.cmd", "hermes"] : ["hermes"];
   for (const entry of pathValue.split(platform === "win32" ? ";" : ":")) {
-    if (!entry.trim()) continue;
+    const normalizedEntry = entry.trim().replace(/^"|"$/g, "");
+    if (!normalizedEntry) continue;
     for (const name of names) {
-      const executable = pathApi.join(entry.replace(/^"|"$/g, ""), name);
+      const executable = pathApi.join(normalizedEntry, name);
       if (!fs.existsSync(executable)) continue;
       if (platform === "win32") {
         // venvs keep Python in Scripts; a system install keeps it one level
         // above Scripts. Use that interpreter instead of a different PATH one.
-        for (const candidate of [pathApi.join(entry, "python.exe"), pathApi.join(entry, "..", "python.exe")]) {
+        for (const candidate of [
+          pathApi.join(normalizedEntry, "python.exe"),
+          pathApi.join(normalizedEntry, "..", "python.exe"),
+        ]) {
           if (fs.existsSync(candidate)) return candidate;
         }
       } else {
