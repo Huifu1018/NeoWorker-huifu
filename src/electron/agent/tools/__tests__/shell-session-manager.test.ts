@@ -10,8 +10,6 @@ describe("shell-session-manager", () => {
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-Command",
-        expect.stringContaining("[Console]::In.ReadLine()"),
       ]);
       expect(_testUtils.getTerminalShellArgs("C:\\Windows\\System32\\cmd.exe")).toEqual(["/Q"]);
       return;
@@ -30,8 +28,11 @@ describe("shell-session-manager", () => {
       "win32",
     );
     expect(wrapper).toContain("[System.Convert]::FromBase64String(");
-    expect(wrapper).toContain("Set-Location -LiteralPath 'C:\\workspace\\中文目录'");
-    expect(wrapper).toContain("__NEOWORKER_DONE__:task-1:1:");
+    const encodedWrapper = wrapper.match(/FromBase64String\('([^']+)'\)/)?.[1];
+    expect(encodedWrapper).toBeTruthy();
+    const decodedWrapper = Buffer.from(encodedWrapper || "", "base64").toString("utf8");
+    expect(decodedWrapper).toContain("Set-Location -LiteralPath 'C:\\workspace\\中文目录'");
+    expect(decodedWrapper).toContain("__NEOWORKER_DONE__:task-1:1:");
     expect(wrapper).not.toContain("set +e");
     expect(wrapper).not.toContain("eval \"$__neoworker_command\"");
   });
