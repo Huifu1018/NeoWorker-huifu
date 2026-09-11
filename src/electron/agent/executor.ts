@@ -4603,6 +4603,31 @@ export class TaskExecutor {
     return this.getAcpxExternalRuntimeConfig()?.agent === "hermes";
   }
 
+  private isExternalRuntimeFallbackAllowed(): boolean {
+    const runtime = this.getAcpxExternalRuntimeConfig();
+    if (!runtime) return true;
+    if (runtime.agent === "claude") return false;
+    if (runtime.agent !== "hermes") return true;
+    return this.task.agentConfig?.runtimePreference === "auto";
+  }
+
+  private emitRuntimeStatus(
+    runtimeAgent: string,
+    state: "active" | "failed" | "fallback",
+    message: string,
+    details: Record<string, unknown> = {},
+  ): void {
+    this.emitEvent("progress_update", {
+      phase: "runtime",
+      runtime: "acpx",
+      runtimeAgent,
+      runtimePreference: this.task.agentConfig?.runtimePreference || "auto",
+      runtimeState: state,
+      message,
+      ...details,
+    });
+  }
+
   private getAcpxRuntimeAgentDisplayName(): string {
     const runtime = this.getAcpxExternalRuntimeConfig();
     return getAcpxAgentDisplayName(runtime?.agent || "codex");
@@ -4750,6 +4775,8 @@ export class TaskExecutor {
       phase: "acpx_runtime",
       message: reason,
       state: "fallback",
+      runtimeState: "fallback",
+      fallbackTarget: "native",
     });
     this.emitEvent("log", {
       ...runtimeMetadata,
@@ -4763,6 +4790,15 @@ export class TaskExecutor {
       ...this.task,
       agentConfig: nextConfig,
     };
+    try {
+      this.daemon.updateTask(this.task.id, { agentConfig: nextConfig });
+    } catch (error) {
+      this.emitEvent("log", {
+        ...runtimeMetadata,
+        message: "Failed to persist Auto runtime fallback state.",
+        error: String((error as Any)?.message || error),
+      });
+    }
   }
 
   private isHermesTransientRuntimeError(error: unknown): boolean {
@@ -4900,7 +4936,15 @@ export class TaskExecutor {
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", {
       message: `Delegating task to ${runtimeAgentName} via ACP`,
+      runtime: "acpx",
+      runtimeAgent: this.getAcpxExternalRuntimeConfig()?.agent,
+      runtimeState: "active",
     });
+    this.emitRuntimeStatus(
+      this.getAcpxExternalRuntimeConfig()?.agent || "acpx",
+      "active",
+      `Running with ${runtimeAgentName} ACP runtime`,
+    );
 
     try {
       await runner.createSession();
@@ -4941,7 +4985,19 @@ export class TaskExecutor {
     const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
     this.activateHermesRuntime(runtime);
     this.daemon.updateTaskStatus(this.task.id, "executing");
-    this.emitEvent("executing", { message: "Delegating task to Hermes Agent Runtime" });
+    this.emitEvent("executing", {
+      message: "Delegating task to Hermes Agent Runtime",
+      runtime: "acpx",
+      runtimeAgent: "hermes",
+      runtimeState: "active",
+      harness: "hermes",
+    });
+    this.emitRuntimeStatus(
+      "hermes",
+      "active",
+      "Running with Hermes Harness via ACP",
+      { harness: "hermes" },
+    );
     let keepWarm = false;
     try {
       // A pause can race with runtime construction. Mark the adapter before
@@ -31520,7 +31576,20 @@ You are continuing a previous conversation. The context from the previous conver
               ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
           ) {
             const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
-            if (this.getAcpxExternalRuntimeConfig()?.agent === "claude") {
+            const fallbackAllowed = this.isExternalRuntimeFallbackAllowed();
+            this.emitRuntimeStatus(
+              this.getAcpxExternalRuntimeConfig()?.agent || "acpx",
+              fallbackAllowed ? "fallback" : "failed",
+              fallbackAllowed
+                ? `${runtimeAgentName} ACP runtime unavailable; falling back to NeoWorker native execution`
+                : `${runtimeAgentName} ACP runtime unavailable; forced runtime cannot fall back`,
+              {
+                errorCode:
+                  error instanceof HermesAcpError ? String(error.code) : undefined,
+                fallbackTarget: fallbackAllowed ? "native" : undefined,
+              },
+            );
+            if (!fallbackAllowed) {
               throw new Error(
                 `${runtimeAgentName} acpx runtime unavailable. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`,
               );
@@ -43546,7 +43615,20 @@ Return ONLY a JSON object:
             ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
         ) {
           const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
-          if (this.getAcpxExternalRuntimeConfig()?.agent === "claude") {
+          const fallbackAllowed = this.isExternalRuntimeFallbackAllowed();
+          this.emitRuntimeStatus(
+            this.getAcpxExternalRuntimeConfig()?.agent || "acpx",
+            fallbackAllowed ? "fallback" : "failed",
+            fallbackAllowed
+              ? `${runtimeAgentName} ACP runtime unavailable; falling back to NeoWorker native execution`
+              : `${runtimeAgentName} ACP runtime unavailable; forced runtime cannot fall back`,
+            {
+              errorCode:
+                error instanceof HermesAcpError ? String(error.code) : undefined,
+              fallbackTarget: fallbackAllowed ? "native" : undefined,
+            },
+          );
+          if (!fallbackAllowed) {
             throw new Error(
               `${runtimeAgentName} acpx runtime unavailable for follow-up. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`,
             );

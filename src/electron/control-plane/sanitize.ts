@@ -12,6 +12,7 @@ import type {
   IntegrationMentionSelection,
   ExecutionMode,
   TaskDomain,
+  TaskRuntimePreference,
   PermissionMode,
   QuotedAssistantMessage,
 } from "../../shared/types";
@@ -36,6 +37,7 @@ export function sanitizeTaskMessageParams(params: unknown): {
   activeArtifactContext?: ActiveArtifactContext;
   executionMode?: ExecutionMode;
   taskDomain?: TaskDomain;
+  runtimePreference?: TaskRuntimePreference;
   permissionMode?: PermissionMode;
   shellAccess?: boolean;
   integrationMentions?: IntegrationMentionSelection[];
@@ -113,6 +115,15 @@ export function sanitizeTaskMessageParams(params: unknown): {
     taskDomain = parsed.data;
   }
 
+  let runtimePreference: TaskRuntimePreference | undefined;
+  if (typeof p.runtimePreference === "string") {
+    const parsed = z.enum(["auto", "hermes", "native"]).safeParse(p.runtimePreference);
+    if (!parsed.success) {
+      throw { code: ErrorCodes.INVALID_PARAMS, message: "Invalid runtimePreference" };
+    }
+    runtimePreference = parsed.data;
+  }
+
   let permissionMode: PermissionMode | undefined;
   if (typeof p.permissionMode === "string") {
     const PermissionModeSchema = z.enum([
@@ -165,6 +176,7 @@ export function sanitizeTaskMessageParams(params: unknown): {
     activeArtifactContext,
     executionMode,
     taskDomain,
+    runtimePreference,
     permissionMode,
     shellAccess,
     integrationMentions,

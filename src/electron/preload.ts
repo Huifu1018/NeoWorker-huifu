@@ -2998,6 +2998,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       activeArtifactContext?: import("../shared/types").ActiveArtifactContext;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
+      runtimePreference?: import("../shared/types").TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;
@@ -3018,6 +3019,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ? { executionMode: options.executionMode }
         : {}),
       ...(options?.taskDomain ? { taskDomain: options.taskDomain } : {}),
+      ...(options?.runtimePreference
+        ? { runtimePreference: options.runtimePreference }
+        : {}),
       ...(options?.requestedSkillId
         ? { requestedSkillId: options.requestedSkillId }
         : {}),
@@ -6903,6 +6907,7 @@ export interface ElectronAPI {
       activeArtifactContext?: import("../shared/types").ActiveArtifactContext;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
+      runtimePreference?: import("../shared/types").TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;

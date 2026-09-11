@@ -72,6 +72,7 @@ import {
   QuotedAssistantMessage,
   ExecutionMode,
   TaskDomain,
+  TaskRuntimePreference,
   AgentConfig,
   LlmProfile,
   PermissionMode,
@@ -6013,6 +6014,7 @@ export function App() {
       verificationAgent?: boolean;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
+      runtimePreference?: TaskRuntimePreference;
       chronicleMode?: "inherit" | "enabled" | "disabled";
       videoGenerationMode?: boolean;
       llmProfile?: LlmProfile;
@@ -6206,6 +6208,7 @@ export function App() {
     const verificationAgent = options?.verificationAgent === true;
     const executionMode = options?.executionMode;
     const taskDomain = options?.taskDomain;
+    const runtimePreference = options?.runtimePreference;
     const chronicleMode = options?.chronicleMode;
     const videoGenerationMode = options?.videoGenerationMode === true;
     const permissionMode = options?.permissionMode;
@@ -6243,6 +6246,7 @@ export function App() {
       verificationAgent ||
       executionMode ||
       taskDomain ||
+      runtimePreference ||
       chronicleMode ||
       videoGenerationMode ||
       permissionMode ||
@@ -6285,6 +6289,7 @@ export function App() {
             ...(verificationAgent ? { verificationAgent: true } : {}),
             ...(executionMode ? { executionMode } : {}),
             ...(taskDomain ? { taskDomain } : {}),
+            ...(runtimePreference ? { runtimePreference } : {}),
             ...(chronicleMode ? { chronicleMode } : {}),
             ...(videoGenerationMode ? { videoGenerationMode: true } : {}),
             ...(permissionMode ? { permissionMode } : {}),
@@ -6868,6 +6873,7 @@ export function App() {
       activeArtifactContext?: ActiveArtifactContext;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
+      runtimePreference?: TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;

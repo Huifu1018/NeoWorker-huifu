@@ -245,6 +245,7 @@ describe("TaskExecutor entrypoint guards", () => {
       throw new AcpxRuntimeUnavailableError();
     });
     executor.disableExternalRuntimeForFallback = vi.fn();
+    executor.emitEvent = vi.fn();
     executor.sendMessageUnified = vi.fn(async () => undefined);
     executor.sendMessageLegacy = vi.fn(async () => undefined);
 
@@ -422,6 +423,7 @@ describe("TaskExecutor entrypoint guards", () => {
       throw new AcpxRuntimeUnavailableError();
     });
     executor.disableExternalRuntimeForFallback = vi.fn();
+    executor.emitEvent = vi.fn();
     executor.sendMessageUnified = vi.fn(async () => undefined);
     executor.sendMessageLegacy = vi.fn(async () => undefined);
     executor.getAcpxExternalRuntimeConfig = vi.fn(
@@ -433,6 +435,85 @@ describe("TaskExecutor entrypoint guards", () => {
     );
     expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
     expect(executor.sendMessageUnified).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back when a forced Hermes runtime is unavailable", async () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+
+    executor.task = {
+      agentConfig: {
+        runtimePreference: "hermes",
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+          sessionMode: "persistent",
+          outputMode: "json",
+          permissionMode: "approve-reads",
+        },
+      },
+    };
+    executor.isAcpxExternalRuntimeTask = vi.fn(() => true);
+    executor.sendMessageWithAcpxRuntime = vi.fn(async () => {
+      throw new AcpxRuntimeUnavailableError();
+    });
+    executor.disableExternalRuntimeForFallback = vi.fn();
+    executor.emitEvent = vi.fn();
+    executor.sendMessageUnified = vi.fn(async () => undefined);
+
+    await expect(executor.sendMessageUnlocked("hello")).rejects.toThrow(
+      "Hermes Agent acpx runtime unavailable for follow-up",
+    );
+    expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
+    expect(executor.sendMessageUnified).not.toHaveBeenCalled();
+    expect(executor.emitEvent).toHaveBeenCalledWith(
+      "progress_update",
+      expect.objectContaining({
+        runtimeAgent: "hermes",
+        runtimeState: "failed",
+      }),
+    );
+  });
+
+  it("falls back from an Auto Hermes runtime when Hermes is unavailable", async () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+
+    executor.task = {
+      id: "auto-hermes-follow-up",
+      agentConfig: {
+        runtimePreference: "auto",
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+          sessionMode: "persistent",
+          outputMode: "json",
+          permissionMode: "approve-reads",
+        },
+      },
+    };
+    executor.isAcpxExternalRuntimeTask = vi.fn(() => true);
+    executor.sendMessageWithAcpxRuntime = vi.fn(async () => {
+      throw new AcpxRuntimeUnavailableError();
+    });
+    executor.disableExternalRuntimeForFallback = vi.fn();
+    executor.emitEvent = vi.fn();
+    executor.sendMessageUnified = vi.fn(async () => undefined);
+
+    await executor.sendMessageUnlocked("hello");
+
+    expect(executor.disableExternalRuntimeForFallback).toHaveBeenCalledTimes(1);
+    expect(executor.sendMessageUnified).toHaveBeenCalledWith(
+      "hello",
+      undefined,
+      undefined,
+    );
+    expect(executor.emitEvent).toHaveBeenCalledWith(
+      "progress_update",
+      expect.objectContaining({
+        runtimeAgent: "hermes",
+        runtimeState: "fallback",
+        fallbackTarget: "native",
+      }),
+    );
   });
 
   it("finalizeFollowUpCompletion syncs task row and in-memory task state", () => {

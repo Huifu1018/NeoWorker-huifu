@@ -32,6 +32,7 @@ import {
   StepFeedbackAction,
   ExecutionMode,
   TaskDomain,
+  TaskRuntimePreference,
   InputRequest,
   QuotedAssistantMessage,
   PermissionMode,
@@ -729,6 +730,7 @@ interface MainContentProps {
     options?: {
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
+      runtimePreference?: TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;
@@ -5534,6 +5536,9 @@ function MainContentComponent({
   const [chronicleEnabledForTask, setChronicleEnabledForTask] = useState(true);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [executionModeDirty, setExecutionModeDirty] = useState(false);
+  const [runtimePreference, setRuntimePreference] =
+    useState<TaskRuntimePreference>("auto");
+  const [runtimePreferenceDirty, setRuntimePreferenceDirty] = useState(false);
   const [chatModeUpgradePrompt, setChatModeUpgradePrompt] = useState(false);
   const [defaultPermissionAccessMode, setDefaultPermissionAccessMode] =
     useState<PermissionAccessMode>("full");
@@ -5553,6 +5558,9 @@ function MainContentComponent({
     permissionAccessMode,
     shellEnabled,
   );
+  const composerRuntimeOverrides = runtimePreferenceDirty
+    ? { runtimePreference }
+    : {};
   const [modeSuggestions, setModeSuggestions] = useState<ModeSuggestion[]>([]);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const modeSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5573,6 +5581,7 @@ function MainContentComponent({
     const settings = deriveComposerTaskSettings(task.agentConfig);
     setExecutionMode(settings.executionMode);
     setTaskDomain(settings.taskDomain);
+    setRuntimePreference(settings.runtimePreference);
     setAutonomousModeEnabled(settings.autonomousModeEnabled);
     setCollaborativeModeEnabled(settings.collaborativeModeEnabled);
     setMultiLlmModeEnabled(settings.multiLlmModeEnabled);
@@ -5580,6 +5589,7 @@ function MainContentComponent({
     setChronicleEnabledForTask(settings.chronicleEnabledForTask);
     setVerificationAgentEnabled(settings.verificationAgentEnabled);
     setExecutionModeDirty(false);
+    setRuntimePreferenceDirty(false);
     setTaskDomainDirty(
       task.agentConfig?.taskDomain != null && settings.taskDomain !== "auto",
     );
@@ -5590,6 +5600,13 @@ function MainContentComponent({
     setExecutionMode(mode);
     setExecutionModeDirty(true);
   }, []);
+  const setRuntimePreferenceSelection = useCallback(
+    (preference: TaskRuntimePreference) => {
+      setRuntimePreference(preference);
+      setRuntimePreferenceDirty(true);
+    },
+    [],
+  );
   const composerModeSelection = deriveComposerModeSelection({
     executionMode,
     executionModeDirty,
@@ -5748,12 +5765,14 @@ function MainContentComponent({
               }
             : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
+          ...composerRuntimeOverrides,
           ...composerPermissionOverrides,
         });
       } else {
         onSendMessage(text, undefined, undefined, {
           ...(executionModeDirty ? { executionMode } : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
+          ...composerRuntimeOverrides,
           ...composerPermissionOverrides,
         });
       }
@@ -6144,6 +6163,8 @@ function MainContentComponent({
   const overflowToggleBtnRef = useRef<HTMLButtonElement>(null);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const modeDropdownRef = useRef<HTMLDivElement>(null);
+  const [showRuntimeDropdown, setShowRuntimeDropdown] = useState(false);
+  const runtimeDropdownRef = useRef<HTMLDivElement>(null);
   const [guardrailDefaultMaxAutoContinuations, setGuardrailDefaultMaxAutoContinuations] = useState<
     number | null
   >(null);
@@ -7430,6 +7451,22 @@ function MainContentComponent({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showModeDropdown]);
 
+  // Close runtime dropdown on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        runtimeDropdownRef.current &&
+        !runtimeDropdownRef.current.contains(e.target as Node)
+      ) {
+        setShowRuntimeDropdown(false);
+      }
+    };
+    if (showRuntimeDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showRuntimeDropdown]);
+
   // Close overflow menu on click outside (welcome view)
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -7668,6 +7705,90 @@ function MainContentComponent({
                 </button>
               );
             })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderComposerRuntimeControl = () => {
+    const runtimeOptions: Array<{
+      value: TaskRuntimePreference;
+      label: string;
+      hint: string;
+      Icon: typeof Sparkles;
+    }> = [
+      {
+        value: "auto",
+        label: translate("composer.runtime.auto", "Auto"),
+        hint: translate(
+          "composer.runtime.autoHint",
+          "Use Hermes for complex, multi-step tasks",
+        ),
+        Icon: Sparkles,
+      },
+      {
+        value: "hermes",
+        label: translate("composer.runtime.hermes", "Hermes"),
+        hint: translate(
+          "composer.runtime.hermesHint",
+          "Require Hermes Harness for this task",
+        ),
+        Icon: Compass,
+      },
+      {
+        value: "native",
+        label: translate("composer.runtime.native", "Native"),
+        hint: translate(
+          "composer.runtime.nativeHint",
+          "Use NeoWorker's native execution loop",
+        ),
+        Icon: Terminal,
+      },
+    ];
+    const selected = runtimeOptions.find((option) => option.value === runtimePreference) ||
+      runtimeOptions[0];
+    const SelectedIcon = selected.Icon;
+
+    return (
+      <div className="input-status-mode-wrap" ref={runtimeDropdownRef}>
+        <button
+          type="button"
+          className="input-status-mode menu-tooltip-target"
+          onClick={() => setShowRuntimeDropdown((visible) => !visible)}
+          data-tooltip={`${selected.label} · ${selected.hint}`}
+          aria-haspopup="listbox"
+          aria-expanded={showRuntimeDropdown}
+        >
+          <SelectedIcon size={12} aria-hidden />
+          {selected.label}
+        </button>
+        {showRuntimeDropdown && (
+          <div
+            className="input-status-mode-dropdown"
+            role="listbox"
+            aria-label={translate(
+              "composer.runtime.options",
+              "Runtime options",
+            )}
+          >
+            {runtimeOptions.map(({ value, label, hint, Icon }) => (
+              <button
+                key={value}
+                type="button"
+                className={`input-status-mode-option ${runtimePreference === value ? "active" : ""}`}
+                onClick={() => {
+                  setRuntimePreferenceSelection(value);
+                  setShowRuntimeDropdown(false);
+                }}
+                role="option"
+                aria-selected={runtimePreference === value}
+                title={hint}
+              >
+                <Icon size={14} aria-hidden />
+                <span>{label}</span>
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -9054,6 +9175,7 @@ function MainContentComponent({
             taskDomain,
             agentConfig: goalAgentConfig,
             ...createIntegrationMentionOptions,
+            ...composerRuntimeOverrides,
             ...activeComposerPermissionOverrides,
           },
           imagePayload,
@@ -9135,6 +9257,7 @@ function MainContentComponent({
                 executionMode: "plan",
                 taskDomain,
                 ...createIntegrationMentionOptions,
+                ...composerRuntimeOverrides,
                 ...activeComposerPermissionOverrides,
               }
             : shortcut.action === "review"
@@ -9146,6 +9269,7 @@ function MainContentComponent({
                   multitaskLaneCount: 4,
                   multitaskAssignmentMode: "auto_split",
                   ...createIntegrationMentionOptions,
+                  ...composerRuntimeOverrides,
                   ...activeComposerPermissionOverrides,
                 }
               : shortcut.action === "cost" || shortcut.action === "diagnostic"
@@ -9153,12 +9277,14 @@ function MainContentComponent({
                     executionMode: "analyze",
                     taskDomain,
                     ...createIntegrationMentionOptions,
+                    ...composerRuntimeOverrides,
                     ...activeComposerPermissionOverrides,
                   }
                 : {
                     executionMode: "plan",
                     taskDomain,
                     ...createIntegrationMentionOptions,
+                    ...composerRuntimeOverrides,
                     ...activeComposerPermissionOverrides,
                   };
         setComposerProcessingStage("creating");
@@ -9211,6 +9337,7 @@ function MainContentComponent({
         const modeOptions: CreateTaskOptions = {
           ...(executionModeDirty ? { executionMode } : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
+          ...composerRuntimeOverrides,
           chronicleMode: chronicleEnabledForTask ? "inherit" : "disabled",
           videoGenerationMode: taskDomain === "media" ? true : undefined,
           ...(executionModeDirty || clarifyingCheckinsEnabled || Boolean(composerSkillContext)
@@ -9270,6 +9397,7 @@ function MainContentComponent({
           ...(executionModeDirty ? { executionMode } : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
           ...(composerSkillContext ? { requestedSkillId: composerSkillContext.skillId } : {}),
+          ...composerRuntimeOverrides,
           integrationMentions: submittedIntegrationMentions,
           ...activeComposerPermissionOverrides,
         });
@@ -10294,6 +10422,7 @@ function MainContentComponent({
     onCreateTask(title, prompt, {
       executionMode: "plan",
       taskDomain: "auto",
+      ...composerRuntimeOverrides,
       ...composerPermissionOverrides,
     });
     setWelcomeTaskSuggestions((current) => current.filter((item) => item.id !== suggestion.id));
@@ -12679,6 +12808,7 @@ function MainContentComponent({
                 </div>
                 <div className="input-status-right">
                   {renderComposerModeControl()}
+                  {renderComposerRuntimeControl()}
                   {FEATURE_VISIBILITY.capabilityCenter &&
                     composerModeSelection !== "chat" && (
                     <div className="skills-menu-container" ref={skillsMenuRef}>
@@ -13718,6 +13848,7 @@ function MainContentComponent({
           </div>
           <div className="input-status-right">
             {renderComposerModeControl()}
+            {renderComposerRuntimeControl()}
             {FEATURE_VISIBILITY.capabilityCenter && composerModeSelection !== "chat" && (
               <div className="skills-menu-container" ref={skillsMenuRef}>
                 <button

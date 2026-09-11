@@ -31,6 +31,7 @@
 | Hermes 流式输出与 follow-up 终态 | 通过专项测试 | ACP message chunks 改走临时 `llm_streaming` 事件，避免逐 token 持久化；Hermes follow-up 返回后进入统一终态收口，防止任务停留在 `executing` |
 | Hermes ACP 会话复用 | 通过专项测试 | 成功 turn 在同一工作区保留 60 秒热会话；后续消息复用 ACP/MCP 连接，失败、取消、暂停和工作区切换会关闭旧会话，减少重复启动开销 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
+| Hermes 任务级运行时路由 | 已接入并通过专项测试 | Composer 支持 `Auto / Hermes / Native`；Auto 将复杂网页查询、研究、代码/操作和多步 Office 任务路由到 Hermes；强制 Hermes 启动失败不降级，Auto 降级会记录 `runtimeState=fallback` 并持久化 |
 | Hermes 宿主多步路由 | 最新真实验收通过 | `node scripts/qa/run-hermes-live-hostchain.mjs` 使用本机 Hermes Agent v0.18.0 和当前配置模型，按顺序调用 `write_file`、`run_command`；文件内容、Shell 输出、1 次审批、两条工具生命周期和 checkpoint 均符合预期，`unknownToolCallCount=0` |
 | Hermes 上游错误识别 | 已补齐专项测试 | ACP `end_turn` 响应中的 `field_meta.neoworker.runtimeError` 会被适配器转为失败；最新真实复测为 HTTP 402 余额不足，未进入工具执行，不计为成功 |
 | MCP 执行边界 | 通过专项验证 | bearer 认证、任务工具白名单、请求大小限制、超时取消、客户端断开、重连 ID 隔离、异常结构化工具结果、200,000 字符模型输出上限 |

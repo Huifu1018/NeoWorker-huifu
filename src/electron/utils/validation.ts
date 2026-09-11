@@ -198,6 +198,7 @@ export const AgentConfigSchema = z
     // one inferred by the strategy layer. This is part of AgentConfig and
     // must be accepted when creating tasks in both chat and execute modes.
     executionModeSource: z.enum(["user", "strategy", "auto_promote"]).optional(),
+    runtimePreference: z.enum(["auto", "hermes", "native"]).optional(),
     taskDomain: z
       .enum([
         "auto",
@@ -502,6 +503,7 @@ export const TaskMessageSchema = z
         "media",
       ])
       .optional(),
+    runtimePreference: z.enum(["auto", "hermes", "native"]).optional(),
     requestedSkillId: z.string().trim().min(1).max(200).optional(),
     permissionMode: PermissionModeSchema.optional(),
     shellAccess: z.boolean().optional(),

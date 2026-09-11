@@ -4110,6 +4110,7 @@ if (isCliDirectRunMode()) {
                   | Pick<
                       import("../shared/types").TaskFollowUpInput,
                       | "activeArtifactContext"
+                      | "runtimePreference"
                       | "permissionMode"
                       | "shellAccess"
                       | "integrationMentions"
@@ -4127,6 +4128,9 @@ if (isCliDirectRunMode()) {
                           activeArtifactContext:
                             sanitized.activeArtifactContext,
                         }
+                      : {}),
+                    ...(sanitized.runtimePreference
+                      ? { runtimePreference: sanitized.runtimePreference }
                       : {}),
                     ...(sanitized.permissionMode
                       ? { permissionMode: sanitized.permissionMode }

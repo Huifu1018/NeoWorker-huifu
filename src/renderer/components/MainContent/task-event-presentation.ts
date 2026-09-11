@@ -486,6 +486,7 @@ export function resolveTimelineControlsPlacement(params: {
 export interface ComposerTaskSettings {
   executionMode: ExecutionMode;
   taskDomain: TaskDomain;
+  runtimePreference: import("../../../shared/types").TaskRuntimePreference;
   autonomousModeEnabled: boolean;
   collaborativeModeEnabled: boolean;
   multiLlmModeEnabled: boolean;
@@ -512,6 +513,7 @@ export function deriveComposerTaskSettings(
   return {
     executionMode: agentConfig?.executionMode ?? "execute",
     taskDomain,
+    runtimePreference: agentConfig?.runtimePreference ?? "auto",
     autonomousModeEnabled: agentConfig?.autonomousMode === true,
     collaborativeModeEnabled: agentConfig?.collaborativeMode === true,
     multiLlmModeEnabled: agentConfig?.multiLlmMode === true,

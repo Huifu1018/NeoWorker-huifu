@@ -195,6 +195,11 @@ import {
 } from "../agents/autonomy-policy";
 import { PermissionEngine } from "./runtime/PermissionEngine";
 import { createHermesPermissionHandler } from "./runtime/hermes-permission-bridge";
+import {
+  buildHermesExternalRuntimeConfig,
+  resolveTaskRuntimeRoute,
+  type TaskRuntimeRouteDecision,
+} from "./runtime/hermes-runtime-routing";
 import { WorktreeManager } from "../git/WorktreeManager";
 import type { ComparisonService } from "../git/ComparisonService";
 import {
@@ -995,15 +1000,21 @@ export class AgentDaemon extends EventEmitter {
       TaskFollowUpInput,
       | "executionMode"
       | "taskDomain"
+      | "runtimePreference"
       | "requestedSkillId"
       | "permissionMode"
       | "shellAccess"
       | "integrationMentions"
       | "agentConfigOverride"
     >,
+    routingPrompt?: string,
   ): { task: Task; changed: boolean } {
     const hasExecutionMode = typeof options?.executionMode === "string";
     const hasTaskDomain = typeof options?.taskDomain === "string";
+    const hasRuntimePreference =
+      options?.runtimePreference === "auto" ||
+      options?.runtimePreference === "hermes" ||
+      options?.runtimePreference === "native";
     const hasRequestedSkillId = typeof options?.requestedSkillId === "string";
     const hasPermissionMode = typeof options?.permissionMode === "string";
     const hasShellAccess = typeof options?.shellAccess === "boolean";
@@ -1013,6 +1024,7 @@ export class AgentDaemon extends EventEmitter {
     if (
       !hasExecutionMode &&
       !hasTaskDomain &&
+      !hasRuntimePreference &&
       !hasRequestedSkillId &&
       !hasPermissionMode &&
       !hasShellAccess &&
@@ -1052,6 +1064,30 @@ export class AgentDaemon extends EventEmitter {
     }
     if (hasTaskDomain && nextAgentConfig.taskDomain !== options?.taskDomain) {
       nextAgentConfig.taskDomain = options?.taskDomain;
+      changed = true;
+    }
+    if (
+      hasRuntimePreference &&
+      nextAgentConfig.runtimePreference !== options?.runtimePreference
+    ) {
+      nextAgentConfig.runtimePreference = options?.runtimePreference;
+      if (options?.runtimePreference === "auto") {
+        // Selecting Auto in the composer is an explicit request to recompute
+        // the route for the current prompt, including leaving a prior Hermes
+        // selection when the task is no longer a Hermes candidate.
+        delete nextAgentConfig.externalRuntime;
+      }
+      const rerouted = this.deriveTaskStrategy({
+        title: task.title,
+        prompt: routingPrompt || task.prompt,
+        routingPrompt: routingPrompt || task.rawPrompt || task.userPrompt || task.prompt,
+        agentConfig: nextAgentConfig,
+      });
+      if (rerouted.agentConfig.externalRuntime) {
+        nextAgentConfig.externalRuntime = rerouted.agentConfig.externalRuntime;
+      } else {
+        delete nextAgentConfig.externalRuntime;
+      }
       changed = true;
     }
     if (
@@ -1354,6 +1390,7 @@ export class AgentDaemon extends EventEmitter {
   }): {
     route: IntentRoute;
     strategy: DerivedTaskStrategy;
+    runtime: TaskRuntimeRouteDecision;
     prompt: string;
     agentConfig: AgentConfig;
     promptChanged: boolean;
@@ -1417,6 +1454,41 @@ export class AgentDaemon extends EventEmitter {
     if (!agentConfig.executionMode) {
       agentConfig.executionMode = strategy.executionMode;
     }
+    const runtime = resolveTaskRuntimeRoute({
+      title: input.title,
+      prompt: canonicalRoutingPrompt || input.title,
+      route,
+      strategy,
+      agentConfig: input.agentConfig,
+    });
+    const existingExternalRuntime = input.agentConfig?.externalRuntime;
+    const requestedRuntimePreference = input.agentConfig?.runtimePreference;
+    const hasExplicitRuntimePreference =
+      requestedRuntimePreference === "auto" ||
+      requestedRuntimePreference === "hermes" ||
+      requestedRuntimePreference === "native";
+
+    // Ordinary tasks are explicitly persisted as Auto so the executor can
+    // distinguish an auto-routed Hermes session (which may fall back) from a
+    // legacy task that explicitly supplied an ACP runtime.
+    if (!existingExternalRuntime && requestedRuntimePreference === undefined) {
+      agentConfig.runtimePreference = "auto";
+    }
+
+    if (runtime.resolved === "hermes") {
+      agentConfig.externalRuntime = buildHermesExternalRuntimeConfig(
+        agentConfig.permissionMode,
+      );
+      agentConfig.runtimePreference =
+        requestedRuntimePreference || "auto";
+    } else if (
+      runtime.resolved === "native" &&
+      (hasExplicitRuntimePreference || existingExternalRuntime?.agent === "hermes")
+    ) {
+      delete agentConfig.externalRuntime;
+      agentConfig.runtimePreference =
+        requestedRuntimePreference || "auto";
+    }
     const relationshipContext = RelationshipMemoryService.buildPromptContext({
       maxPerLayer: 2,
       maxChars: 1200,
@@ -1430,6 +1502,7 @@ export class AgentDaemon extends EventEmitter {
     return {
       route,
       strategy,
+      runtime,
       prompt,
       agentConfig,
       promptChanged: prompt !== input.prompt,
@@ -3641,6 +3714,11 @@ export class AgentDaemon extends EventEmitter {
         `convoMode=${derived.strategy.conversationMode} | execMode=${derived.strategy.executionMode}`,
       confidence: Number(derived.route.confidence.toFixed(2)),
       signals: derived.route.signals,
+      runtimePreference: derived.runtime.preference,
+      resolvedRuntime: derived.runtime.resolved,
+      runtimeAgent: derived.runtime.runtimeAgent,
+      runtimeReason: derived.runtime.reason,
+      runtimeSignals: derived.runtime.signals,
     });
   }
 
@@ -12551,6 +12629,7 @@ export class AgentDaemon extends EventEmitter {
       | "activeArtifactContext"
       | "executionMode"
       | "taskDomain"
+      | "runtimePreference"
       | "requestedSkillId"
       | "permissionMode"
       | "shellAccess"
@@ -12585,6 +12664,7 @@ export class AgentDaemon extends EventEmitter {
     const overrideResult = this.applyTaskFollowUpOverrides(
       task,
       effectiveOptions,
+      message,
     );
     if (overrideResult.changed) {
       this.taskRepo.update(taskId, {

@@ -5921,6 +5921,9 @@ export async function setupIpcHandlers(
             : {}),
           ...(validated.executionMode ? { executionMode: validated.executionMode } : {}),
           ...(validated.taskDomain ? { taskDomain: validated.taskDomain } : {}),
+          ...(validated.runtimePreference
+            ? { runtimePreference: validated.runtimePreference }
+            : {}),
           ...(validated.requestedSkillId ? { requestedSkillId: validated.requestedSkillId } : {}),
           ...(validated.permissionMode ? { permissionMode: validated.permissionMode } : {}),
           ...(validated.shellAccess !== undefined ? { shellAccess: validated.shellAccess } : {}),
