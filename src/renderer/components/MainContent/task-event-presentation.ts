@@ -438,13 +438,6 @@ export function shouldCreateFreshTaskForSend(params: {
     return true;
   }
   if (params.executionMode !== "chat" && selectedTaskIsChat) return true;
-  if (
-    params.executionMode !== "chat" &&
-    isTerminalTaskStatus(params.selectedTaskStatus) &&
-    !params.hasExplicitFollowUpContext
-  ) {
-    return true;
-  }
   return false;
 }
 

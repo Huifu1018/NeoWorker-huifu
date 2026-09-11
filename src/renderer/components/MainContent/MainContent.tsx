@@ -9321,8 +9321,8 @@ function MainContentComponent({
         return;
       }
 
-      // Chat mode reuses the current chat task when one exists, but creates a new
-      // task for the first message or when the selected task is not a chat session.
+      // Continue inside the selected compatible task. Creating a fresh task is
+      // reserved for the first message, explicit shortcuts, or mode boundaries.
       const shouldCreateFreshTask = shouldCreateFreshTaskForSend({
         executionMode,
         selectedTaskId,

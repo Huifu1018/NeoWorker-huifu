@@ -99,7 +99,7 @@ describe("shouldCreateFreshTaskForSend", () => {
     ).toBe(false);
   });
 
-  it("starts a fresh task after ordinary completed execution tasks", () => {
+  it("keeps ordinary completed execution tasks in the current conversation", () => {
     expect(
       shouldCreateFreshTaskForSend({
         executionMode: "execute",
@@ -108,7 +108,7 @@ describe("shouldCreateFreshTaskForSend", () => {
         selectedTaskCollaborativeMode: false,
         selectedTaskStatus: "completed",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("keeps explicit quoted follow-ups in the current completed execution task", () => {
