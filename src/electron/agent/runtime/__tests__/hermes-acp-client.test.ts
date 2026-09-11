@@ -90,6 +90,17 @@ describe("Hermes ACP subprocess transport", () => {
     const results = Promise.allSettled([c.request('wait', {}), c.request('exit', {})]);
     for (const result of await results) expect(result).toMatchObject({ status: 'rejected', reason: { code: 'PROCESS_EXITED' } });
   });
+  it("includes bounded stderr diagnostics when the ACP process exits", async () => {
+    const c = new HermesAcpClient();
+    cleanup.push(() => c.stop());
+    const stderrFixture = path.join(__dirname, "fixtures", "hermes-acp-stderr-exit.cjs");
+    await c.start({ ...options, args: [stderrFixture] });
+    await expect(c.initialize()).rejects.toMatchObject({
+      code: "PROCESS_EXITED",
+      message: expect.stringContaining("fixture startup failure"),
+      data: { stderr: expect.stringContaining("fixture startup failure") },
+    });
+  });
   it("tears down a timed-out connection and can restart without stale handlers", async () => {
     const c = await client();
     await expect(c.request('wait', {}, 100)).rejects.toMatchObject({code:'REQUEST_TIMEOUT'});

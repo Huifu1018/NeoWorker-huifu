@@ -53,4 +53,16 @@ describe("Hermes host launcher resolution", () => {
     fs.writeFileSync(path.join(dir, "hermes"), `#!${python}\n`);
     expect(resolveHermesPythonCommand({ PATH: dir }, "darwin")).toBe(python);
   });
+
+  it.skipIf(process.platform === "win32")("finds a home-local Hermes install without shell PATH", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "hermes-home-"));
+    directories.push(home);
+    const bin = path.join(home, ".local", "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    const python = path.join(home, "python3");
+    fs.writeFileSync(python, "");
+    fs.writeFileSync(path.join(bin, "hermes"), `#!${python}\n`);
+
+    expect(resolveHermesPythonCommand({ HOME: home, PATH: "" }, "darwin")).toBe(python);
+  });
 });

@@ -72,11 +72,35 @@ interface Connection {
   inbound: Map<string, AbortController>;
   decoder: StringDecoder;
   buffer: string;
+  stderr: string;
   timeoutMs: number;
   firstByteTimeoutMs: number;
   maxFrameBytes: number;
   closed: boolean;
   onTransportEvent?: (event: HermesAcpTransportEvent) => void;
+}
+
+const MAX_PROCESS_DIAGNOSTIC_CHARS = 8_000;
+
+function appendProcessDiagnostic(existing: string, chunk: string): string {
+  const next = `${existing}${chunk}`;
+  return next.length <= MAX_PROCESS_DIAGNOSTIC_CHARS
+    ? next
+    : next.slice(-MAX_PROCESS_DIAGNOSTIC_CHARS);
+}
+
+function formatProcessExitError(
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderr: string,
+): HermesAcpError {
+  const detail = stderr.trim();
+  const suffix = detail ? `: ${detail}` : "";
+  return new HermesAcpError(
+    `Hermes ACP exited (${code ?? signal ?? "unknown"})${suffix}`,
+    "PROCESS_EXITED",
+    detail ? { stderr: detail } : undefined,
+  );
 }
 
 function object(value: unknown): value is AcpObject {
@@ -106,20 +130,22 @@ export class HermesAcpClient {
     });
     const conn: Connection = {
       child, pending: new Map(), inbound: new Map(), decoder: new StringDecoder("utf8"),
-      buffer: "", closed: false, timeoutMs: options.timeoutMs ?? 120_000,
+      buffer: "", stderr: "", closed: false, timeoutMs: options.timeoutMs ?? 120_000,
       firstByteTimeoutMs: options.firstByteTimeoutMs ?? 30_000,
       maxFrameBytes: options.maxFrameBytes ?? 8 * 1024 * 1024,
       onTransportEvent: options.onTransportEvent,
     };
     this.connection = conn;
     // Drain stderr even without a log subscriber: a full pipe stalls Hermes.
-    // Do not forward raw diagnostic output, which can contain provider secrets.
-    child.stderr.resume();
+    // Keep a bounded diagnostic tail so startup failures are actionable.
+    child.stderr.on("data", (data: Buffer) => {
+      conn.stderr = appendProcessDiagnostic(conn.stderr, data.toString("utf8"));
+    });
     child.stdout.on("data", (data: Buffer) => this.consume(conn, data));
     child.stdin.on("error", (error) => this.close(conn, error));
     child.on("error", (error) => this.close(conn, error));
-    child.on("exit", (code, signal) => this.close(conn,
-      new HermesAcpError(`Hermes ACP exited (${code ?? signal ?? "unknown"})`, "PROCESS_EXITED")));
+    child.on("close", (code, signal) => this.close(conn,
+      formatProcessExitError(code, signal, conn.stderr)));
     await new Promise<void>((resolve, reject) => {
       const cleanup = () => { child.off("spawn", ready); child.off("error", failed); };
       const ready = () => { cleanup(); resolve(); };

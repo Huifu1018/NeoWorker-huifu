@@ -1,7 +1,75 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 const LAUNCHER_FILENAME = "hermes-acp-neoworker-host.py";
+const HERMES_EXECUTABLE = "hermes";
+
+function readUnixShebangInterpreter(executable: string): string | undefined {
+  try {
+    const fd = fs.openSync(executable, "r");
+    const prefix = Buffer.alloc(1024);
+    let length = 0;
+    try {
+      length = fs.readSync(fd, prefix, 0, prefix.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const firstLine = prefix.subarray(0, length).toString("utf8").split(/\r?\n/, 1)[0] || "";
+    const interpreter = firstLine.match(/^#!\s*(\/[^\s]+python[^\s]*)\s*$/)?.[1];
+    return interpreter && fs.existsSync(interpreter) ? interpreter : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolvePythonBesideHermes(
+  executable: string,
+  platform: NodeJS.Platform,
+): string | undefined {
+  if (platform === "win32") {
+    const pathApi = path.win32;
+    const normalizedEntry = pathApi.dirname(executable);
+    for (const candidate of [
+      pathApi.join(normalizedEntry, "python.exe"),
+      pathApi.join(normalizedEntry, "..", "python.exe"),
+    ]) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return undefined;
+  }
+
+  return readUnixShebangInterpreter(executable);
+}
+
+function commonHermesExecutableCandidates(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string[] {
+  if (platform === "win32") return [];
+  const home = env.HOME?.trim() || os.homedir();
+  const candidates = [
+    path.join(home, ".local", "bin", HERMES_EXECUTABLE),
+    path.join(home, ".pyenv", "shims", HERMES_EXECUTABLE),
+    "/opt/homebrew/bin/hermes",
+    "/usr/local/bin/hermes",
+    "/Library/Frameworks/Python.framework/Versions/Current/bin/hermes",
+  ];
+
+  // Python.org installers place pip entry points under a versioned framework
+  // directory. Finder-launched apps do not inherit the shell PATH, so inspect
+  // those directories explicitly before falling back to system python3.
+  const frameworkVersions = "/Library/Frameworks/Python.framework/Versions";
+  try {
+    for (const version of fs.readdirSync(frameworkVersions).sort().reverse()) {
+      candidates.push(path.join(frameworkVersions, version, "bin", HERMES_EXECUTABLE));
+    }
+  } catch {
+    // The framework is optional on non-macOS systems.
+  }
+
+  return candidates;
+}
 
 /** Resolve the Python that owns `hermes`, preserving virtualenv installs. */
 export function resolveHermesPythonCommand(
@@ -19,29 +87,17 @@ export function resolveHermesPythonCommand(
     for (const name of names) {
       const executable = pathApi.join(normalizedEntry, name);
       if (!fs.existsSync(executable)) continue;
-      if (platform === "win32") {
-        // venvs keep Python in Scripts; a system install keeps it one level
-        // above Scripts. Use that interpreter instead of a different PATH one.
-        for (const candidate of [
-          pathApi.join(normalizedEntry, "python.exe"),
-          pathApi.join(normalizedEntry, "..", "python.exe"),
-        ]) {
-          if (fs.existsSync(candidate)) return candidate;
-        }
-      } else {
-        try {
-          const fd = fs.openSync(executable, "r");
-          const prefix = Buffer.alloc(1024);
-          let length: number;
-          try { length = fs.readSync(fd, prefix, 0, prefix.length, 0); }
-          finally { fs.closeSync(fd); }
-          const firstLine = prefix.subarray(0, length).toString("utf8").split(/\r?\n/, 1)[0] || "";
-          const interpreter = firstLine.match(/^#!\s*(\/[^\s]+python[^\s]*)\s*$/)?.[1];
-          if (interpreter && fs.existsSync(interpreter)) return interpreter;
-        } catch { /* Fall back to the active Python on PATH. */ }
-      }
+      const interpreter = resolvePythonBesideHermes(executable, platform);
+      if (interpreter) return interpreter;
     }
   }
+
+  for (const executable of commonHermesExecutableCandidates(env, platform)) {
+    if (!fs.existsSync(executable)) continue;
+    const interpreter = resolvePythonBesideHermes(executable, platform);
+    if (interpreter) return interpreter;
+  }
+
   return platform === "win32" ? "python" : "python3";
 }
 
