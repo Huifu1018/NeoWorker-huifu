@@ -558,6 +558,46 @@ describe("TaskExecutor entrypoint guards", () => {
     expect(executor.emitEvent).not.toHaveBeenCalled();
   });
 
+  it("projects native runtime status through the same timeline path", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    const updateStep = vi.fn();
+
+    executor.task = {
+      id: "native-runtime-status",
+      agentConfig: { runtimePreference: "auto" },
+    };
+    executor.timelineEmitter = { updateStep };
+    executor.isAcpxExternalRuntimeTask = vi.fn(() => false);
+    executor.emitEvent = vi.fn();
+
+    (TaskExecutor.prototype as Any).emitNativeRuntimeStatus.call(
+      executor,
+      "initial",
+    );
+
+    expect(updateStep).toHaveBeenCalledWith(
+      {
+        id: "runtime:native-runtime-status",
+        description: "Running with NeoWorker native loop",
+      },
+      expect.objectContaining({
+        actor: "system",
+        status: "in_progress",
+        legacyType: "progress_update",
+        extraPayload: expect.objectContaining({
+          phase: "runtime",
+          runtime: "native",
+          runtimeAgent: "native",
+          runtimePreference: "auto",
+          runtimeState: "active",
+          harness: "neoworker",
+          turnKind: "initial",
+        }),
+      }),
+    );
+    expect(executor.emitEvent).not.toHaveBeenCalled();
+  });
+
   it("finalizeFollowUpCompletion syncs task row and in-memory task state", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

@@ -1136,6 +1136,8 @@ export function renderEventTitle(
       const runtimeLabel =
         runtimeAgent === "hermes"
           ? "Hermes Harness"
+          : runtimeAgent === "native"
+            ? "NeoWorker native loop"
           : runtimeAgent === "claude"
             ? "Claude Code ACP"
             : "ACP runtime";

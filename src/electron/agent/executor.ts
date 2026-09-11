@@ -4646,6 +4646,21 @@ export class TaskExecutor {
     this.emitEvent("progress_update", payload);
   }
 
+  private emitNativeRuntimeStatus(turnKind: "initial" | "follow_up"): void {
+    if (!this.task) return;
+    if (this.isAcpxExternalRuntimeTask()) return;
+    this.emitRuntimeStatus(
+      "native",
+      "active",
+      "Running with NeoWorker native loop",
+      {
+        runtime: "native",
+        harness: "neoworker",
+        turnKind,
+      },
+    );
+  }
+
   private getAcpxRuntimeAgentDisplayName(): string {
     const runtime = this.getAcpxExternalRuntimeConfig();
     return getAcpxAgentDisplayName(runtime?.agent || "codex");
@@ -31613,6 +31628,8 @@ You are continuing a previous conversation. The context from the previous conver
         }
       }
 
+      this.emitNativeRuntimeStatus("initial");
+
       // Handle local slash-commands (e.g. /schedule ...) deterministically without relying on the LLM.
       // This prevents "plan-only" runs that never create the underlying cron job.
       if (await this.maybeHandleExplicitClaudeCodeDelegation()) {
@@ -43651,6 +43668,8 @@ Return ONLY a JSON object:
         }
       }
     }
+
+    this.emitNativeRuntimeStatus("follow_up");
 
     if (options?.agentConfigOverride) {
       await this.sendMessageUnified(message, images, quotedAssistantMessage, {

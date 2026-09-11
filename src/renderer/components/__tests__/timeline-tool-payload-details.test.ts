@@ -82,6 +82,31 @@ describe("timeline tool payload details", () => {
     expect(details).toContain("HERMES_UNAVAILABLE");
   });
 
+  it("shows native runtime status explicitly in the timeline", () => {
+    applyPersistedLanguage("zh-CN");
+    const runtimeEvent = event("timeline_step_updated", {
+      stepId: "runtime:task-1",
+      legacyType: "progress_update",
+      phase: "runtime",
+      runtime: "native",
+      runtimeAgent: "native",
+      runtimePreference: "auto",
+      runtimeState: "active",
+      message: "Running with NeoWorker native loop",
+    });
+
+    const title = renderToStaticMarkup(
+      React.createElement(
+        React.Fragment,
+        null,
+        renderEventTitle(runtimeEvent),
+      ),
+    );
+
+    expect(title).toContain("NeoWorker native loop");
+    expect(title).toContain("active");
+  });
+
   it("keeps active tool parameters collapsed instead of forcing raw JSON open", () => {
     expect(
       shouldAutoExpandActiveTimelineEvent(
