@@ -4858,18 +4858,15 @@ export class TaskExecutor {
     );
   }
 
-  private getHermesToolProgressToken(runtime: HermesRuntimeAdapter): string {
-    const revisionGetter = (runtime as Any)?.getToolProgressRevision;
-    if (typeof revisionGetter === "function") {
-      return `revision:${String(revisionGetter.call(runtime))}`;
-    }
+  private hasUnresolvedHermesToolProgress(runtime: HermesRuntimeAdapter): boolean {
     const progress = runtime.getCheckpoint()?.toolProgress;
-    return JSON.stringify({
-      activeToolCallIds: progress?.activeToolCallIds || [],
-      completedToolCallIds: progress?.completedToolCallIds || [],
-      failedToolCallIds: progress?.failedToolCallIds || [],
-      unknownToolCallIds: progress?.unknownToolCallIds || [],
-    });
+    // Completed and failed host calls are already represented in the Hermes
+    // session history. Only active/unknown calls can make an automatic retry
+    // repeat an operation whose outcome is not known.
+    return Boolean(
+      progress?.activeToolCallIds?.length ||
+      progress?.unknownToolCallIds?.length,
+    );
   }
 
   private async runHermesPromptWithTransientRetry(
@@ -4877,8 +4874,7 @@ export class TaskExecutor {
     prompt: string,
     isResuming: boolean,
   ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
-    const progressBefore = this.getHermesToolProgressToken(runtime);
-    const maxAttempts = 2;
+    const maxAttempts = 3;
     let attempt = 0;
 
     while (true) {
@@ -4890,14 +4886,21 @@ export class TaskExecutor {
         }
         return await runtime.retry(prompt);
       } catch (error) {
-        const hostOwned =
-          runtime.getCheckpoint()?.toolOwnership === "neoworker";
-        const noToolProgress =
-          progressBefore === this.getHermesToolProgressToken(runtime);
+        const checkpoint = runtime.getCheckpoint();
+        const hostOwned = checkpoint?.toolOwnership === "neoworker";
+        const toolProgress = checkpoint?.toolProgress;
+        const hasToolProgress = Boolean(
+          toolProgress?.activeToolCallIds?.length ||
+          toolProgress?.completedToolCallIds?.length ||
+          toolProgress?.failedToolCallIds?.length ||
+          toolProgress?.unknownToolCallIds?.length,
+        );
+        const unresolvedToolProgress =
+          this.hasUnresolvedHermesToolProgress(runtime);
         if (
           attempt >= maxAttempts - 1 ||
           !hostOwned ||
-          !noToolProgress ||
+          unresolvedToolProgress ||
           !this.isHermesTransientRuntimeError(error)
         ) {
           throw error;
@@ -4922,7 +4925,8 @@ export class TaskExecutor {
           maxAttempts,
           delayMs,
           reason,
-          safeBeforeToolDispatch: true,
+          safeBeforeToolDispatch: !hasToolProgress,
+          safeForAutomaticRetry: true,
         });
         await this.waitForHermesRetryDelay(delayMs, error);
         attempt += 1;

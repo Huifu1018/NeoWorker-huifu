@@ -282,6 +282,7 @@ describe("Executor Hermes recovery", () => {
         payload: expect.objectContaining({
           metric: "hermes_runtime_retry",
           safeBeforeToolDispatch: true,
+          safeForAutomaticRetry: true,
         }),
       }),
     ]));
@@ -458,6 +459,7 @@ describe("Executor Hermes recovery", () => {
         payload: expect.objectContaining({
           metric: "hermes_runtime_retry",
           safeBeforeToolDispatch: true,
+          safeForAutomaticRetry: true,
         }),
       }),
     ]));
@@ -535,6 +537,12 @@ describe("Executor Hermes recovery", () => {
       cwd,
       agentVersion: "fixture",
       toolOwnership: "neoworker",
+      toolProgress: {
+        activeToolCallIds: ["host-call-in-flight"],
+        completedToolCallIds: [],
+        failedToolCallIds: [],
+        unknownToolCallIds: [],
+      },
     } as const;
     let savedCheckpoint: Any;
     let revision = 0;
@@ -577,6 +585,69 @@ describe("Executor Hermes recovery", () => {
     expect(runtime.prompt).toHaveBeenCalledOnce();
     expect(runtime.retry).not.toHaveBeenCalled();
     expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
+  it("retries after completed host tools when Hermes queue capacity recovers", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-completed-tool",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+      toolProgress: {
+        activeToolCallIds: [],
+        completedToolCallIds: ["hermes-mcp:web-search-1"],
+        failedToolCallIds: [],
+        unknownToolCallIds: [],
+        lastToolCallId: "hermes-mcp:web-search-1",
+      },
+    } as const;
+    let savedCheckpoint: Any;
+    const failure = new HermesAcpError(
+      "HTTP 502: The request queue is full",
+      "HERMES_RUNTIME_ERROR",
+    );
+    const runtime = {
+      getCheckpoint: vi.fn(() => savedCheckpoint),
+      prompt: vi.fn(async () => {
+        savedCheckpoint = checkpoint;
+        throw failure;
+      }),
+      retry: vi.fn(async () => ({
+        assistantText: "recovered after completed search",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "completed-tool-hermes",
+      rawPrompt: "Search and summarize.",
+    };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "completed-tool-provider-error",
+    );
+
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    expect(runtime.retry).toHaveBeenCalledOnce();
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "recovered after completed search",
+      "hermes runtime completed",
+    );
   });
 
   it("does not retry a Hermes provider error explicitly marked non-retryable", async () => {
