@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TaskEvent } from "../../shared/types";
+import type { Task, TaskEvent } from "../../shared/types";
 import {
   hydrateSelectedTaskEvents,
   getTaskStatusUpdateFromEvent,
@@ -142,6 +142,91 @@ describe("hydrateSelectedTaskEvents", () => {
       "evt-history",
       "evt-live",
     ]);
+  });
+
+  it("drops polluted historical events and stale identity collisions from other tasks", () => {
+    const staleWithCollidingIdentity = makeEvent({
+      id: "db-row-shared",
+      taskId: "task-1",
+      type: "assistant_message",
+      timestamp: 50,
+      eventId: "evt-shared",
+      seq: 1,
+      payload: { message: "old task answer" },
+    });
+    const selectedWithCollidingIdentity = makeEvent({
+      id: "db-row-shared",
+      taskId: "task-2",
+      type: "assistant_message",
+      timestamp: 100,
+      eventId: "evt-shared",
+      seq: 1,
+      payload: { message: "current task answer" },
+    });
+    const pollutedHistorical = makeEvent({
+      taskId: "task-1",
+      type: "assistant_message",
+      timestamp: 120,
+      eventId: "evt-polluted",
+      seq: 2,
+      payload: { message: "unrelated task answer" },
+    });
+
+    const hydrated = hydrateSelectedTaskEvents(
+      "task-2",
+      [staleWithCollidingIdentity],
+      [selectedWithCollidingIdentity, pollutedHistorical],
+    );
+
+    expect(hydrated).toHaveLength(1);
+    expect(hydrated[0].taskId).toBe("task-2");
+    expect(hydrated[0].payload).toEqual({ message: "current task answer" });
+  });
+
+  it("keeps collaborative child output events without leaking child dialogue", () => {
+    const fileOutput = makeEvent({
+      taskId: "child-1",
+      type: "file_created",
+      timestamp: 100,
+      eventId: "evt-file",
+    });
+    const childDialogue = makeEvent({
+      taskId: "child-1",
+      type: "assistant_message",
+      timestamp: 110,
+      eventId: "evt-child-dialogue",
+      payload: { message: "child internal reasoning" },
+    });
+    const parent = {
+      id: "parent-1",
+      title: "Parent",
+      prompt: "Parent",
+      workspaceId: "ws-1",
+      status: "executing",
+      createdAt: 1,
+      updatedAt: 1,
+      agentConfig: { collaborativeMode: true },
+    } as Task;
+    const child = {
+      id: "child-1",
+      title: "Child",
+      prompt: "Child",
+      workspaceId: "ws-1",
+      status: "executing",
+      createdAt: 2,
+      updatedAt: 2,
+      parentTaskId: "parent-1",
+    } as Task;
+
+    const hydrated = hydrateSelectedTaskEvents(
+      "parent-1",
+      [fileOutput, childDialogue],
+      [],
+      [parent, child],
+    );
+
+    expect(hydrated.map((event) => event.type)).toEqual(["file_created"]);
+    expect(hydrated[0].taskId).toBe("child-1");
   });
 });
 

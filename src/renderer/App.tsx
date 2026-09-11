@@ -177,8 +177,10 @@ import { isTaskActivelyWorking } from "./utils/task-working-state";
 import { getManagedAgentTaskTitleForDisplay } from "./utils/mission-control-copy";
 import { deriveReplayTaskSnapshot } from "./utils/task-replay-state";
 import {
+  filterTaskEventsForSelectedSession,
   getTaskEventIdentity,
   getTaskStatusUpdateFromEvent,
+  hydrateSelectedTaskEvents,
   loadTaskTimelineWithLegacyFallback,
   mergeTaskEventsByIdentity,
   reconcileTaskDeliveryEvents,
@@ -3054,19 +3056,12 @@ export function App() {
       existing: TaskEvent[],
       incoming: TaskEvent[],
     ): TaskEvent[] => {
-      const incomingIdentities = new Set(
-        incoming.map((event) => getTaskEventIdentity(event)),
+      return hydrateSelectedTaskEvents(
+        taskId,
+        existing,
+        incoming,
+        tasksRef.current,
       );
-      const relevantExisting = existing.filter(
-        (event) =>
-          incomingIdentities.has(getTaskEventIdentity(event)) ||
-          shouldIncludeTaskEventInSelectedSession({
-            selectedTaskId: taskId,
-            event,
-            tasks: tasksRef.current,
-          }),
-      );
-      return mergeTaskEventsByIdentity(relevantExisting, incoming);
     },
     [],
   );
@@ -3251,6 +3246,12 @@ export function App() {
               getTaskTimelinePage: window.electronAPI.getTaskTimelinePage,
               getTaskEvents: window.electronAPI.getTaskEvents,
             });
+          const scopedRefreshedEvents = hydrateSelectedTaskEvents(
+            taskId,
+            [],
+            refreshedEvents,
+            tasksRef.current,
+          );
           if (timelinePage) {
             taskTimelinePageStateRef.current.set(taskId, {
               cursor: timelinePage.nextCursor,
@@ -3266,7 +3267,7 @@ export function App() {
             }
             taskTimelineCacheRef.current.set(taskId, {
               taskId,
-              events: timelinePage.events,
+              events: scopedRefreshedEvents,
               cursor: timelinePage.nextCursor,
               hasMoreHistory: timelinePage.hasMoreHistory,
               payloadBytes: timelinePage.summary.payloadBytes,
@@ -3279,10 +3280,14 @@ export function App() {
           }
           setEvents((prev) =>
             capTaskEvents(
-              mergeSelectedTaskTimelineEvents(taskId, prev, refreshedEvents),
+              mergeSelectedTaskTimelineEvents(
+                taskId,
+                prev,
+                scopedRefreshedEvents,
+              ),
             ),
           );
-          const latestTimestamp = getLatestEventTimestamp(refreshedEvents);
+          const latestTimestamp = getLatestEventTimestamp(scopedRefreshedEvents);
           taskLastEventTimestampRef.current.set(
             taskId,
             latestTimestamp > 0 ? latestTimestamp : Date.now(),
@@ -4901,21 +4906,48 @@ export function App() {
             },
           ) => {
             if (incomingEvents.length === 0) return;
+            const scopedIncomingEvents = filterTaskEventsForSelectedSession({
+              selectedTaskId: selectedTaskIdRef.current,
+              events: incomingEvents,
+              tasks: tasksRef.current,
+            });
+            if (scopedIncomingEvents.length === 0) return;
             const queuedAtByEventId = options?.queuedAtByEventId;
             noteRendererTaskEventsAppendDispatched(
-              incomingEvents,
+              scopedIncomingEvents,
               rendererPerfLoggingEnabled,
             );
             const applyAppend = () => {
               setEvents((prev) => {
+                const currentSelectedTaskId = selectedTaskIdRef.current;
+                const scopedExistingEvents = currentSelectedTaskId
+                  ? hydrateSelectedTaskEvents(
+                      currentSelectedTaskId,
+                      prev,
+                      [],
+                      tasksRef.current,
+                    )
+                  : [];
+                const stillCurrentIncomingEvents =
+                  filterTaskEventsForSelectedSession({
+                    selectedTaskId: currentSelectedTaskId,
+                    events: scopedIncomingEvents,
+                    tasks: tasksRef.current,
+                  });
+                if (stillCurrentIncomingEvents.length === 0) {
+                  return scopedExistingEvents;
+                }
                 noteRendererTaskEventsAppended(
-                  incomingEvents.map((incomingEvent) => ({
+                  stillCurrentIncomingEvents.map((incomingEvent) => ({
                     event: incomingEvent,
                     queuedAtMs: queuedAtByEventId?.get(incomingEvent.id),
                   })),
                   rendererPerfLoggingEnabled,
                 );
-                return appendRendererTaskEvents(prev, incomingEvents);
+                return appendRendererTaskEvents(
+                  scopedExistingEvents,
+                  stillCurrentIncomingEvents,
+                );
               });
             };
             if (options?.transition) {
@@ -5049,20 +5081,57 @@ export function App() {
           ),
         );
         const queuedEvents = queuedEntries.map((entry) => entry.event);
-        noteRendererTaskEventsAppendDispatched(
-          queuedEvents,
-          rendererPerfLoggingEnabled,
-        );
-        setEvents((prev) => {
-          noteRendererTaskEventsAppended(
-            queuedEvents.map((queuedEvent) => ({
-              event: queuedEvent,
-              queuedAtMs: queuedAtByEventId.get(queuedEvent.id),
-            })),
+        const cleanupTaskId = selectedTaskId;
+        const queuedTaskStillSelected =
+          Boolean(cleanupTaskId) &&
+          selectedTaskIdRef.current === cleanupTaskId;
+        const scopedQueuedEvents =
+          cleanupTaskId && queuedTaskStillSelected
+            ? filterTaskEventsForSelectedSession({
+                selectedTaskId: cleanupTaskId,
+                events: queuedEvents,
+                tasks: tasksRef.current,
+              })
+            : [];
+        if (scopedQueuedEvents.length > 0) {
+          noteRendererTaskEventsAppendDispatched(
+            scopedQueuedEvents,
             rendererPerfLoggingEnabled,
           );
-          return appendRendererTaskEvents(prev, queuedEvents);
-        });
+          setEvents((prev) => {
+            const currentSelectedTaskId = selectedTaskIdRef.current;
+            const scopedExistingEvents = currentSelectedTaskId
+              ? hydrateSelectedTaskEvents(
+                  currentSelectedTaskId,
+                  prev,
+                  [],
+                  tasksRef.current,
+                )
+              : [];
+            const stillCurrentQueuedEvents =
+              currentSelectedTaskId === cleanupTaskId
+                ? filterTaskEventsForSelectedSession({
+                    selectedTaskId: currentSelectedTaskId,
+                    events: scopedQueuedEvents,
+                    tasks: tasksRef.current,
+                  })
+                : [];
+            if (stillCurrentQueuedEvents.length === 0) {
+              return scopedExistingEvents;
+            }
+            noteRendererTaskEventsAppended(
+              stillCurrentQueuedEvents.map((queuedEvent) => ({
+                event: queuedEvent,
+                queuedAtMs: queuedAtByEventId.get(queuedEvent.id),
+              })),
+              rendererPerfLoggingEnabled,
+            );
+            return appendRendererTaskEvents(
+              scopedExistingEvents,
+              stillCurrentQueuedEvents,
+            );
+          });
+        }
       }
       lastBatchableAppendAtRef.current = 0;
       if (typeof unsubscribe === "function") unsubscribe();
@@ -5092,7 +5161,16 @@ export function App() {
       return;
     }
     if (remoteTaskView) {
-      setEvents(capTaskEvents(remoteTaskView.events));
+      setEvents(
+        capTaskEvents(
+          hydrateSelectedTaskEvents(
+            selectedTaskId,
+            [],
+            remoteTaskView.events,
+            tasksRef.current,
+          ),
+        ),
+      );
       setSelectedTaskTimelineHistory({
         cursor: remoteTaskView.cursor,
         hasMoreHistory: remoteTaskView.hasMoreHistory,
@@ -5124,7 +5202,16 @@ export function App() {
     if (cachedTimeline) {
       // Rehydrate immediately from the last page so switching sessions never
       // blanks the conversation while SQLite/history IPC is in flight.
-      setEvents(cachedTimeline.events);
+      setEvents(
+        capTaskEvents(
+          hydrateSelectedTaskEvents(
+            requestedTaskId,
+            [],
+            cachedTimeline.events,
+            tasksRef.current,
+          ),
+        ),
+      );
       setSelectedTaskTimelineHistory({
         cursor: cachedTimeline.cursor,
         hasMoreHistory: cachedTimeline.hasMoreHistory,
@@ -5136,7 +5223,16 @@ export function App() {
         hasMoreHistory: cachedTimeline.hasMoreHistory,
       });
     } else {
-      setEvents(latestAttentionEvent ? [latestAttentionEvent] : []);
+      setEvents(
+        latestAttentionEvent
+          ? hydrateSelectedTaskEvents(
+              requestedTaskId,
+              [],
+              [latestAttentionEvent],
+              tasksRef.current,
+            )
+          : [],
+      );
     }
 
     const loadHistoricalEvents = async () => {
@@ -5154,6 +5250,12 @@ export function App() {
             getTaskEvents: window.electronAPI.getTaskEvents,
           });
         if (cancelled) return;
+        const scopedHistoricalEvents = hydrateSelectedTaskEvents(
+          requestedTaskId,
+          [],
+          historicalEvents,
+          tasksRef.current,
+        );
         const receiveMs = performance.now() - startedAt;
         taskTimelinePageStateRef.current.set(requestedTaskId, {
           cursor: timelinePage?.nextCursor ?? null,
@@ -5168,7 +5270,7 @@ export function App() {
         if (timelinePage) {
           taskTimelineCacheRef.current.set(requestedTaskId, {
             taskId: requestedTaskId,
-            events: historicalEvents,
+            events: scopedHistoricalEvents,
             cursor: timelinePage.nextCursor,
             hasMoreHistory: timelinePage.hasMoreHistory,
             payloadBytes: timelinePage.summary.payloadBytes,
@@ -5194,11 +5296,11 @@ export function App() {
           {
             taskId: requestedTaskId,
             switchId: taskSwitchIdByTaskIdRef.current.get(requestedTaskId),
-            eventCount: historicalEvents.length,
+            eventCount: scopedHistoricalEvents.length,
             payloadBytes: timelinePage?.summary.payloadBytes,
             serializedPayloadBytes: timelinePage
               ? undefined
-              : new Blob([JSON.stringify(historicalEvents)]).size,
+              : new Blob([JSON.stringify(scopedHistoricalEvents)]).size,
             truncatedEventCount: timelinePage?.summary.truncatedEventCount,
             hasMoreHistory: timelinePage?.hasMoreHistory,
             receiveMs: Number(receiveMs.toFixed(1)),
@@ -5210,12 +5312,12 @@ export function App() {
               mergeSelectedTaskTimelineEvents(
                 requestedTaskId,
                 prev,
-                historicalEvents,
+                scopedHistoricalEvents,
               ),
             ),
           );
         });
-        const latestTimestamp = getLatestEventTimestamp(historicalEvents);
+        const latestTimestamp = getLatestEventTimestamp(scopedHistoricalEvents);
         if (latestTimestamp > 0) {
           taskLastEventTimestampRef.current.set(
             requestedTaskId,
@@ -5381,6 +5483,12 @@ export function App() {
       ) {
         return;
       }
+      const scopedTimelineEvents = hydrateSelectedTaskEvents(
+        taskId,
+        [],
+        timelinePage.events,
+        tasksRef.current,
+      );
       if (remoteTaskView) {
         setRemoteTaskView((current) =>
           current &&
@@ -5392,9 +5500,9 @@ export function App() {
                   mergeSelectedTaskTimelineEvents(
                     taskId,
                     current.events,
-                    timelinePage.events,
+                    scopedTimelineEvents,
                   ),
-                  timelinePage.events,
+                  scopedTimelineEvents,
                 ),
                 cursor: timelinePage.nextCursor,
                 hasMoreHistory: timelinePage.hasMoreHistory,
@@ -5417,16 +5525,16 @@ export function App() {
         const merged = mergeSelectedTaskTimelineEvents(
           taskId,
           prev,
-          timelinePage.events,
+          scopedTimelineEvents,
         );
-        return capTaskEventsPreservingIncoming(merged, timelinePage.events);
+        return capTaskEventsPreservingIncoming(merged, scopedTimelineEvents);
       });
       markRendererPerfEvent(
         "timeline_history_page_received",
         rendererPerfLoggingEnabled,
         {
           taskId,
-          eventCount: timelinePage.events.length,
+          eventCount: scopedTimelineEvents.length,
           hasMoreHistory: timelinePage.hasMoreHistory,
           payloadBytes: timelinePage.summary.payloadBytes,
           truncatedEventCount: timelinePage.summary.truncatedEventCount,

@@ -289,7 +289,11 @@ export function buildSessionConversationRounds(
   events: TaskEvent[],
   task?: Task,
 ): SessionConversationRound[] {
-  const orderedEvents = [...events].sort(
+  const taskId = task?.id;
+  const sessionEvents = taskId
+    ? events.filter((event) => event.taskId === taskId)
+    : events;
+  const orderedEvents = [...sessionEvents].sort(
     (left, right) => left.timestamp - right.timestamp,
   );
   const taskPrompt = taskConversationPrompt(task);

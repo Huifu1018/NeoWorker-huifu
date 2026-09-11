@@ -420,9 +420,11 @@ export function shouldCreateFreshTaskForSend(params: {
   selectedTaskCollaborativeMode?: boolean;
   selectedTaskStatus?: TaskStatus;
   forceFreshTask?: boolean;
+  hasExplicitFollowUpContext?: boolean;
 }): boolean {
   if (params.forceFreshTask) return true;
   if (!params.selectedTaskId) return true;
+  const selectedTaskIsChat = params.selectedTaskExecutionMode === "chat";
   if (
     params.selectedTaskCollaborativeMode === true &&
     isTerminalTaskStatus(params.selectedTaskStatus)
@@ -431,7 +433,15 @@ export function shouldCreateFreshTaskForSend(params: {
   }
   if (
     params.executionMode === "chat" &&
-    params.selectedTaskExecutionMode !== "chat"
+    !selectedTaskIsChat
+  ) {
+    return true;
+  }
+  if (params.executionMode !== "chat" && selectedTaskIsChat) return true;
+  if (
+    params.executionMode !== "chat" &&
+    isTerminalTaskStatus(params.selectedTaskStatus) &&
+    !params.hasExplicitFollowUpContext
   ) {
     return true;
   }

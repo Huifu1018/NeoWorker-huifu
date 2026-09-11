@@ -99,7 +99,7 @@ describe("shouldCreateFreshTaskForSend", () => {
     ).toBe(false);
   });
 
-  it("keeps ordinary completed tasks in the current session", () => {
+  it("starts a fresh task after ordinary completed execution tasks", () => {
     expect(
       shouldCreateFreshTaskForSend({
         executionMode: "execute",
@@ -107,6 +107,19 @@ describe("shouldCreateFreshTaskForSend", () => {
         selectedTaskExecutionMode: "execute",
         selectedTaskCollaborativeMode: false,
         selectedTaskStatus: "completed",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps explicit quoted follow-ups in the current completed execution task", () => {
+    expect(
+      shouldCreateFreshTaskForSend({
+        executionMode: "execute",
+        selectedTaskId: "task-1",
+        selectedTaskExecutionMode: "execute",
+        selectedTaskCollaborativeMode: false,
+        selectedTaskStatus: "completed",
+        hasExplicitFollowUpContext: true,
       }),
     ).toBe(false);
   });
@@ -126,6 +139,17 @@ describe("shouldCreateFreshTaskForSend", () => {
         selectedTaskExecutionMode: "chat",
       }),
     ).toBe(false);
+  });
+
+  it("starts execution work in a fresh task when a chat session is selected", () => {
+    expect(
+      shouldCreateFreshTaskForSend({
+        executionMode: "execute",
+        selectedTaskId: "chat-task",
+        selectedTaskExecutionMode: "chat",
+        selectedTaskStatus: "completed",
+      }),
+    ).toBe(true);
   });
 
   it("keeps an explicitly selected skill in the current task follow-up", () => {

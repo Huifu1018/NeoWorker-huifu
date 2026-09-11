@@ -210,7 +210,7 @@ describe("MainContent markdown normalization helpers", () => {
     expect(resolveSafeCollapsedBubbleHeight([], 220, 96)).toBe(220);
   });
 
-  it("reuses the current chat task for follow-up messages", () => {
+  it("reuses only matching active conversation modes for follow-up messages", () => {
     expect(
       shouldCreateFreshTaskForSend({
         executionMode: "chat",
@@ -224,7 +224,7 @@ describe("MainContent markdown normalization helpers", () => {
         selectedTaskId: "task-1",
         selectedTaskExecutionMode: "execute",
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldCreateFreshTaskForSend({
         executionMode: "chat",

@@ -9197,6 +9197,7 @@ function MainContentComponent({
         selectedTaskExecutionMode: task?.agentConfig?.executionMode,
         selectedTaskCollaborativeMode: task?.agentConfig?.collaborativeMode === true,
         selectedTaskStatus: task?.status,
+        hasExplicitFollowUpContext: Boolean(quotedAssistantMessage),
         forceFreshTask:
           appSlashCommand.shortcut?.name === "schedule" || goalSlashCommand.action === "start",
       });

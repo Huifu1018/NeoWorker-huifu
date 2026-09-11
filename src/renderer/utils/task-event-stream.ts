@@ -379,23 +379,47 @@ export function mergeTaskEventsByIdentity(
   return Array.from(merged.values()).sort(compareTaskEventOrder);
 }
 
-export function hydrateSelectedTaskEvents(
-  selectedTaskId: string,
-  existing: TaskEvent[],
-  historical: TaskEvent[],
-): TaskEvent[] {
-  const currentTaskEvents = existing.filter(
-    (event) => event.taskId === selectedTaskId,
-  );
-  return mergeTaskEventsByIdentity(currentTaskEvents, historical);
-}
-
 const CHILD_OUTPUT_EVENT_TYPES = new Set([
   "file_created",
   "file_modified",
   "file_deleted",
   "artifact_created",
 ]);
+
+export function filterTaskEventsForSelectedSession(params: {
+  selectedTaskId: string | null;
+  events: TaskEvent[];
+  tasks: Task[];
+}): TaskEvent[] {
+  const { selectedTaskId, events, tasks } = params;
+  if (!selectedTaskId) return [];
+  return events.filter((event) =>
+    shouldIncludeTaskEventInSelectedSession({
+      selectedTaskId,
+      event,
+      tasks,
+    }),
+  );
+}
+
+export function hydrateSelectedTaskEvents(
+  selectedTaskId: string,
+  existing: TaskEvent[],
+  historical: TaskEvent[],
+  tasks: Task[] = [],
+): TaskEvent[] {
+  const currentTaskEvents = filterTaskEventsForSelectedSession({
+    selectedTaskId,
+    events: existing,
+    tasks,
+  });
+  const currentHistoricalEvents = filterTaskEventsForSelectedSession({
+    selectedTaskId,
+    events: historical,
+    tasks,
+  });
+  return mergeTaskEventsByIdentity(currentTaskEvents, currentHistoricalEvents);
+}
 
 export function shouldIncludeTaskEventInSelectedSession(params: {
   selectedTaskId: string | null;

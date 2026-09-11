@@ -465,6 +465,71 @@ describe("ProjectContextPanel", () => {
     ]);
   });
 
+  it("ignores other task dialogue when building conversation rounds", () => {
+    const conversationEvents = [
+      {
+        id: "other-user",
+        taskId: "task-other",
+        timestamp: 80,
+        type: "user_message",
+        payload: { message: "/ppt-master 帮我优化一下 PPT" },
+      },
+      {
+        id: "user-current",
+        taskId: task.id,
+        timestamp: 100,
+        type: "user_message",
+        payload: { message: "你好" },
+      },
+      {
+        id: "other-assistant",
+        taskId: "task-other",
+        timestamp: 150,
+        type: "assistant_message",
+        payload: { message: "这段内容属于另一个任务。" },
+      },
+      {
+        id: "assistant-current",
+        taskId: task.id,
+        timestamp: 200,
+        type: "assistant_message",
+        payload: { message: "你好！我是 NeoWorker。" },
+      },
+      {
+        id: "other-completed",
+        taskId: "task-other",
+        timestamp: 250,
+        type: "task_completed",
+        payload: {},
+      },
+      {
+        id: "completed-current",
+        taskId: task.id,
+        timestamp: 300,
+        type: "task_completed",
+        payload: {},
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(conversationEvents, {
+        ...task,
+        prompt: "你好",
+        createdAt: 50,
+        status: "completed",
+      } as Task),
+    ).toEqual([
+      {
+        id: "user-current",
+        turnId: "initial",
+        userText: "你好",
+        assistantText: "你好！我是 NeoWorker。",
+        timestamp: 100,
+        status: "completed",
+      },
+    ]);
+  });
+
   it("recovers real files written shortly after a failed temporary-workspace artifact task", () => {
     const temporaryWorkspace = {
       ...workspace,
