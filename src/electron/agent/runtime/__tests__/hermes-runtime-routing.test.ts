@@ -52,6 +52,30 @@ describe("Hermes runtime routing", () => {
     expect(decision.signals).toContain("office-artifact");
   });
 
+  it.each([
+    {
+      title: "修复项目并验证",
+      prompt: "修复项目中的测试问题，然后运行测试并总结结果",
+      signal: "code-work",
+    },
+    {
+      title: "最新市场研究",
+      prompt: "搜索最新市场信息，比较多个来源并给出引用",
+      signal: "structured-web",
+    },
+    {
+      title: "制作运营表格",
+      prompt: "读取 Excel 台账，更新数据并导出新的工作簿",
+      signal: "office-artifact",
+    },
+  ])("routes $title to Hermes in Auto mode", ({ title, prompt, signal }) => {
+    const decision = routeTask(title, prompt, { runtimePreference: "auto" });
+
+    expect(decision.resolved).toBe("hermes");
+    expect(decision.allowFallback).toBe(true);
+    expect(decision.signals).toContain(signal);
+  });
+
   it("keeps a simple conversational request on the native loop", () => {
     const decision = routeTask("问候", "你好，介绍一下你自己", {
       runtimePreference: "auto",

@@ -8025,6 +8025,12 @@ function MainContentComponent({
       }
       if (effectiveType === "diagram_created") return true;
       if (
+        effectiveType === "progress_update" &&
+        event.payload?.phase === "runtime"
+      ) {
+        return true;
+      }
+      if (
         (event.type === "timeline_artifact_emitted" || effectiveType === "artifact_created") &&
         typeof event.payload?.path === "string"
       ) {

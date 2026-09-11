@@ -81,6 +81,40 @@ Attached files (relative to workspace):
     expect(result.agentConfig.llmProfileHint).toBe("cheap");
   });
 
+  it("materializes the Auto Hermes route into a new task config", () => {
+    const daemonLike = Object.create(AgentDaemon.prototype) as Any;
+
+    const hermesTask = daemonLike.deriveTaskStrategy({
+      title: "查询航班",
+      prompt: "帮我查询明天北京飞深圳的航班信息",
+      agentConfig: {},
+    });
+
+    expect(hermesTask.runtime).toMatchObject({
+      resolved: "hermes",
+      runtimeAgent: "hermes",
+      preference: "auto",
+    });
+    expect(hermesTask.agentConfig.runtimePreference).toBe("auto");
+    expect(hermesTask.agentConfig.externalRuntime).toMatchObject({
+      kind: "acpx",
+      agent: "hermes",
+    });
+
+    const nativeTask = daemonLike.deriveTaskStrategy({
+      title: "问候",
+      prompt: "你好，介绍一下你自己",
+      agentConfig: {},
+    });
+
+    expect(nativeTask.runtime).toMatchObject({
+      resolved: "native",
+      preference: "auto",
+    });
+    expect(nativeTask.agentConfig.runtimePreference).toBe("auto");
+    expect(nativeTask.agentConfig.externalRuntime).toBeUndefined();
+  });
+
   it("does not resume startup background system tasks", () => {
     const daemonLike = Object.create(AgentDaemon.prototype) as Any;
 

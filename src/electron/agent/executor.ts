@@ -4617,7 +4617,7 @@ export class TaskExecutor {
     message: string,
     details: Record<string, unknown> = {},
   ): void {
-    this.emitEvent("progress_update", {
+    const payload = {
       phase: "runtime",
       runtime: "acpx",
       runtimeAgent,
@@ -4625,7 +4625,25 @@ export class TaskExecutor {
       runtimeState: state,
       message,
       ...details,
-    });
+    };
+    const timeline = (this as Any).timelineEmitter;
+    if (timeline && typeof timeline.updateStep === "function") {
+      timeline.updateStep(
+        {
+          id: `runtime:${this.task.id}`,
+          description: message,
+        },
+        {
+          actor: "system",
+          status: state === "failed" ? "failed" : "in_progress",
+          legacyType: "progress_update",
+          message,
+          extraPayload: payload,
+        },
+      );
+      return;
+    }
+    this.emitEvent("progress_update", payload);
   }
 
   private getAcpxRuntimeAgentDisplayName(): string {
@@ -4770,14 +4788,6 @@ export class TaskExecutor {
       runtime: existingConfig.externalRuntime.kind,
       runtimeAgent: existingConfig.externalRuntime.agent,
     };
-    this.emitEvent("progress_update", {
-      ...runtimeMetadata,
-      phase: "acpx_runtime",
-      message: reason,
-      state: "fallback",
-      runtimeState: "fallback",
-      fallbackTarget: "native",
-    });
     this.emitEvent("log", {
       ...runtimeMetadata,
       message: reason,

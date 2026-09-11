@@ -46,6 +46,42 @@ describe("timeline tool payload details", () => {
     expect(markup).not.toContain("模型服务繁忙");
   });
 
+  it("shows the selected Hermes runtime and fallback state in the timeline", () => {
+    applyPersistedLanguage("zh-CN");
+    const runtimeEvent = event("timeline_step_updated", {
+      stepId: "runtime:task-1",
+      legacyType: "progress_update",
+      phase: "runtime",
+      runtime: "acpx",
+      runtimeAgent: "hermes",
+      runtimePreference: "auto",
+      runtimeState: "fallback",
+      message:
+        "Hermes ACP runtime unavailable; falling back to NeoWorker native execution",
+      errorCode: "HERMES_UNAVAILABLE",
+    });
+
+    const title = renderToStaticMarkup(
+      React.createElement(
+        React.Fragment,
+        null,
+        renderEventTitle(runtimeEvent),
+      ),
+    );
+    const details = renderToStaticMarkup(
+      React.createElement(
+        React.Fragment,
+        null,
+        renderEventDetails(runtimeEvent, false, {}),
+      ),
+    );
+
+    expect(title).toContain("Hermes Harness");
+    expect(title).toContain("NeoWorker");
+    expect(details).toContain("hermes");
+    expect(details).toContain("HERMES_UNAVAILABLE");
+  });
+
   it("keeps active tool parameters collapsed instead of forcing raw JSON open", () => {
     expect(
       shouldAutoExpandActiveTimelineEvent(

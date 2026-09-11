@@ -47,6 +47,9 @@ const OFFICE_SIGNAL =
 const STRUCTURED_WEB_SIGNAL =
   /(?:\b(?:research|investigate|look\s+up|search|fetch|scrape|crawl|extract|compare|sources?|citations?|flight|flights|price|prices|schedule|schedules|weather|latest|current)\b|查询|搜索|检索|搜一下|查一下|航班|机票|价格|时刻|天气|最新|实时)/i;
 
+const CODE_WORK_SIGNAL =
+  /(?:\b(?:code|coding|repo|repository|codebase|test|tests|bug|debug|compile|build|lint|typescript|javascript|python|rust|java|node|stack trace|source code|script)\b|代码|源代码|仓库|项目|测试|报错|修复|调试|编译|脚本|接口)/i;
+
 const MULTI_STEP_SIGNAL =
   /(?:\b(?:then|after\s+that|next|finally|first|second|third|step\s+\d|and\s+then)\b|然后|接着|下一步|最后|第一步|第二步|第三步|并且|同时)/i;
 
@@ -77,7 +80,14 @@ function isComplexHermesCandidate(input: TaskRuntimeRoutingInput): {
   const complexIntent = COMPLEX_WORK_INTENTS.has(input.route.intent);
   const officeCandidate =
     OFFICE_SIGNAL.test(text) && MUTATION_SIGNAL.test(text);
-  if (!complexIntent && !officeCandidate) return { selected: false, signals };
+  const codeCandidate =
+    CODE_WORK_SIGNAL.test(text) &&
+    (MUTATION_SIGNAL.test(text) ||
+      MULTI_STEP_SIGNAL.test(text) ||
+      input.route.complexity !== "low");
+  if (!complexIntent && !officeCandidate && !codeCandidate) {
+    return { selected: false, signals };
+  }
 
   if (input.route.intent === "workflow") signals.push("workflow");
   if (input.route.intent === "deep_work") signals.push("deep-work");
@@ -87,6 +97,7 @@ function isComplexHermesCandidate(input: TaskRuntimeRoutingInput): {
     signals.push(`domain:${input.strategy.taskDomain}`);
   }
   if (OFFICE_SIGNAL.test(text)) signals.push("office-artifact");
+  if (codeCandidate) signals.push("code-work");
   if (STRUCTURED_WEB_SIGNAL.test(text)) signals.push("structured-web");
   if (MULTI_STEP_SIGNAL.test(text)) signals.push("multi-step");
   if (MUTATION_SIGNAL.test(text)) signals.push("mutation");
@@ -125,6 +136,7 @@ function isComplexHermesCandidate(input: TaskRuntimeRoutingInput): {
       (workflowCandidate ||
         highComplexityCandidate ||
         domainCandidate ||
+        codeCandidate ||
         officeCandidate ||
         multiStepOfficeCandidate ||
         webCandidate),

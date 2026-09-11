@@ -516,6 +516,48 @@ describe("TaskExecutor entrypoint guards", () => {
     );
   });
 
+  it("projects runtime status through the timeline emitter", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    const updateStep = vi.fn();
+
+    executor.task = {
+      id: "runtime-status",
+      agentConfig: { runtimePreference: "auto" },
+    };
+    executor.timelineEmitter = { updateStep };
+    executor.emitEvent = vi.fn();
+
+    (TaskExecutor.prototype as Any).emitRuntimeStatus.call(
+      executor,
+      "hermes",
+      "fallback",
+      "Hermes ACP runtime unavailable; falling back to NeoWorker native execution",
+      { errorCode: "HERMES_UNAVAILABLE", fallbackTarget: "native" },
+    );
+
+    expect(updateStep).toHaveBeenCalledWith(
+      {
+        id: "runtime:runtime-status",
+        description:
+          "Hermes ACP runtime unavailable; falling back to NeoWorker native execution",
+      },
+      expect.objectContaining({
+        actor: "system",
+        status: "in_progress",
+        legacyType: "progress_update",
+        extraPayload: expect.objectContaining({
+          phase: "runtime",
+          runtime: "acpx",
+          runtimeAgent: "hermes",
+          runtimePreference: "auto",
+          runtimeState: "fallback",
+          errorCode: "HERMES_UNAVAILABLE",
+        }),
+      }),
+    );
+    expect(executor.emitEvent).not.toHaveBeenCalled();
+  });
+
   it("finalizeFollowUpCompletion syncs task row and in-memory task state", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

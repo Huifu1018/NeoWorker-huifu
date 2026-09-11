@@ -1117,13 +1117,36 @@ export function renderEventTitle(
   }
 
   if (
-    event.type === "timeline_step_updated" &&
+    (event.type === "timeline_step_updated" || event.type === "progress_update") &&
     effectiveType === "progress_update"
   ) {
     const rawMsg =
       typeof event.payload?.message === "string"
         ? event.payload.message
         : "Progress update";
+    if (event.payload?.phase === "runtime") {
+      const runtimeAgent =
+        typeof event.payload?.runtimeAgent === "string"
+          ? event.payload.runtimeAgent
+          : "acpx";
+      const runtimeState =
+        typeof event.payload?.runtimeState === "string"
+          ? event.payload.runtimeState
+          : "active";
+      const runtimeLabel =
+        runtimeAgent === "hermes"
+          ? "Hermes Harness"
+          : runtimeAgent === "claude"
+            ? "Claude Code ACP"
+            : "ACP runtime";
+      const stateLabel =
+        runtimeState === "fallback"
+          ? "fallback to NeoWorker native loop"
+          : runtimeState === "failed"
+            ? "failed; no fallback"
+            : "active";
+      return localizeProgressText(`${runtimeLabel}: ${stateLabel}`);
+    }
     if (rawMsg === "Thinking...") {
       return (
         <span className="thinking-title">
@@ -1844,6 +1867,40 @@ export function renderEventDetails(
     return (
       <div className="diagram-event-details">
         <MermaidDiagram chart={diagram} />
+      </div>
+    );
+  }
+
+  if (
+    effectiveType === "progress_update" &&
+    event.payload?.phase === "runtime"
+  ) {
+    const runtimeAgent =
+      typeof event.payload?.runtimeAgent === "string"
+        ? event.payload.runtimeAgent
+        : "acpx";
+    const runtimePreference =
+      typeof event.payload?.runtimePreference === "string"
+        ? event.payload.runtimePreference
+        : "auto";
+    const runtimeState =
+      typeof event.payload?.runtimeState === "string"
+        ? event.payload.runtimeState
+        : "active";
+    const message =
+      typeof event.payload?.message === "string"
+        ? event.payload.message
+        : "";
+    return (
+      <div className="event-details">
+        <div>
+          Runtime: {runtimeAgent} · preference: {runtimePreference} · state:{" "}
+          {runtimeState}
+        </div>
+        {message ? <div>{message}</div> : null}
+        {typeof event.payload?.errorCode === "string" ? (
+          <div>Error code: {event.payload.errorCode}</div>
+        ) : null}
       </div>
     );
   }
