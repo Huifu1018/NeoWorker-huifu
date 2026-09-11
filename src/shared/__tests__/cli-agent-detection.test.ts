@@ -82,6 +82,38 @@ describe("cli-agent-detection", () => {
     expect(resolveCliAgentType(task)).toBe("claude-acpx");
   });
 
+  it("classifies acpx Hermes tasks from task metadata", () => {
+    const task = createTask({
+      agentConfig: {
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+          sessionMode: "persistent",
+          outputMode: "json",
+          permissionMode: "approve-reads",
+        },
+      },
+    });
+
+    expect(isCliAgentChildTask(task)).toBe(true);
+    expect(resolveCliAgentType(task)).toBe("hermes-acpx");
+  });
+
+  it("classifies acpx Hermes tasks from event payload metadata", () => {
+    const events = [
+      createEvent({
+        type: "progress_update",
+        payload: {
+          runtime: "acpx",
+          runtimeAgent: "hermes",
+          message: "Delegating to Hermes via ACP",
+        },
+      }),
+    ];
+
+    expect(detectCliAgentFromEvents(events)).toBe("hermes-acpx");
+  });
+
   it("falls back to legacy Claude CLI command detection", () => {
     const task = createTask({ title: "Generic child task" });
     const events = [
@@ -127,6 +159,15 @@ describe("cli-agent-detection", () => {
       name: "Claude",
       badge: "Claude via ACP",
       color: "#8b5cf6",
+    });
+  });
+
+  it("returns Hermes display metadata for acpx-backed tasks", () => {
+    expect(getCliAgentDisplayInfo("hermes-acpx")).toEqual({
+      icon: "⚙️",
+      name: "Hermes",
+      badge: "Hermes via ACP",
+      color: "#0ea5e9",
     });
   });
 });

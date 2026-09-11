@@ -183,7 +183,7 @@ function normalizeRuntimeMode(value: unknown): "native" | "acpx" | undefined {
 
 function normalizeRuntimeAgent(value: unknown): ExternalRuntimeAgent | undefined {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "codex" || normalized === "claude") return normalized;
+  if (normalized === "codex" || normalized === "claude" || normalized === "hermes") return normalized;
   return undefined;
 }
 
@@ -245,7 +245,7 @@ export class SymphonyService {
       maxConcurrentIssueRuns: Math.max(1, Number(row.max_concurrent_issue_runs) || DEFAULT_CONFIG.maxConcurrentIssueRuns),
       approvalPreset: (row.approval_preset as AutonomyPolicyPreset) || DEFAULT_CONFIG.approvalPreset,
       runtimeMode: row.runtime_mode === "acpx" ? "acpx" : "native",
-      runtimeAgent: row.runtime_agent === "claude" ? "claude" : "codex",
+      runtimeAgent: normalizeRuntimeAgent(row.runtime_agent) || "codex",
       handoffStatus: (row.handoff_status as Issue["status"]) || DEFAULT_CONFIG.handoffStatus,
       maxRetries: Math.max(0, Number(row.max_retries) || DEFAULT_CONFIG.maxRetries),
       retryBaseDelayMs: Math.max(1000, Number(row.retry_base_delay_ms) || DEFAULT_CONFIG.retryBaseDelayMs),

@@ -119,6 +119,8 @@ describeWithSqlite("SymphonyService", () => {
     const service = new SymphonyService({
       db,
       agentDaemon: {
+        on: () => undefined,
+        off: () => undefined,
         createTask: async (params: Any) => {
           const task = taskRepo.create({
             title: params.title,
@@ -172,6 +174,8 @@ describeWithSqlite("SymphonyService", () => {
     const service = new SymphonyService({
       db,
       agentDaemon: {
+        on: () => undefined,
+        off: () => undefined,
         createTask: async (params: Any) =>
           taskRepo.create({
             title: params.title,
@@ -196,5 +200,50 @@ describeWithSqlite("SymphonyService", () => {
     const task = updatedIssue?.taskId ? taskRepo.findById(updatedIssue.taskId) : undefined;
     expect(task?.agentConfig?.externalRuntime?.kind).toBe("acpx");
     expect(task?.agentConfig?.externalRuntime?.agent).toBe("claude");
+  });
+
+  it("preserves Hermes as the workflow-selected acpx agent", async () => {
+    const { SymphonyService } = await import("../SymphonyService");
+    const workspace = insertWorkspace();
+    fs.writeFileSync(
+      path.join(workspace.path, "WORKFLOW.md"),
+      "---\nruntime:\n  mode: acpx\n  agent: hermes\n---\nImplement {{issue.title}}",
+    );
+    const issue = core.createIssue({
+      companyId: core.getDefaultCompany().id,
+      workspaceId: workspace.id,
+      title: "Route through Hermes",
+      status: "todo",
+      priority: 1,
+    });
+    const service = new SymphonyService({
+      db,
+      agentDaemon: {
+        on: () => undefined,
+        off: () => undefined,
+        createTask: async (params: Any) =>
+          taskRepo.create({
+            title: params.title,
+            prompt: params.prompt,
+            status: "pending",
+            workspaceId: params.workspaceId,
+            agentConfig: params.agentConfig,
+            source: params.source,
+            ...params.taskOverrides,
+          }),
+      } as Any,
+    });
+    service.updateConfig({
+      enabled: true,
+      workspaceId: workspace.id,
+      runtimeMode: "native",
+    });
+
+    await service.runOnce("manual");
+
+    const updatedIssue = core.getIssue(issue.id);
+    const task = updatedIssue?.taskId ? taskRepo.findById(updatedIssue.taskId) : undefined;
+    expect(task?.agentConfig?.externalRuntime?.kind).toBe("acpx");
+    expect(task?.agentConfig?.externalRuntime?.agent).toBe("hermes");
   });
 });

@@ -8,7 +8,12 @@
 
 import type { Task, TaskEvent } from "./types";
 
-export type CliAgentType = "codex-cli" | "codex-acpx" | "claude-cli" | "claude-acpx";
+export type CliAgentType =
+  | "codex-cli"
+  | "codex-acpx"
+  | "claude-cli"
+  | "claude-acpx"
+  | "hermes-acpx";
 
 // Title patterns (case-insensitive)
 const CODEX_TITLE_PATTERNS = [
@@ -42,7 +47,9 @@ export function detectCliAgentFromTitle(title: string): CliAgentType | null {
 export function detectCliAgentFromTask(task: Task): CliAgentType | null {
   const externalRuntime = task.agentConfig?.externalRuntime;
   if (externalRuntime?.kind === "acpx") {
-    return externalRuntime.agent === "claude" ? "claude-acpx" : "codex-acpx";
+    if (externalRuntime.agent === "claude") return "claude-acpx";
+    if (externalRuntime.agent === "hermes") return "hermes-acpx";
+    return "codex-acpx";
   }
   return detectCliAgentFromTitle(task.title);
 }
@@ -58,6 +65,7 @@ export function detectCliAgentFromEvents(events: TaskEvent[]): CliAgentType | nu
     const runtimeAgent = String(payload?.runtimeAgent || "");
     if (runtime === "acpx" && runtimeAgent === "codex") return "codex-acpx";
     if (runtime === "acpx" && runtimeAgent === "claude") return "claude-acpx";
+    if (runtime === "acpx" && runtimeAgent === "hermes") return "hermes-acpx";
 
     const eventType = event.type;
     // Check step_started events
@@ -127,5 +135,7 @@ export function getCliAgentDisplayInfo(agentType: CliAgentType): {
       return { icon: "🧠", name: "Claude", badge: "Claude CLI", color: "#f59e0b" };
     case "claude-acpx":
       return { icon: "🧠", name: "Claude", badge: "Claude via ACP", color: "#8b5cf6" };
+    case "hermes-acpx":
+      return { icon: "⚙️", name: "Hermes", badge: "Hermes via ACP", color: "#0ea5e9" };
   }
 }

@@ -289,6 +289,25 @@ describe("TaskCreateSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts Hermes as an ACP external runtime agent", () => {
+    const result = TaskCreateSchema.safeParse({
+      title: "Hermes task",
+      prompt: "Use the Hermes harness to inspect the workspace.",
+      workspaceId: "__temp_workspace__",
+      agentConfig: {
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+          sessionMode: "persistent",
+          outputMode: "json",
+          permissionMode: "approve-reads",
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("TaskWorkspaceUpdateSchema", () => {
