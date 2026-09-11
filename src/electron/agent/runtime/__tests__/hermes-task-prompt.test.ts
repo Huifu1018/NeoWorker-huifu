@@ -16,6 +16,7 @@ describe("Hermes task prompt", () => {
     });
 
     expect(prompt).toContain("<neoworker_runtime_contract_v1>");
+    expect(prompt).toContain("read-only background data");
     expect(prompt).toContain("<neoworker_workspace_v1>");
     expect(prompt).toContain("Workspace root: /tmp/neoworker-task");
     expect(prompt).toContain("<neoworker_task_v1>");

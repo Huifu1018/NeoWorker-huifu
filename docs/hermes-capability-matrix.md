@@ -24,7 +24,7 @@ NeoWorker 采用“**Hermes 负责 Agent Loop，NeoWorker 负责 Tool Host 和�
 | 沙箱与工作区边界 | NeoWorker | 已接入 | 工具只获得当前任务允许的工作区和权限快照。 |
 | 幂等与副作用恢复 | NeoWorker | 已接入 | `toolCallId`、checkpoint 和未知副作用确认阻止自动重复执行。 |
 | 任务状态与时间线 | NeoWorker | 已接入 | Hermes active、fallback、failed 和 tool progress 都投影为可见的 NeoWorker 时间线状态。 |
-| 任务上下文与技能提示 | NeoWorker | 已接入 | 以有界 prompt 层注入工作区、任务、上下文和技能信息；follow-up 只发送新增指令。 |
+| 任务上下文、技能与记忆提示 | NeoWorker | 已接入 | 以有界 prompt 层注入工作区、任务、技能，以及按工作区和权限过滤的只读 `MemorySynthesizer` 上下文；follow-up 只发送新增指令。 |
 | Hermes 原生 context / memory / project plugins / kanban | 无 | 宿主模式关闭 | 防止 Hermes 的隐式上下文或工具绕过 NeoWorker 的任务边界。 |
 | 旧 Hermes-native session | Hermes | 兼容保留 | 仅用于已有 `toolOwnership=hermes` 或缺失 ownership 标记的历史 checkpoint。 |
 

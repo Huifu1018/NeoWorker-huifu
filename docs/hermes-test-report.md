@@ -28,6 +28,7 @@
 | CI 类型检查门禁 | 已拆分 | Electron、Daemon、CLI 类型检查作为严格门禁；Renderer 全量检查继续输出完整报告，但既有错误不阻断运行时交付 |
 | Hermes Runtime 生产路由 | 已接入 | Executor 根据显式 `externalRuntime.agent=hermes` 创建适配器；适配器提供 `start/prompt/cancel/pause/resume/retry/checkpoint/close` 稳定生命周期接口 |
 | Hermes Prompt 分层与恢复路由 | 已接入并通过专项测试 | Executor 使用有界的 Runtime/工作区/任务/上下文/技能提示层；后续消息只发送最新指令；已有 checkpoint 时改走 guarded `retry()`，避免初始任务重复提交 |
+| Hermes 宿主上下文与记忆映射 | 已接入并通过专项测试 | Hermes 原生 context/memory 继续关闭；允许的 NeoWorker private workspace 任务通过限长、只读、权限过滤的 `MemorySynthesizer` 和 awareness context 注入 |
 | Hermes 流式输出与 follow-up 终态 | 通过专项测试 | ACP message chunks 改走临时 `llm_streaming` 事件，避免逐 token 持久化；Hermes follow-up 返回后进入统一终态收口，防止任务停留在 `executing` |
 | Hermes ACP 会话复用 | 通过专项测试 | 成功 turn 在同一工作区保留 60 秒热会话；后续消息复用 ACP/MCP 连接，失败、取消、暂停和工作区切换会关闭旧会话，减少重复启动开销 |
 | Hermes ACP 宿主工具桥接 | 已接入并通过探针 | 新建 ACP 任务使用固定 0.18.0 包装器，仅启用 `mcp-neoworker`；任务级 MCP endpoint 调用 Executor Tool Host；真实模型探针只执行一次并返回 `NEOWORKER_HOST_OK` |
