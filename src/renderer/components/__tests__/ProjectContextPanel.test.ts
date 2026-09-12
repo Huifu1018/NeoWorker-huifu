@@ -14,6 +14,7 @@ import {
   getProjectFileVisual,
   mergeWorkspaceBrowserFiles,
   ProjectContextPanel,
+  shouldDisplayWorkspaceFile,
   shouldPublishTaskOutputs,
 } from "../ProjectContextPanel";
 import type { Task, TaskEvent, Workspace } from "../../../shared/types";
@@ -242,6 +243,51 @@ describe("ProjectContextPanel", () => {
         "/tmp/finance-workspace",
       ).map((file) => file.id),
     ).toEqual(["local-report", "local-artifacts", "artifact-nested"]);
+  });
+
+  it("hides process checkpoints and scratch folders from the workspace browser", () => {
+    const visibleFiles = [
+      {
+        id: "final",
+        name: "translated.xlsx",
+        path: "/tmp/finance-workspace/translated.xlsx",
+      },
+      {
+        id: "checkpoint",
+        name: "s1_r01_05.json",
+        path: "/tmp/finance-workspace/s1_r01_05.json",
+      },
+      {
+        id: "pptxwork",
+        name: "pptxwork",
+        path: "/tmp/finance-workspace/pptxwork",
+        isDirectory: true,
+      },
+      {
+        id: "tr",
+        name: "tr",
+        path: "/tmp/finance-workspace/tr",
+        isDirectory: true,
+      },
+      {
+        id: "ordinary",
+        name: "research-notes.json",
+        path: "/tmp/finance-workspace/research-notes.json",
+      },
+    ].filter((file) =>
+      shouldDisplayWorkspaceFile({
+        file,
+        canGoBack: false,
+        copiedSourceFileKeys: new Set(),
+        canonicalOutputFileNames: new Set(),
+        workspacePath: "/tmp/finance-workspace",
+      }),
+    );
+
+    expect(visibleFiles.map((file) => file.id)).toEqual([
+      "final",
+      "ordinary",
+    ]);
   });
 
   it("recognizes source files superseded by a canonical delivery copy", () => {

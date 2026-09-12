@@ -60,6 +60,7 @@ import {
   getArtifactPathIdentityKey,
   isCanonicalTaskArtifactOutputPath,
 } from "../utils/artifact-path-identity";
+import { isInternalWorkspaceProcessPath } from "../utils/task-artifact-visibility";
 import "./project-context-panel.css";
 
 type ProjectPanelTab = "outputs" | "files" | "changes" | "session";
@@ -117,6 +118,26 @@ export function mergeWorkspaceBrowserFiles(
   localFiles.forEach(add);
   artifactFiles.forEach(add);
   return merged;
+}
+
+export function shouldDisplayWorkspaceFile(options: {
+  file: WorkspaceFile;
+  canGoBack: boolean;
+  workspacePath?: string;
+  copiedSourceFileKeys: Set<string>;
+  canonicalOutputFileNames: Set<string>;
+}): boolean {
+  const { file, canGoBack, workspacePath } = options;
+  if (isInternalWorkspaceProcessPath(file.path, workspacePath)) return false;
+  return (
+    canGoBack ||
+    Boolean(file.isDirectory) ||
+    file.source === "artifacts" ||
+    (!options.copiedSourceFileKeys.has(
+      getArtifactPathIdentityKey(file.path, workspacePath),
+    ) &&
+      !options.canonicalOutputFileNames.has(file.name.toLowerCase()))
+  );
 }
 
 export function derivePromotedWorkspaceOutputs(options: {
@@ -1641,15 +1662,14 @@ export function ProjectContextPanel({
   const displayedWorkspaceFiles = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const sorted = workspaceFiles
-      .filter(
-        (file) =>
-          canGoBack ||
-          file.isDirectory ||
-          file.source === "artifacts" ||
-          (!copiedSourceFileKeys.has(
-            getArtifactPathIdentityKey(file.path, workspace?.path),
-          ) &&
-            !canonicalOutputFileNames.has(file.name.toLowerCase())),
+      .filter((file) =>
+        shouldDisplayWorkspaceFile({
+          file,
+          canGoBack,
+          copiedSourceFileKeys,
+          canonicalOutputFileNames,
+          workspacePath: workspace?.path,
+        }),
       )
       .sort((a, b) => {
         if (Boolean(a.isDirectory) !== Boolean(b.isDirectory))
