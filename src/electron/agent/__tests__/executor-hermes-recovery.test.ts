@@ -55,6 +55,55 @@ function adapter(instance: TaskExecutor) {
 }
 
 describe("Executor Hermes recovery", () => {
+  it("applies a dynamically invoked Skill and returns its hidden guidance to Hermes", () => {
+    const instance = executor([]) as Any;
+    const application = {
+      skillId: "documents",
+      skillName: "Documents",
+      trigger: "model",
+      args: "report.docx",
+      parameters: { output: "docx" },
+      content: "Use the document workflow and verify the final file.",
+      reason: "Applied as additive skill context.",
+      appliedAt: Date.now(),
+      contextDirectives: {
+        allowedTools: ["read_file", "write_file"],
+        artifactDirectories: ["/tmp/artifacts"],
+      },
+    };
+    instance.toolRegistry = {
+      takeResolvedSkillInvocation: vi.fn(() => application),
+    };
+    instance.appliedSkills = [];
+
+    const enriched = (TaskExecutor.prototype as Any).enrichHermesSkillToolResult.call(
+      instance,
+      "Skill",
+      { skill: "documents", args: "report.docx" },
+      {
+        success: true,
+        skill: "documents",
+        skill_name: "Documents",
+        skill_invocation_id: "skill-recover-hermes-1",
+      },
+    );
+
+    expect(enriched).toMatchObject({
+      success: true,
+      neoworker_skill_applied: true,
+      neoworker_skill_directives: application.contextDirectives,
+    });
+    expect(enriched.neoworker_skill_context).toContain(
+      "Use the document workflow and verify the final file.",
+    );
+    expect(instance.appliedSkills).toHaveLength(1);
+    expect(instance.appliedSkills[0]).toMatchObject({
+      skillId: "documents",
+      skillName: "Documents",
+      content: application.content,
+    });
+  });
+
   it("routes a new Hermes session's MCP tool call through the executor Tool Host", async () => {
     fixtureTransport();
     const instance = executor([]) as Any;

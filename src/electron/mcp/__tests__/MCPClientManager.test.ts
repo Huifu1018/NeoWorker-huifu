@@ -89,6 +89,10 @@ vi.mock("../client/MCPServerConnection", () => {
         this.tls = tools;
         this.emit("tools_changed", tools);
       }
+
+      async syncResourceSubscriptions() {
+        // The production connection restores trigger subscriptions on connect.
+      }
     },
   };
 });
@@ -177,6 +181,20 @@ describe("MCPClientManager startup optimizations", () => {
       const connected = status.filter((s) => s.status === "connected");
 
       expect(connected.length).toBe(3);
+    });
+
+    it("should share one initialization promise across concurrent callers", async () => {
+      const connectServer = vi.spyOn(manager, "connectServer");
+
+      await Promise.all([
+        manager.initialize(),
+        manager.initialize(),
+        manager.initialize(),
+      ]);
+
+      expect(connectServer).toHaveBeenCalledTimes(3);
+      expect(MCPSettingsManager.beginBatch).toHaveBeenCalledTimes(1);
+      expect(MCPSettingsManager.endBatch).toHaveBeenCalledTimes(1);
     });
 
     it("should skip disabled servers", async () => {

@@ -66,6 +66,7 @@ vi.mock("fs", () => ({
   readFileSync: vi.fn().mockImplementation(mockRead),
   readdirSync: vi.fn().mockImplementation(mockReaddir),
   statSync: vi.fn().mockImplementation(mockStat),
+  mkdirSync: vi.fn(),
 }));
 
 // Import after mocking
@@ -537,6 +538,24 @@ describe("CustomSkillLoader", () => {
       // Clear files - should not affect loaded skills since already initialized
       mockFiles.clear();
       await loader.initialize();
+      expect(loader.listSkills()).toHaveLength(1);
+    });
+
+    it("should join initialization and reload when the workspace scope changes", async () => {
+      const skill = createTestSkill({ id: "workspace-skill" });
+      mockFiles.set("workspace-skill.json", JSON.stringify(skill));
+      const reloadSpy = vi.spyOn(loader, "reloadSkills");
+
+      await Promise.all([
+        loader.initializeForWorkspace("/workspace-a"),
+        loader.initializeForWorkspace("/workspace-a"),
+      ]);
+      await loader.initializeForWorkspace("/workspace-b");
+
+      expect(reloadSpy).toHaveBeenCalledTimes(2);
+      expect(loader.getWorkspaceSkillsDir()).toBe(
+        path.join("/workspace-b", "skills"),
+      );
       expect(loader.listSkills()).toHaveLength(1);
     });
   });

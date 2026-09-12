@@ -59,11 +59,14 @@ describe("Hermes task prompt", () => {
     const prompt = buildHermesRecoveryPrompt({
       taskPrompt: "Build the project.",
       workspacePath: "/tmp/workspace",
+      appliedSkillContext: "ACTIVE SKILL: documents\nUse the document workflow.",
     });
 
     expect(prompt).toContain("<neoworker_recovery_v1>");
     expect(prompt).toContain("saved Hermes checkpoint");
     expect(prompt).toContain("unknown");
+    expect(prompt).toContain("<neoworker_skills_v1>");
+    expect(prompt).toContain("Use the document workflow.");
   });
 
   it("preserves the configured truncation marker", () => {

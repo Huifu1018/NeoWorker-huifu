@@ -4918,6 +4918,13 @@ ${skillDescriptions}`;
     console.log(`[ToolRegistry] Executing MCP tool: ${mcpToolName}`);
 
     try {
+      const serverId =
+        typeof (mcpManager as Any).getServerIdForTool === "function"
+          ? (mcpManager as Any).getServerIdForTool(mcpToolName)
+          : null;
+      if (serverId && typeof (mcpManager as Any).acquireForExecutor === "function") {
+        mcpManager.acquireForExecutor(this.taskId, serverId);
+      }
       const result = await mcpManager.callTool(mcpToolName, input);
       // Format MCP result and process any generated files
       return await this.formatMCPResult(result, mcpToolName, input);

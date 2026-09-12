@@ -154,6 +154,7 @@ export class CustomSkillLoader {
   private managedSkillsDir: string;
   private externalSkillDirs: string[] = [];
   private workspaceSkillsDir: string | null = null;
+  private loadedWorkspaceSkillsDir: string | null = null;
   private skills: Map<string, CustomSkill> = new Map();
   private initialized: boolean = false;
   private initializationPromise: Promise<void> | null = null;
@@ -239,6 +240,22 @@ export class CustomSkillLoader {
     });
 
     return this.initializationPromise;
+  }
+
+  /**
+   * Ensure the shared catalog is ready for a task's workspace.
+   *
+   * Desktop startup initializes the catalog lazily so the first window can
+   * paint quickly. A task must join that initialization before resolving a
+   * Skill invocation, and must reload when the workspace scope changed.
+   */
+  async initializeForWorkspace(workspacePath: string): Promise<void> {
+    this.setWorkspaceSkillsDir(workspacePath);
+    await this.initialize();
+
+    if (this.loadedWorkspaceSkillsDir !== this.workspaceSkillsDir) {
+      await this.reloadSkills();
+    }
   }
 
   /**
@@ -466,6 +483,7 @@ export class CustomSkillLoader {
     );
 
     await this.populateSecurityReports(externalSkills, managedSkills);
+    this.loadedWorkspaceSkillsDir = this.workspaceSkillsDir;
 
     return this.listSkills();
   }

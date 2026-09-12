@@ -53,6 +53,7 @@ export class MCPClientManager extends EventEmitter {
   private toolCatalogSnapshot: { version: number; tools: MCPTool[] } = { version: 0, tools: [] };
   private initialized = false;
   private isInitializing = false; // Flag to batch operations during startup
+  private initializationPromise: Promise<void> | null = null;
   private rebuildToolMapDebounceTimer: NodeJS.Timeout | null = null;
   private desiredTriggerResourceSubscriptions: Map<string, Set<string>> = new Map();
   /** Per-server set of executor IDs that currently reference the connection */
@@ -87,80 +88,104 @@ export class MCPClientManager extends EventEmitter {
     if (this.initialized) {
       return;
     }
+    if (this.initializationPromise) {
+      return this.initializationPromise;
+    }
+
+    const initializationPromise = this.initializeInternal();
+    this.initializationPromise = initializationPromise;
+    try {
+      await initializationPromise;
+    } finally {
+      if (this.initializationPromise === initializationPromise) {
+        this.initializationPromise = null;
+      }
+    }
+  }
+
+  private async initializeInternal(): Promise<void> {
+    if (this.initialized) {
+      return;
+    }
 
     logger.info("Initializing...");
     this.isInitializing = true;
 
-    // Initialize settings manager
-    MCPSettingsManager.initialize();
+    let batchStarted = false;
+    try {
+      // Initialize settings manager
+      MCPSettingsManager.initialize();
 
-    // Enter batch mode to defer all settings saves until initialization completes
-    MCPSettingsManager.beginBatch();
+      // Enter batch mode to defer all settings saves until initialization completes
+      MCPSettingsManager.beginBatch();
+      batchStarted = true;
 
-    // Load settings
-    const settings = MCPSettingsManager.loadSettings();
+      // Load settings
+      const settings = MCPSettingsManager.loadSettings();
 
-    // Auto-connect if enabled - connect in PARALLEL for faster startup
-    if (settings.autoConnect) {
-      const enabledServers = settings.servers.filter((s) => s.enabled);
-      const autoConnectServers: MCPServerConfig[] = [];
-      for (const server of enabledServers) {
-        if (this.shouldAutoConnect(server)) {
-          autoConnectServers.push(server);
-          continue;
+      // Auto-connect if enabled - connect in PARALLEL for faster startup
+      if (settings.autoConnect) {
+        const enabledServers = settings.servers.filter((s) => s.enabled);
+        const autoConnectServers: MCPServerConfig[] = [];
+        for (const server of enabledServers) {
+          if (this.shouldAutoConnect(server)) {
+            autoConnectServers.push(server);
+            continue;
+          }
+
+          const connectorId = this.detectConnectorId(server);
+          if (connectorId) {
+            // Keep persisted state aligned with behavior: unconfigured connectors stay disabled
+            // until credentials are provided and users explicitly enable/connect them.
+            MCPSettingsManager.updateServer(server.id, { enabled: false });
+          }
         }
+        logger.info(
+          `Auto-connecting to ${autoConnectServers.length} enabled server(s) in parallel`,
+        );
 
-        const connectorId = this.detectConnectorId(server);
-        if (connectorId) {
-          // Keep persisted state aligned with behavior: unconfigured connectors stay disabled
-          // until credentials are provided and users explicitly enable/connect them.
-          MCPSettingsManager.updateServer(server.id, { enabled: false });
-        }
+        const connectionPromises = autoConnectServers.map((server) =>
+          this.connectServer(server.id).catch((error) => {
+            logger.error(`Failed to auto-connect to ${server.name}:`, error);
+            return null; // Don't throw, allow other connections to continue
+          }),
+        );
+
+        await Promise.allSettled(connectionPromises);
+        const connected = autoConnectServers.filter(
+          (server) => this.connections.get(server.id)?.getStatus().status === "connected",
+        ).length;
+        const failed = autoConnectServers.length - connected;
+        this.startupStats = {
+          enabled: enabledServers.length,
+          attempted: autoConnectServers.length,
+          connected,
+          failed,
+        };
+        logger.info(
+          `Auto-connect summary: enabled=${enabledServers.length}, attempted=${autoConnectServers.length}, connected=${connected}, failed=${failed}`,
+        );
+      } else {
+        this.startupStats = { enabled: 0, attempted: 0, connected: 0, failed: 0 };
       }
-      logger.info(
-        `Auto-connecting to ${autoConnectServers.length} enabled server(s) in parallel`,
+
+      // Snapshot initial server IDs so they are never auto-disconnected by releaseForExecutor
+      this.initialServerIds = new Set(
+        Array.from(this.connections.entries())
+          .filter(([, conn]) => conn.getStatus().status === "connected")
+          .map(([id]) => id),
       );
 
-      const connectionPromises = autoConnectServers.map((server) =>
-        this.connectServer(server.id).catch((error) => {
-          logger.error(`Failed to auto-connect to ${server.name}:`, error);
-          return null; // Don't throw, allow other connections to continue
-        }),
-      );
-
-      await Promise.allSettled(connectionPromises);
-      const connected = autoConnectServers.filter(
-        (server) => this.connections.get(server.id)?.getStatus().status === "connected",
-      ).length;
-      const failed = autoConnectServers.length - connected;
-      this.startupStats = {
-        enabled: enabledServers.length,
-        attempted: autoConnectServers.length,
-        connected,
-        failed,
-      };
-      logger.info(
-        `Auto-connect summary: enabled=${enabledServers.length}, attempted=${autoConnectServers.length}, connected=${connected}, failed=${failed}`,
-      );
-    } else {
-      this.startupStats = { enabled: 0, attempted: 0, connected: 0, failed: 0 };
+      // Rebuild tool map once after all connections are established
+      this.rebuildToolMapImmediate();
+      this.initialized = true;
+    } finally {
+      this.isInitializing = false;
+      if (batchStarted) {
+        // This saves settings once if any changes were made during initialization.
+        MCPSettingsManager.endBatch();
+      }
     }
-
-    this.isInitializing = false;
-    this.initialized = true;
-
-    // Snapshot initial server IDs so they are never auto-disconnected by releaseForExecutor
-    this.initialServerIds = new Set(
-      Array.from(this.connections.entries())
-        .filter(([, conn]) => conn.getStatus().status === "connected")
-        .map(([id]) => id),
-    );
-
-    // Rebuild tool map once after all connections are established
-    this.rebuildToolMapImmediate();
-
-    // End batch mode - this will save settings once if any changes were made
-    MCPSettingsManager.endBatch();
 
     logger.info("Initialized");
   }
@@ -237,6 +262,9 @@ export class MCPClientManager extends EventEmitter {
       tools: [],
     };
     this.initialized = false;
+    this.isInitializing = false;
+    this.initialServerIds.clear();
+    this.connectionRefCounts.clear();
 
     logger.debug("Shutdown complete");
   }

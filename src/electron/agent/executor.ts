@@ -227,6 +227,7 @@ import { KnowledgeGraphService } from "../knowledge-graph/KnowledgeGraphService"
 import { MemorySynthesizer } from "../memory/MemorySynthesizer";
 import { TranscriptStore } from "../memory/TranscriptStore";
 import { ChronicleObservationRepository } from "../chronicle";
+import { MCPClientManager } from "../mcp/client/MCPClientManager";
 import { MCPSettingsManager } from "../mcp/settings";
 import { IntentRouter } from "./strategy/IntentRouter";
 import { TaskStrategyService } from "./strategy/TaskStrategyService";
@@ -509,6 +510,7 @@ const EXPLICIT_CHAT_RECENT_MESSAGE_WINDOW = 16;
 const EXPLICIT_CHAT_SUMMARY_TRIGGER_MESSAGE_COUNT = 24;
 const EXPLICIT_CHAT_SUMMARY_TRIGGER_TOKENS = 12_000;
 const EXPLICIT_CHAT_SUMMARY_MAX_OUTPUT_TOKENS = 1536;
+const HERMES_SKILL_CONTEXT_MAX_CHARS = 16_000;
 const BATCH_EXTERNAL_SIDE_EFFECT_TOOLS = new Set([
   "x_action",
   "notion_action",
@@ -5146,6 +5148,7 @@ export class TaskExecutor {
         ? buildHermesRecoveryPrompt({
             taskPrompt: this.getContractPrompt() || initialPrompt || "",
             workspacePath: this.workspace.path,
+            appliedSkillContext: this.buildAppliedSkillContext(),
           })
         : buildHermesInitialPrompt({
             taskPrompt: this.getContractPrompt() || initialPrompt || "",
@@ -10084,7 +10087,18 @@ ${transcript}
                 ...correlation, result: outcome.result, durationMs: outcome.durationMs,
                 envelope: outcome.envelope, policyTrace: outcome.policyTrace,
               });
-              return outcome.toolHostResponse;
+              const hermesResult = this.enrichHermesSkillToolResult(
+                toolName,
+                input,
+                outcome.result,
+              );
+              if (hermesResult === outcome.result) {
+                return outcome.toolHostResponse;
+              }
+              return {
+                ...outcome.toolHostResponse,
+                result: hermesResult,
+              };
             } catch (error) {
               this.emitEvent("tool_error", { ...correlation, error: error instanceof Error ? error.message : String(error) });
               throw error;
@@ -16532,6 +16546,45 @@ ${transcript}
     return String(task.prompt || "");
   }
 
+  private async ensureRuntimeCatalogsReady(): Promise<void> {
+    const skillLoader = getCustomSkillLoader() as Any;
+    const mcpManager = MCPClientManager.getInstance();
+    const skillInitialization =
+      typeof skillLoader.initializeForWorkspace === "function"
+        ? skillLoader.initializeForWorkspace(this.workspace.path)
+        : typeof skillLoader.initialize === "function"
+          ? skillLoader.initialize()
+          : Promise.resolve();
+    const mcpInitialization =
+      typeof mcpManager.initialize === "function"
+        ? mcpManager.initialize()
+        : Promise.resolve();
+
+    const [skillResult, mcpResult] = await Promise.allSettled([
+      skillInitialization,
+      mcpInitialization,
+    ]);
+
+    if (skillResult.status === "rejected") {
+      this.emitEvent("log", {
+        message:
+          "Skill catalog initialization failed; continuing without workspace skill refresh.",
+        error: String(
+          (skillResult.reason as Any)?.message || skillResult.reason,
+        ),
+      });
+    }
+    if (mcpResult.status === "rejected") {
+      this.emitEvent("log", {
+        message:
+          "MCP catalog initialization failed; continuing with currently available NeoWorker tools.",
+        error: String(
+          (mcpResult.reason as Any)?.message || mcpResult.reason,
+        ),
+      });
+    }
+  }
+
   private appendTaskContextNote(label: string, content: string): void {
     const normalizedLabel = String(label || "").trim();
     const normalizedContent = String(content || "").trim();
@@ -16922,28 +16975,33 @@ ${transcript}
     return true;
   }
 
-  private consumeResolvedSkillInvocationResult(
+  private resolveSkillApplicationFromResult(
     result: Any,
     requestedSkillId: string,
     fallbackTrigger: SkillApplicationTrigger,
-  ): boolean {
+    emitMissingEvent = true,
+  ): SkillApplication | null {
     const invocationId =
       typeof result?.skill_invocation_id === "string"
         ? result.skill_invocation_id
         : "";
     if (!invocationId) {
-      return false;
+      return null;
     }
+
     const application =
       this.toolRegistry.takeResolvedSkillInvocation(invocationId);
     if (!application) {
-      this.emitEvent("skill_invocation_blocked", {
-        skillId: requestedSkillId || null,
-        skillName: result?.skill_name || null,
-        reason: "missing_resolved_skill_invocation",
-      });
-      return false;
+      if (emitMissingEvent) {
+        this.emitEvent("skill_invocation_blocked", {
+          skillId: requestedSkillId || null,
+          skillName: result?.skill_name || null,
+          reason: "missing_resolved_skill_invocation",
+        });
+      }
+      return null;
     }
+
     const trigger =
       application.trigger === "slash" ||
       application.trigger === "planner" ||
@@ -16951,7 +17009,7 @@ ${transcript}
       application.trigger === "explicit_hint"
         ? application.trigger
         : fallbackTrigger;
-    return this.applySkillApplication({
+    return {
       skillId: String(
         application.skillId || requestedSkillId || result?.skill || "",
       ),
@@ -16959,7 +17017,7 @@ ${transcript}
         application.skillName || result?.skill_name || result?.skill || "",
       ),
       trigger,
-      args: String(application.args || ""),
+      args: String(application.args || "") || undefined,
       parameters:
         application.parameters && typeof application.parameters === "object"
           ? application.parameters
@@ -16982,7 +17040,92 @@ ${transcript}
               typeof result.context_directives === "object"
             ? result.context_directives
             : undefined,
-    });
+    };
+  }
+
+  private buildHermesSkillContext(application: SkillApplication): string {
+    const context = [
+      `ACTIVE SKILL: ${application.skillName} (${application.skillId})`,
+      `Trigger: ${application.trigger}`,
+      application.args ? `Args: ${application.args}` : "",
+      `Reason: ${application.reason}`,
+      "The following is active NeoWorker skill guidance for the current task. Follow it for subsequent work, subject to the NeoWorker runtime contract, user request, and permissions.",
+      application.content,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    if (context.length <= HERMES_SKILL_CONTEXT_MAX_CHARS) {
+      return context;
+    }
+    const marker = "\n[NeoWorker skill context truncated]\n";
+    const retained = Math.max(0, HERMES_SKILL_CONTEXT_MAX_CHARS - marker.length);
+    return `${context.slice(0, retained)}${marker}`;
+  }
+
+  private enrichHermesSkillToolResult(
+    toolName: string,
+    input: unknown,
+    result: Any,
+  ): Any {
+    if (
+      toolName !== "Skill" ||
+      !result ||
+      typeof result !== "object" ||
+      Array.isArray(result) ||
+      result.success === false ||
+      result.pending_skill_parameter_collection
+    ) {
+      return result;
+    }
+
+    const inputRecord =
+      input && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
+    const requestedSkillId = String(
+      inputRecord.skill || result.skill || result.skill_id || "",
+    ).trim();
+    if (!requestedSkillId) {
+      return result;
+    }
+
+    const resolvedApplication = this.resolveSkillApplicationFromResult(
+      result,
+      requestedSkillId,
+      "model",
+      false,
+    );
+    const application =
+      resolvedApplication ||
+      this.getAppliedSkillApplication(requestedSkillId);
+    if (!application) {
+      return result;
+    }
+
+    const applied = resolvedApplication
+      ? this.applySkillApplication(resolvedApplication)
+      : false;
+    return {
+      ...result,
+      // This projection is returned only to Hermes through the host transport.
+      // The durable NeoWorker tool_result event keeps the compact result.
+      neoworker_skill_context: this.buildHermesSkillContext(application),
+      neoworker_skill_directives: application.contextDirectives || null,
+      neoworker_skill_applied: applied,
+    };
+  }
+
+  private consumeResolvedSkillInvocationResult(
+    result: Any,
+    requestedSkillId: string,
+    fallbackTrigger: SkillApplicationTrigger,
+  ): boolean {
+    const application = this.resolveSkillApplicationFromResult(
+      result,
+      requestedSkillId,
+      fallbackTrigger,
+    );
+    return application ? this.applySkillApplication(application) : false;
   }
 
   private getSkillRoutingQuery(): string {
@@ -31805,6 +31948,7 @@ You are continuing a previous conversation. The context from the previous conver
       if (this.isAcpxExternalRuntimeTask()) {
         try {
           if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
+            await this.ensureRuntimeCatalogsReady();
             await this.executeWithHermesRuntime(initialPrompt || this.getContractPrompt() || "");
           } else {
             await this.executeWithAcpxRuntime(initialPrompt || this.getContractPrompt() || "");
