@@ -1,12 +1,24 @@
 # Hermes Runtime integration
 
-NeoWorker has three Hermes integration choices:
+NeoWorker contains three Hermes integration paths for compatibility and
+diagnostics:
 
 - **Hermes Agent provider** points at Hermes API Server (`http://127.0.0.1:8642/v1`). This is a complete Hermes agent runtime: it creates an `AIAgent` and executes Hermes-native tools inside the Hermes process. It is an external-runtime option, so NeoWorker cannot claim ownership of those side effects.
 - **Hermes Model Proxy provider** points at Hermes' model-only credential proxy (`http://127.0.0.1:8645/v1`). The proxy forwards OpenAI-compatible request and response bodies without running an agent loop. This is the host-owned path: NeoWorker's `SessionRuntime`, `ToolRegistry`, approval policy, sandbox, Shell executor, and task log receive and execute the returned tool calls.
 - **Hermes ACP session adapter** (`HermesAcpClient` and `HermesRuntimeAdapter`) runs Hermes' Agent Loop, persists an ACP session handle, streams `session/update` events, cancels prompts, and restores sessions. New tasks launch through NeoWorker's version-pinned Python wrapper and expose task tools through a loopback MCP Tool Host.
 
-Task runtime selection now has three explicit states: `auto`, `hermes`, and `native`. In `auto`, complex execution, structured web research, code/operations work, and multi-step Office tasks are routed to the Hermes ACP adapter while simple requests stay on NeoWorker's native loop. `hermes` requires the Hermes ACP Harness and fails closed when ACP cannot start; `native` requires the NeoWorker loop. Auto-routed Hermes tasks may fall back to native execution before a host side effect begins, and that transition is recorded as a runtime status event and persisted on the task. For new Hermes tasks, Hermes owns the model loop while NeoWorker executes the exposed tools through `NeoWorkerToolHost` and `ToolExecutionCoordinator`. Existing checkpoints without `toolOwnership: neoworker` remain legacy Hermes-native sessions; they are never silently migrated across tool ownership. Desktop pause/resume retains the saved session and sends an explicit continuation prompt.
+New NeoWorker tasks use the embedded Hermes ACP Harness by default, regardless of
+whether the prompt is a short question, a web lookup, code work, or an Office
+workflow. The renderer does not expose an `Auto`/`Hermes`/`Native` runtime
+selector, and the backend does not choose Native based on prompt complexity.
+Hermes owns the model loop while NeoWorker executes the exposed tools through
+`NeoWorkerToolHost` and `ToolExecutionCoordinator`. Hermes startup and runtime
+availability failures fail closed; they are visible task failures and never
+silently switch the task to the Native loop. The persisted
+`runtimePreference` field is retained only for old task rows and compatibility
+integrations. Existing Native tasks and legacy Hermes checkpoints remain
+compatible and are not silently migrated. Desktop pause/resume retains the
+saved session and sends an explicit continuation prompt.
 
 The adapter exposes a stable lifecycle surface: `start()`/`prompt()`, `cancel()`/`pause()`, `resume()`/`retry()`, `checkpoint()` and `close()`. Each host call is recorded in one correlated NeoWorker lifecycle chain: `request`, `approval`, `running`, and one terminal state (`result`, `failed`, `timed_out`, or `cancelled`). The chain carries the task ID, tool call ID, structured idempotency key, phase, start/end timestamps, duration, exit code or termination reason when available, and a classified error type. Approval records include the approval type and status (`requested`, `granted`, `denied`, or `delegated`); the existing daemon approval events remain the source of truth for the user decision. The internally gated `run_command` and `delete_file` handlers additionally emit the actual requested/granted/denied/cancelled result through the same lifecycle callback and persist the correlated `toolCallId` in the daemon approval details. `tool_host_lifecycle` remains the transport/idempotency record and can be joined by the same task ID and tool call ID. Validation and idempotency rejections (for example, a conflicting payload or an unknown side effect after restart) also write a terminal Tool Host error response before throwing, so the persisted request cannot look like an indefinitely running call. ACP transport events are normalized as durable `hermes_runtime_transport` task events with request, first-byte, response, timeout, cancellation, protocol-error and connection-close phases; response bodies are never logged. Every NeoWorker Tool Host request carries a fresh bounded checkpoint snapshot after its call is marked active, and the terminal response carries a new snapshot after the outcome is persisted. The checkpoint keeps bounded tool-call IDs and the last NeoWorker event sequence. `resume()` and `retry()` treat persisted active calls as unknown and invoke the host's explicit confirmation callback before submitting another Hermes turn; they never replay a tool call automatically. The capability ownership table is maintained in [hermes-capability-matrix.md](hermes-capability-matrix.md).
 
@@ -46,7 +58,7 @@ Hermes Agent v0.18.0's ACP `session/new` contract accepts `mcpServers`, but its 
 
 `HermesToolHostMcpServer` exposes only the task's filtered catalog on an ephemeral `127.0.0.1` port with a random bearer token. Every tool call enters the existing executor Tool Host, and the persisted result is returned to Hermes as a bounded MCP tool result. Session-scoped correlation prevents reused MCP request IDs from aliasing calls after reconnect. Request timeout, runtime shutdown, and rejected host dispatches propagate as structured tool results so Hermes can distinguish a failed operation from a malformed MCP response. Loopback addresses are added to the child process's `NO_PROXY`/`no_proxy` so local tool traffic cannot accidentally go through an inherited HTTP proxy.
 
-The launcher resolves the interpreter from the installed `hermes` executable where possible. Set `NEOWORKER_HERMES_PYTHON` to an explicit interpreter path for a custom installation. The final desktop package includes the launcher as an external resource, and artifact smoke compares its bytes with the source being delivered.
+The desktop package builds and ships a standalone Hermes ACP host executable from the pinned `hermes-agent==0.18.0` distribution. The packaged app launches that executable directly; end users do not need Python, the `hermes` command, or a separate Hermes Agent installation. The build uses an isolated Python environment only while producing the installer. Source-mode development may still fall back to `scripts/hermes-acp-neoworker-host.py` and a local Hermes/Python installation. Artifact smoke runs the embedded executable's credential-free runtime check and verifies its manifest.
 
 The real local Hermes 0.18.0 probe on 2026-09-10 listed exactly the supplied host probe tool and successfully invoked it once through a configured model, returning `NEOWORKER_HOST_OK`. The latest run of `node scripts/qa/run-hermes-live-hostchain.mjs` also drove the real model through `write_file` and `run_command`; NeoWorker recorded one approval, persisted both tool lifecycles, produced the exact file and Shell output, and ended with no unknown tool call. This closes the live file/Shell/approval path. Cancellation, pause/resume and unknown-side-effect confirmation remain covered by deterministic tests and Windows runner validation. A separate Model Proxy attempt can still return HTTP 402/502 when its provider account is unavailable; the wrapper preserves such provider failures as `field_meta.neoworker.runtimeError` so ACP `end_turn` cannot be mistaken for success.
 
@@ -56,13 +68,13 @@ For the source-level ownership evidence, see [hermes-tool-ownership-audit.md](he
 
 ## Local test
 
-1. Start and configure Hermes (`hermes status`; `hermes acp --check`).
-2. For host-owned NeoWorker tools, start `hermes proxy start --provider nous` (or `xai`) and choose **Hermes Model Proxy**. Do not use the `8642/v1` API Server entry for this test, because that entry runs Hermes-native tools.
-3. Select a model advertised by the proxy and run the focused checks.
-4. Run the focused checks:
+The packaged desktop app launches the version-pinned embedded Hermes host. A
+separate Hermes Agent installation is not required. Source-mode development may
+use the local Python wrapper, but that is only a development fallback.
+
+Run the focused checks:
 
 ```sh
-hermes acp --check
 npm test -- --run src/electron/agent/runtime/__tests__/hermes-runtime-routing.test.ts
 npm test -- --run src/electron/agent/__tests__/executor-entrypoints.test.ts
 npm test -- --run src/electron/agent/runtime/__tests__/hermes-acp-client.test.ts

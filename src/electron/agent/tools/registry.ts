@@ -148,6 +148,7 @@ import {
 import { isComputerUseToolName } from "../../../shared/computer-use-contract";
 import { writeKitFileWithSnapshot } from "../../context/kit-revisions";
 import { getACPRegistry } from "../../acp";
+import { extractWorkspaceUploadPaths } from "../../utils/durable-temp-artifact";
 import { RemoteAgentInvoker } from "../../acp/remote-invoker";
 import {
   withRuntimeToolMetadataList,
@@ -840,9 +841,61 @@ export class ToolRegistry {
     this.registerRuntimeHandlers();
   }
 
-  private runCanonicalPresentation(input: Any, signal?: AbortSignal): Promise<Any> {
+  private emitReusedOfficeArtifactEvent(
+    result: Any,
+    type: "document" | "presentation" | "spreadsheet",
+    mimeType: string,
+  ): void {
+    if (!result?.reusedExistingArtifact || typeof result.path !== "string") {
+      return;
+    }
+
+    const artifactPath = result.path.trim();
+    if (!artifactPath) return;
+    const qualityCheck =
+      result.qualityCheck && typeof result.qualityCheck === "object"
+        ? result.qualityCheck
+        : {};
+    const manifest =
+      result.officeManifest && typeof result.officeManifest === "object"
+        ? result.officeManifest
+        : undefined;
+
+    // The coordinator deliberately skips the underlying builder on a
+    // duplicate tool call. Re-emit the already-published file as a delivery
+    // event so the current assistant turn still gets an artifact card without
+    // writing a second copy to disk.
+    this.daemon.registerArtifact(this.taskId, artifactPath, mimeType);
+    this.daemon.logEvent(this.taskId, "artifact_created", {
+      path: artifactPath,
+      type,
+      mimeType,
+      size: typeof result.size === "number" ? result.size : undefined,
+      qualityStatus:
+        typeof qualityCheck.status === "string"
+          ? qualityCheck.status
+          : undefined,
+      issueCount:
+        typeof qualityCheck.issueCount === "number"
+          ? qualityCheck.issueCount
+          : undefined,
+      previewPath:
+        typeof qualityCheck.previewPath === "string"
+          ? qualityCheck.previewPath
+          : undefined,
+      officeManifest: manifest,
+      deduplicated: true,
+      reusedExistingArtifact: true,
+      label: path.basename(artifactPath),
+    });
+  }
+
+  private async runCanonicalPresentation(
+    input: Any,
+    signal?: AbortSignal,
+  ): Promise<Any> {
     const normalized = normalizePresentationArtifactInput(input);
-    return this.officeArtifactCoordinator.run(
+    const result = await this.officeArtifactCoordinator.run(
       "pptx",
       () => this.skillTools.createPresentation(normalized, { signal }),
       normalized.contentSnapshot,
@@ -850,30 +903,54 @@ export class ToolRegistry {
       // model authored the tool call. Build the identity from that normalized
       // payload so ppt-master cannot reuse a standard deck from this task.
       buildOfficeArtifactRequestIdentity("pptx", normalized),
-    ) as Promise<Any>;
+    ) as Any;
+    this.emitReusedOfficeArtifactEvent(
+      result,
+      "presentation",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+    return result;
   }
 
-  private runCanonicalDocument(input: Any, signal?: AbortSignal): Promise<Any> {
+  private async runCanonicalDocument(
+    input: Any,
+    signal?: AbortSignal,
+  ): Promise<Any> {
     if (input?.format !== "docx") {
       return this.skillTools.createDocument(input, { signal });
     }
     const normalized = normalizeDocumentArtifactInput(input);
-    return this.officeArtifactCoordinator.run(
+    const result = await this.officeArtifactCoordinator.run(
       "docx",
       () => this.skillTools.createDocument(normalized, { signal }),
       normalized.contentSnapshot,
       buildOfficeArtifactRequestIdentity("docx", input),
-    ) as Promise<Any>;
+    ) as Any;
+    this.emitReusedOfficeArtifactEvent(
+      result,
+      "document",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    return result;
   }
 
-  private runCanonicalSpreadsheet(input: Any, signal?: AbortSignal): Promise<Any> {
+  private async runCanonicalSpreadsheet(
+    input: Any,
+    signal?: AbortSignal,
+  ): Promise<Any> {
     const normalized = normalizeSpreadsheetArtifactInput(input);
-    return this.officeArtifactCoordinator.run(
+    const result = await this.officeArtifactCoordinator.run(
       "xlsx",
       () => this.skillTools.createSpreadsheet(normalized, { signal }),
       normalized.contentSnapshot,
       buildOfficeArtifactRequestIdentity("xlsx", input),
-    ) as Promise<Any>;
+    ) as Any;
+    this.emitReusedOfficeArtifactEvent(
+      result,
+      "spreadsheet",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    return result;
   }
 
   private applyToolRestrictions(restrictions?: string[]): void {
@@ -1409,7 +1486,9 @@ export class ToolRegistry {
       ...BrowserTools.getToolDefinitions(),
     ];
 
-    // web_search is always available (DuckDuckGo provides free fallback)
+    // web_search is always available. Automatic routing prefers configured
+    // providers and uses DuckDuckGo/Bing only as the free route when none are
+    // configured.
     allTools.push(...this.getSearchToolDefinitions());
 
     // x_search is opt-in through built-in tool settings and only appears when
@@ -3712,7 +3791,8 @@ Browser Automation:
 - browser_save_pdf: Save page as PDF
 - browser_close: Close the browser`;
 
-    // Web search is always available (DuckDuckGo provides free fallback)
+    // Web search is always available. DuckDuckGo/Bing are the free automatic
+    // route only when no paid provider is configured.
     descriptions += `
 
 Web Search (for finding URLs, not reading them):
@@ -5184,6 +5264,85 @@ ${skillDescriptions}`;
     return resolved;
   }
 
+  private async inferPptMasterSourcePath(): Promise<string | null> {
+    let task: Task | null | undefined;
+    try {
+      task = await this.daemon.getTaskById(this.taskId);
+    } catch {
+      return null;
+    }
+
+    const taskText = [
+      task?.title,
+      task?.prompt,
+      task?.rawPrompt,
+      task?.userPrompt,
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join("\n");
+    if (!taskText.trim()) return null;
+
+    const candidates: string[] = [];
+    const addCandidate = (value: unknown) => {
+      if (typeof value !== "string") return;
+      const cleaned = value
+        .trim()
+        .replace(/[.,;:!?，。；：！？）》】〉]+$/g, "");
+      if (!cleaned || !/\.pptx$/i.test(cleaned)) return;
+      const resolved = path.isAbsolute(cleaned)
+        ? path.resolve(cleaned)
+        : path.resolve(this.workspace.path, cleaned);
+      if (!candidates.includes(resolved)) candidates.push(resolved);
+    };
+
+    for (const uploadPath of extractWorkspaceUploadPaths(taskText)) {
+      addCandidate(uploadPath);
+    }
+
+    const explicitPathPattern =
+      /(?:\/(?:Users|private|tmp|var|Volumes|home)\/[^\s"'`<>()\[\]]+|[A-Za-z]:[\\/][^\s"'`<>()\[\]]+|(?:\.\/|\.\.\/)[^\s"'`<>()\[\]]+)\.pptx\b/gi;
+    for (const match of taskText.matchAll(explicitPathPattern)) {
+      addCandidate(match[0]);
+    }
+
+    // Attachment descriptors sometimes contain only the filename. Prefer an
+    // unambiguous task upload in that case, but never pick an arbitrary PPTX
+    // from the workspace.
+    if (/\.(?:pptx)\b/i.test(taskText)) {
+      const uploadsRoot = path.join(this.workspace.path, ".neoworker", "uploads");
+      try {
+        const uploadEntries = await fsPromises.readdir(uploadsRoot, {
+          withFileTypes: true,
+        });
+        const pptxEntries = uploadEntries.filter(
+          (entry) => entry.isFile() && /\.pptx$/i.test(entry.name),
+        );
+        const namedMatches = pptxEntries.filter((entry) =>
+          taskText.includes(entry.name),
+        );
+        for (const entry of namedMatches.length === 1
+          ? namedMatches
+          : pptxEntries.length === 1
+            ? pptxEntries
+            : []) {
+          addCandidate(path.join(uploadsRoot, entry.name));
+        }
+      } catch {
+        // Uploads are optional; explicit paths above remain authoritative.
+      }
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const stats = await fsPromises.stat(candidate);
+        if (stats.isFile()) return candidate;
+      } catch {
+        // Keep looking for another attachment representation.
+      }
+    }
+    return null;
+  }
+
   /**
    * Execute the Skill tool - invokes a skill by ID and stores its expanded runtime context
    * for the executor to inject on the next turn.
@@ -5336,10 +5495,19 @@ ${skillDescriptions}`;
       };
     }
 
-    const parameters = this.applySkillParameterDefaults(
+    let parameters = this.applySkillParameterDefaults(
       skill,
       parameterResolution.parameters || {},
     );
+    if (skill_id === "ppt-master" && !parameters.source_path) {
+      const inferredSourcePath = await this.inferPptMasterSourcePath();
+      if (inferredSourcePath) {
+        parameters = {
+          ...parameters,
+          source_path: inferredSourcePath,
+        };
+      }
+    }
 
     // Check for required parameters
     const artifactDir = path.join(
@@ -6870,6 +7038,11 @@ ${skillDescriptions}`;
           type: "object",
           properties: {
             filename: { type: "string", description: "Name of the presentation" },
+            sourcePath: {
+              type: "string",
+              description:
+                "Optional existing PPTX/template to fill while preserving its native slide design",
+            },
             officeProfile: {
               type: "string",
               enum: ["pptx", "pitch-deck", "morph-ppt", "morph-ppt-3d"],
@@ -7384,8 +7557,8 @@ ${skillDescriptions}`;
 
     const providerDesc =
       paidProviders.length > 0
-        ? `Configured providers: ${paidProviders.map((p) => p.name).join(", ")} (with DuckDuckGo as fallback)`
-        : `Using DuckDuckGo (free built-in search)`;
+        ? `Configured providers: ${paidProviders.map((p) => p.name).join(", ")}. Automatic routing prefers these providers; DuckDuckGo/Bing are only used when no paid provider is configured or when explicitly requested.`
+        : `No paid search provider is configured. Automatic routing uses built-in DuckDuckGo with Bing fallback.`;
 
     return [
       {

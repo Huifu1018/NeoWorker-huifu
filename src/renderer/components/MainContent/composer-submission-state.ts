@@ -1,5 +1,11 @@
 export interface ComposerSubmissionState {
   isTaskWorking: boolean;
+  /**
+   * A follow-up has already been handed to the task runtime, but its IPC
+   * promise may still be waiting for the whole turn to finish. That wait must
+   * not disable the composer or block the next FIFO submission.
+   */
+  hasPendingFollowUpDispatch?: boolean;
   isUploadingAttachments: boolean;
   isPreparingMessage: boolean;
   isQueueingFollowUp: boolean;
@@ -12,11 +18,12 @@ export interface ComposerSubmissionState {
  */
 export function isComposerSubmissionBusy({
   isTaskWorking,
+  hasPendingFollowUpDispatch = false,
   isUploadingAttachments,
   isPreparingMessage,
   isQueueingFollowUp,
 }: ComposerSubmissionState): boolean {
   if (isQueueingFollowUp) return true;
-  if (isTaskWorking) return false;
+  if (isTaskWorking || hasPendingFollowUpDispatch) return false;
   return isUploadingAttachments || isPreparingMessage;
 }

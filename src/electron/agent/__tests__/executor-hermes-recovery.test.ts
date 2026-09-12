@@ -104,6 +104,30 @@ describe("Executor Hermes recovery", () => {
     expect(instance.daemon.logEvent.mock.calls.some(([, type]) => type === "hermes_runtime_transport")).toBe(true);
   });
 
+  it("keeps Hermes intermediate narration out of the final assistant text", async () => {
+    fixtureTransport();
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [{
+      name: "run_command",
+      description: "Run a command",
+      input_schema: { type: "object", properties: { command: { type: "string" } } },
+    }];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(async (_name, _input, _timeout, toolCallId) => ({
+      toolHostResponse: {
+        schemaVersion: "neoworker_tool_host_v1",
+        requestId: "host-response",
+        toolCallId,
+        status: "success",
+        result: { stdout: "host\n", exitCode: 0 },
+      },
+    }));
+
+    const result = await adapter(instance).prompt("narrated-host-tool");
+
+    expect(result.assistantText).toBe("最终答案：已完成。");
+  });
+
   it("finalizes a successful Hermes follow-up instead of leaving the task executing", async () => {
     const checkpoint = {
       schema: "neoworker_hermes_acp_v1",
@@ -145,6 +169,131 @@ describe("Executor Hermes recovery", () => {
 
     expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
       "follow-up completed",
+      "hermes follow-up completed",
+    );
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("continues an initial Hermes turn when the first response is only an in-progress note", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-initial-guard",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "initial-hermes-guard",
+      rawPrompt: "帮我查询一下明天北京飞深圳的航班信息",
+    };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi
+      .fn()
+      .mockResolvedValueOnce({
+        assistantText:
+          "FlightStats 默认返回了今天（9月11日）的数据。我需要查询明天（9月12日）的航班时刻表。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })
+      .mockResolvedValueOnce({
+        assistantText: "明天（9月12日）北京飞深圳有 51 班，最早 07:15 起飞。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      });
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    instance.emitEvent = vi.fn();
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "帮我查询一下明天北京飞深圳的航班信息",
+    );
+
+    expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
+    expect(instance.runHermesPromptWithTransientRetry.mock.calls[1][1]).toContain(
+      "<neoworker_completion_guard_v1>",
+    );
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "progress_update",
+      expect.objectContaining({
+        phase: "hermes_runtime",
+        state: "continuing",
+      }),
+    );
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "明天（9月12日）北京飞深圳有 51 班，最早 07:15 起飞。",
+      "hermes runtime completed",
+    );
+    expect(instance.hermesRuntimeAdapter).toBe(runtime);
+    expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("continues a Hermes follow-up turn before allowing queued messages to drain", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-follow-up-guard",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "follow-up-hermes-guard",
+      agentConfig: { externalRuntime: { kind: "acpx", agent: "hermes" } },
+    };
+    instance.getAcpxExternalRuntimeConfig = () => ({
+      kind: "acpx",
+      agent: "hermes",
+    });
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi
+      .fn()
+      .mockResolvedValueOnce({
+        assistantText: "我需要继续检查本地磁盘占用，重点看 Codex。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })
+      .mockResolvedValueOnce({
+        assistantText: "Codex 相关目录合计约 12.4GB，主要占用来自构建缓存。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      });
+    instance.buildQuotedAssistantContextMessage = (message: string) => message;
+    instance.buildIntegrationMentionEventPayload = () => ({});
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.emitEvent = vi.fn();
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.sendMessageWithAcpxRuntime.call(
+      instance,
+      "帮我查一下本地磁盘情况，主要看一下 Codex 的占用",
+    );
+
+    expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
+    expect(instance.runHermesPromptWithTransientRetry.mock.calls[1][1]).toContain(
+      "<neoworker_completion_guard_v1>",
+    );
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "Codex 相关目录合计约 12.4GB，主要占用来自构建缓存。",
       "hermes follow-up completed",
     );
     expect(instance.hermesRuntimeAdapter).toBe(runtime);

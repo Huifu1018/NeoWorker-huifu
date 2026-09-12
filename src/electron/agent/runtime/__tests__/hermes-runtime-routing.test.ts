@@ -12,6 +12,7 @@ function routeTask(
   title: string,
   prompt: string,
   agentConfig?: AgentConfig,
+  forceHermesForNewTask = false,
 ) {
   const route = IntentRouter.route(title, prompt);
   const strategy = TaskStrategyService.derive(route, agentConfig, {
@@ -24,6 +25,7 @@ function routeTask(
     route,
     strategy,
     agentConfig,
+    forceHermesForNewTask,
   });
 }
 
@@ -83,6 +85,35 @@ describe("Hermes runtime routing", () => {
 
     expect(decision.resolved).toBe("native");
     expect(decision.allowFallback).toBe(false);
+  });
+
+  it("uses Hermes for every new task, including a simple conversational request", () => {
+    const decision = routeTask("问候", "你好，介绍一下你自己", {}, true);
+
+    expect(decision).toMatchObject({
+      resolved: "hermes",
+      runtimeAgent: "hermes",
+      preference: "hermes",
+      allowFallback: false,
+      reason: "new_task_hermes_default",
+    });
+    expect(decision.signals).toEqual(["new-task-default"]);
+  });
+
+  it("ignores a legacy Native preference when creating a new task", () => {
+    const decision = routeTask(
+      "简单问题",
+      "请直接回答，不需要执行操作",
+      { runtimePreference: "native" },
+      true,
+    );
+
+    expect(decision).toMatchObject({
+      resolved: "hermes",
+      preference: "hermes",
+      allowFallback: false,
+      reason: "new_task_hermes_default",
+    });
   });
 
   it("honors explicit Hermes and Native selections", () => {

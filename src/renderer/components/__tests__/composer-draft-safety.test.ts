@@ -130,10 +130,14 @@ describe("composer draft safety", () => {
 
     expect(followUpBranchStart).toBeGreaterThan(-1);
     expect(followUpBranch).toContain("clearSubmittedComposerDraft();");
-    expect(followUpBranch).toContain("await onSendMessage(");
+    expect(followUpBranch).toContain("const followUpPromise = onSendMessage(");
+    expect(followUpBranch).toContain("await followUpPromise;");
     expect(followUpBranch.indexOf("clearSubmittedComposerDraft();")).toBeLessThan(
-      followUpBranch.indexOf("await onSendMessage("),
+      followUpBranch.indexOf("const followUpPromise = onSendMessage("),
     );
+    expect(
+      followUpBranch.indexOf("setIsPreparingMessage(false);"),
+    ).toBeLessThan(followUpBranch.indexOf("await followUpPromise;"));
     expect(mainContentSource).toContain("restoreSubmittedComposerDraft();");
     expect(mainContentSource).toContain(
       "composerDraftCacheKeyRef.current !== submittedAttachmentDraftKey",

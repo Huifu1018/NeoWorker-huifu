@@ -11,7 +11,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 OUTPUT = Path(__file__).resolve().parents[1] / "docs" / "neoworker-hermes-harness-open-plan.docx"
 
-FONT = "STSong"
+FONT = "FangSong"
 TEXT = "202020"
 MUTED = "5F6875"
 ACCENT = "243B53"
@@ -346,7 +346,7 @@ def build_document():
     fp = footer.paragraphs[0]
     fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     set_paragraph_format(fp, before=0, after=0, line=1)
-    add_text(fp, "开放草案  ·  2026年9月11日  ·  ", color=MUTED, size=8.5)
+    add_text(fp, "实施收口版  ·  2026年9月11日  ·  ", color=MUTED, size=8.5)
     add_page_field(fp)
 
     title = doc.add_paragraph(style="Title")
@@ -357,21 +357,21 @@ def build_document():
     add_text(subtitle, "技术策略草案 面向分阶段验证与评审", color=MUTED, size=11.5)
 
     metadata = [
-        ["文档状态", "开放草案，可根据评测和产品反馈调整"],
+        ["文档状态", "实施收口版，可根据后续评测和产品反馈调整"],
         ["日期", "2026年9月11日"],
         ["适用范围", "NeoWorker-huifu 的 Agent Runtime、工具执行和任务交付链"],
-        ["核心建议", "优先采用 Hermes ACP Harness；由 NeoWorker 保留工具、副作用和任务治理权"],
+        ["核心建议", "新任务统一使用内置 Hermes ACP Harness；由 NeoWorker 保留工具、副作用和任务治理权"],
     ]
     add_table(doc, ["项目", "内容"], metadata, [1.12, 5.72], font_size=9.5, alternate=False)
 
     add_heading_text(doc, "一 结论", 1)
     add_body(
         doc,
-        "建议把 Hermes ACP Harness 逐步作为 NeoWorker 处理复杂 Agent 任务的首选执行引擎，同时保留 NeoWorker 原生 Runtime 作为快速路径。Hermes 负责 Agent Loop、规划和多步推进，NeoWorker 负责工具筛选、权限审批、沙箱、任务状态、证据记录和最终交付。这个组合既能吸收 Hermes 的执行能力，也能保留 NeoWorker 对本地副作用的控制。",
+        "NeoWorker 的新任务统一使用内置 Hermes ACP Harness。Hermes 负责 Agent Loop、规划和多步推进，NeoWorker 负责工具筛选、权限审批、沙箱、任务状态、证据记录和最终交付。Native SessionRuntime 仅作为历史任务兼容路径和明确的内部保底能力保留，不再作为新任务的按复杂度分流目标。",
     )
     add_body(
         doc,
-        "这是一项可行的增量改造，不需要重写 NeoWorker 的工具体系。当前代码已经具备 Hermes ACP 适配、任务级 MCP Tool Host、权限桥接、checkpoint、暂停恢复和宿主工具多步验收能力。尚未完成的部分主要是产品路由、运行时可见性、能力覆盖评测，以及把当前的“显式 opt-in”推进成可控的 Auto 模式。",
+        "这项改造已经落到 NeoWorker 的任务创建、IPC、运行时路由和执行器：新任务会绑定内置 Hermes ACP Host，前端不再暴露 Auto、Hermes、Native 运行时选择，Hermes 启动失败也不会静默切换到 Native。后续重点是持续扩大能力覆盖、完善真实任务评测和发布门禁，而不是再做一套面向用户的运行时选择器。",
     )
     add_label_paragraph(
         doc,
@@ -382,26 +382,26 @@ def build_document():
     add_heading_text(doc, "二 当前事实", 1)
     add_body(
         doc,
-        "NeoWorker 目前存在三种 Hermes 相关接入方式。它们的执行语义不同，不能只看 Provider 名称或 OpenAI-compatible 接口来判断是否真正使用了 Hermes Harness。",
+        "NeoWorker 需要区分“内置 Hermes Harness”和历史或显式外部 Runtime。它们的执行语义不同，不能只看 Provider 名称或 OpenAI-compatible 接口来判断是否真正使用了 Hermes Harness。",
     )
     add_table(
         doc,
         ["接入方式", "谁运行 Agent Loop", "谁执行本地副作用", "适合的定位"],
         [
-            ["Hermes Agent 8642", "Hermes", "Hermes", "完整 Hermes 外部 Runtime，NeoWorker 不拥有副作用"],
-            ["Hermes Model Proxy 8645", "NeoWorker", "NeoWorker", "模型凭据转发，不等于 Hermes Harness"],
-            ["Hermes ACP 适配器", "Hermes", "NeoWorker Tool Host", "推荐的生产桥接路径"],
+            ["NeoWorker 内置 Hermes ACP Host", "Hermes", "NeoWorker Tool Host", "新任务默认路径，随安装包交付"],
+            ["显式外部 ACP Runtime", "外部 Agent", "外部 Runtime 或 NeoWorker Host", "仅兼容旧任务和内部集成"],
+            ["NeoWorker Native SessionRuntime", "NeoWorker", "NeoWorker", "历史任务兼容和内部保底路径"],
         ],
         [1.55, 1.25, 1.55, 2.49],
         font_size=9.1,
     )
     add_body(
         doc,
-        "从当前本地任务数据看，普通任务仍然没有进入 Hermes：已检查的任务中没有带有 Hermes external runtime 的任务，之前的航班查询也走的是 NeoWorker 原生 SessionRuntime。因此，之前截图中的差异更准确地说明“产品默认路由还没有启用 Hermes”，而不是说明 Hermes ACP 适配本身不可用。",
+        "当前实现已经把新任务的默认路由固定到内置 Hermes：任务创建时绑定 Hermes ACP 配置，执行时通过随 NeoWorker 安装包交付的 Host 启动，不依赖用户另外安装 Hermes Agent。旧任务仍可能保留 Native 或外部 Runtime 元数据，因此历史记录中出现不同 Runtime 是兼容行为，不代表新任务还在按复杂度自动分流。",
     )
     add_body(
         doc,
-        "另一方面，仓库中的专项验证已经证明 ACP 宿主工具链可以工作：本机 Hermes Agent v0.18.0 能通过 NeoWorker Tool Host 完成 write_file 和 run_command，审批、工具生命周期、checkpoint 和结果边界均有验证。当前状态可以概括为：集成基础已具备，产品采用率仍接近零。",
+        "专项验证已经覆盖内置 Hermes Host 的启动、ACP 工具桥接、审批、工具生命周期、checkpoint、恢复、Shell 和安装包 smoke。当前状态可以概括为：新任务统一使用内置 Hermes，Native 仅保留兼容语义，后续工作集中在真实任务质量和能力覆盖。",
     )
     add_small_note(
         doc,
@@ -421,33 +421,33 @@ def build_document():
             ["工具目录和任务级筛选", "NeoWorker", "只向 Hermes 暴露当前任务获准使用的工具"],
             ["文件、Shell、Office 和其他副作用", "NeoWorker", "所有执行经过现有 Tool Host、审批、沙箱、超时和日志链"],
             ["任务状态和恢复", "NeoWorker 主导，Hermes 提供 session", "任务可暂停、恢复、重试，未知副作用必须显式确认"],
-            ["用户界面和运行时状态", "NeoWorker", "明确显示 Native、Hermes Active、Fallback 或 Failed"],
+            ["用户界面和运行时状态", "NeoWorker", "不展示运行时选择；时间线只展示实际运行状态、失败和历史回退"],
             ["最终交付校验", "NeoWorker", "文件类任务只有在产物存在、可解析和通过基础检查后才能完成"],
         ],
         [1.65, 1.55, 3.64],
         font_size=9.1,
     )
 
-    add_heading_text(doc, "四 运行模式", 1)
+    add_heading_text(doc, "四 运行时策略", 1)
     add_body(
         doc,
-        "建议在任务级别引入三种运行模式。模式必须持久化，并在任务时间线上留下可查询的运行时事件，避免用户根据界面猜测任务到底由谁执行。",
+        "运行时选择收回后端。新任务不再由前端选择，也不再按任务复杂度在 Hermes 和 Native 之间自适应切换；后端统一创建内置 Hermes 任务。历史任务和显式外部集成继续按已持久化的 Runtime 运行，并保留兼容性。",
     )
     add_table(
         doc,
-        ["模式", "默认行为", "适用情况", "失败处理"],
+        ["任务来源", "运行时", "适用情况", "失败处理"],
         [
-            ["Auto", "根据任务特征自动选择", "复杂查询、网页研究、代码和多步文件任务优先 Hermes", "低风险任务可按策略降级；必须记录原因"],
-            ["Hermes", "强制走 Hermes ACP", "用户明确要求 Hermes，或任务需要 Hermes 的多步执行能力", "不允许静默降级；启动失败应明确显示"],
-            ["Native", "走 NeoWorker 原生 Runtime", "简单问答、单步操作、确定性工作流和调试场景", "保持现有原生错误和恢复语义"],
+            ["新任务", "NeoWorker 内置 Hermes ACP", "所有普通对话、网页、代码和 Office 任务", "Hermes 启动或执行失败即失败，不静默切 Native"],
+            ["历史 Native 任务", "NeoWorker Native SessionRuntime", "保持已有会话和历史任务语义", "沿用原生暂停、恢复和错误语义"],
+            ["显式外部 ACP 任务", "按外部 Runtime 配置", "旧集成、内部调度或明确委托的任务", "不改变外部契约；禁止无记录的隐式替换"],
         ],
-        [0.78, 1.85, 2.75, 1.46],
+        [1.35, 1.72, 2.32, 1.45],
         font_size=9.0,
     )
     add_label_paragraph(
         doc,
         "路由原则：",
-        "先按任务复杂度和工具数量判断，再结合工具类型、用户选择和历史失败情况修正。模型供应商或 Provider 名称不能作为“是否使用 Hermes Harness”的唯一信号。",
+        "新任务的唯一默认判断是“使用内置 Hermes Harness”；任务复杂度只影响 Hermes 内部的规划和工具调用，不再决定是否切换到 Native。运行时事件必须记录实际 Runtime、状态和失败原因。",
     )
 
     add_heading_text(doc, "五 任务路由建议", 1)
@@ -455,12 +455,12 @@ def build_document():
         doc,
         ["任务类型", "建议 Runtime", "原因和边界"],
         [
-            ["网页查询和结构化数据采集", "Hermes ACP", "需要搜索、抓取、解析、去重、校验和总结等连续步骤"],
-            ["代码、终端和调试", "Hermes ACP", "适合 Hermes 的计划、试错和结果反馈；命令仍由 NeoWorker 执行"],
-            ["PPT、Word 和其他 Office 多步任务", "Hermes ACP", "适合先理解模板、再修改、再检查；必须增加产物完成门禁"],
-            ["简单问答和短文本改写", "Native", "减少启动开销，避免把简单请求送入长 Agent Loop"],
-            ["单次确定性工具调用", "Native 或 Auto", "由响应时间和审批策略决定"],
-            ["依赖 Hermes 原生 Memory、Project Plugin 或特殊 Toolset 的任务", "先进入试验区", "当前宿主包装器会关闭这些能力，需先完成能力映射和所有权评估"],
+            ["网页查询和结构化数据采集", "内置 Hermes ACP", "需要搜索、抓取、解析、去重、校验和总结等连续步骤"],
+            ["代码、终端和调试", "内置 Hermes ACP", "由 Hermes 规划和试错；命令仍由 NeoWorker 执行"],
+            ["PPT、Word 和其他 Office 多步任务", "内置 Hermes ACP", "先理解模板、再修改、再检查；必须增加产物完成门禁"],
+            ["简单问答和短文本改写", "内置 Hermes ACP", "保持统一任务语义，不再为省启动开销切换 Native"],
+            ["单次确定性工具调用", "内置 Hermes ACP", "仍由统一 Harness 承接，便于审计、会话和结果收口"],
+            ["依赖 Hermes 原生 Memory、Project Plugin 或特殊 Toolset 的任务", "内置 Hermes ACP + 能力评估", "当前宿主包装器保持受控能力范围，需先完成能力映射和所有权评估"],
         ],
         [1.9, 1.15, 3.79],
         font_size=8.9,
@@ -478,16 +478,17 @@ def build_document():
 
     add_heading_text(doc, "阶段 0 建立可见性和运行时契约", 2)
     add_body(doc, "先让用户和开发者能准确知道每个任务使用了什么 Runtime，以及任务为什么选择这条路径。")
-    add_bullet(doc, "在任务设置或新建任务界面提供 Auto、Hermes、Native 三种模式，并把选择写入任务配置。")
-    add_bullet(doc, "时间线显示 Hermes Active、Native Active、Fallback 和 Failed 等明确状态；记录 external runtime、Hermes 版本和宿主工具模式。")
-    add_bullet(doc, "Hermes 模式启动失败时不静默切换到 Native。Auto 模式可以降级，但必须记录触发原因和是否已经发生工具副作用。")
+    add_bullet(doc, "新任务由后端统一绑定内置 Hermes ACP 配置；前端不再展示或提交 Auto、Hermes、Native 运行时选择。")
+    add_bullet(doc, "时间线显示实际 Hermes、历史 Native、失败和历史回退状态；记录 external runtime、Hermes 版本和宿主工具模式。")
+    add_bullet(doc, "内置 Hermes 启动失败或执行失败时直接结束为失败，不静默切换到 Native；错误信息明确说明无需额外安装 Hermes Agent。")
     add_bullet(doc, "建立统一的完成契约，特别是 Office 文件任务必须通过文件存在、大小、解析和必要的预览检查。")
-    add_label_paragraph(doc, "退出条件：", "用户可以从任务记录中确认实际 Runtime；强制 Hermes 任务不会被误标为 Native；失败和降级可追溯。")
+    add_label_paragraph(doc, "退出条件：", "用户可以从任务记录中确认实际 Runtime；新任务不会被误标为 Native；内置 Hermes 的失败和历史回退可追溯。")
 
-    add_heading_text(doc, "阶段 1 让复杂任务默认进入 Hermes", 2)
-    add_body(doc, "在不改变所有任务默认行为的前提下，先把 Hermes 用在最能体现差异的任务类型。")
-    add_bullet(doc, "建立最小路由器：多工具、网页研究、结构化采集、代码调试和多步 Office 任务进入 Hermes ACP。")
-    add_bullet(doc, "保留 Native 作为简单任务的快速路径，避免所有短请求承担 ACP 启动和会话开销。")
+    add_heading_text(doc, "阶段 1 固定新任务进入内置 Hermes", 2)
+    add_body(doc, "这一步已经完成：所有普通新任务统一使用随 NeoWorker 交付的 Hermes ACP Host，不需要额外部署 Hermes Agent。")
+    add_bullet(doc, "任务创建、Renderer IPC 和 AgentDaemon 创建路径统一写入内置 Hermes external runtime。")
+    add_bullet(doc, "继续复用现有 Tool Host、审批、沙箱、checkpoint、暂停恢复、取消和日志链。")
+    add_bullet(doc, "保留 Native 仅用于历史任务兼容和明确的内部保底语义，不作为新任务的自动降级目标。")
     add_bullet(doc, "为 Hermes 任务设置并发、超时、取消和资源上限；继续复用现有 Tool Host、审批、沙箱和日志。")
     add_bullet(doc, "收集真实任务样本，优先覆盖航班查询、网页抓取、代码修改、PPT 模板填充和文件整理。")
     add_label_paragraph(doc, "退出条件：", "候选任务的 Hermes 成功率、完成质量、耗时和用户修正成本不劣于 Native；没有未记录的本地副作用。具体数值在阶段 0 建立基线后确定。")
@@ -500,13 +501,13 @@ def build_document():
     add_bullet(doc, "保留版本固定和 fail-closed 策略，在 Hermes 版本升级后重新运行 ACP、宿主工具、Windows Shell 和安装包 smoke。")
     add_label_paragraph(doc, "退出条件：", "需要 Hermes 能力的目标任务可以通过 NeoWorker 公开的治理接口获得相同或足够接近的结果，且所有权和恢复边界仍然清楚。")
 
-    add_heading_text(doc, "阶段 3 扩大默认覆盖并优化体验", 2)
-    add_body(doc, "当路由和能力覆盖稳定后，再把 Hermes 从“复杂任务优先”扩大为更普遍的默认体验。")
-    add_bullet(doc, "根据评测结果调整 Auto 路由，允许用户按任务类型或工作区设置偏好。")
+    add_heading_text(doc, "阶段 3 完善能力覆盖并优化体验", 2)
+    add_body(doc, "在统一 Harness 路径稳定后，继续补齐 Hermes 能力映射、结果收口和用户可理解性。")
+    add_bullet(doc, "根据真实任务评测扩展 Hermes 的受控工具、上下文和 Office 产物校验能力。")
     add_bullet(doc, "继续利用 ACP 热会话、checkpoint 和受控重试，减少连续任务的启动开销。")
     add_bullet(doc, "把 Hermes 运行状态、工具审批、降级和产物检查统一成同一套任务视图。")
     add_bullet(doc, "将 Hermes 版本、模型、宿主工具协议和安装包 smoke 纳入固定发布门禁。")
-    add_label_paragraph(doc, "退出条件：", "Hermes 成为复杂 Agent 任务的稳定默认路径，Native 仍能处理简单和特殊场景，用户能清楚理解两者差异。")
+    add_label_paragraph(doc, "退出条件：", "新任务稳定经过内置 Hermes Harness，Native 兼容路径不影响新任务，用户能在时间线中看懂实际状态和失败原因。")
 
     add_heading_text(doc, "七 评测和发布门槛", 1)
     add_body(
@@ -517,7 +518,7 @@ def build_document():
         doc,
         ["指标", "需要观察的结果", "最低门槛"],
         [
-            ["Runtime 真实性", "任务实际进入的 Runtime 与界面和事件记录一致", "强制 Hermes 无法被静默替换"],
+            ["Runtime 真实性", "任务实际进入的 Runtime 与界面和事件记录一致", "新任务无法被静默替换为 Native"],
             ["工具所有权", "文件、Shell、Office 等副作用都能关联到 NeoWorker Tool Host", "零未知工具调用，零未记录副作用"],
             ["任务完成质量", "结果完整、准确、结构清楚，能通过用户验收", "不低于 Native 基线；复杂任务单独比较"],
             ["产物可靠性", "生成的 DOCX、PPTX 等文件存在且可解析", "未通过产物检查不得标记完成"],
@@ -539,7 +540,7 @@ def build_document():
         ["风险", "表现", "应对"],
         [
             ["能力不完全等价", "当前包装器关闭 Hermes 的部分上下文、Memory 和插件能力", "先建立能力清单，按价值和治理成本逐项迁移"],
-            ["运行时误判", "用户以为用了 Hermes，实际任务走了 Native 或静默降级", "运行模式持久化，时间线显示，强制模式禁止静默降级"],
+            ["运行时误判", "用户以为用了 Hermes，实际任务走了 Native 或静默降级", "运行时持久化，时间线显示，新任务禁止静默降级"],
             ["工具所有权混乱", "8642 或原生 ACP toolset 直接执行 Hermes 工具", "生产默认使用 ACP 宿主工具模式，副作用统一进入 NeoWorker Tool Host"],
             ["版本耦合", "当前要求 hermes-agent 0.18.0，升级可能改变 ACP 合同", "版本固定、fail-closed、升级后专项回归和安装包 smoke"],
             ["结果质量误归因", "模型、Prompt、数据源或工具差异被误认为 Harness 差异", "A/B 评测尽量固定模型、输入、工具目录和数据条件"],
@@ -550,35 +551,33 @@ def build_document():
     )
 
     add_heading_text(doc, "九 待确认事项", 1)
-    add_number(doc, "NeoWorker 的默认体验是 Auto 优先，还是对所有新任务默认启用 Hermes？建议先选择 Auto。")
-    add_number(doc, "哪些任务需要用户强制使用 Hermes？建议至少包括复杂研究、网页采集、代码调试和多步 Office 任务。")
+    add_number(doc, "内置 Hermes Host 在不同机器和安装包形态下的启动成功率、耗时和资源占用是否满足发布门槛？")
     add_number(doc, "Hermes 的 Memory、workspace context 和 project plugins 中，哪些能力是必须保留的？哪些可以由 NeoWorker 提供等价接口？")
-    add_number(doc, "Hermes 运行失败时，Auto 模式是否允许降级？允许降级的条件需要与“已经发生副作用”绑定。")
+    add_number(doc, "历史 Native 任务和显式外部 ACP 任务的兼容边界是否需要进一步收紧？")
     add_number(doc, "模型和 Provider 是否在 A/B 评测中固定？如果不固定，需要把模型差异单独记录，避免把模型效果算到 Harness 上。")
-    add_number(doc, "是否把 Hermes 版本升级设为独立发布门禁？当前建议把 `hermes-agent==0.18.0` 作为明确的运行时依赖，升级必须重新验收。")
+    add_number(doc, "是否把内置 Hermes Host 版本升级设为独立发布门禁？每次升级都必须重新验收 ACP、工具、恢复和安装包行为。")
 
     add_heading_text(doc, "十 建议的第一批工作", 1)
     add_body(
         doc,
-        "第一批工作不必扩大 Hermes 的能力边界，先把已经接通的能力变成用户可选择、系统可观察、失败可解释的产品路径。",
+        "第一批工作已经完成运行时统一和失败语义收口。后续工作不扩大副作用边界，重点是把内置 Hermes 的能力覆盖、结果质量和发布验证做扎实。",
     )
-    add_bullet(doc, "实现任务级 Runtime 选择和配置持久化。")
-    add_bullet(doc, "增加 Hermes Active、Native Active、Fallback 和 Failed 的时间线事件及 UI 标识。")
-    add_bullet(doc, "实现 Auto 路由的最小版本，先覆盖多工具任务、网页研究、代码调试和多步 Office。")
-    add_bullet(doc, "为强制 Hermes 任务关闭静默 fallback；为 Auto 任务记录降级原因。")
+    add_bullet(doc, "新任务默认绑定内置 Hermes，前端隐藏运行时选择，后端保留旧字段仅用于兼容历史数据。")
+    add_bullet(doc, "增加 Hermes Active、历史 Native、Failed 和历史 Fallback 的时间线事件及 UI 标识。")
+    add_bullet(doc, "为内置 Hermes 任务关闭静默 fallback；运行时不可用时明确失败并提示无需单独安装 Hermes Agent。")
     add_bullet(doc, "建立第一版 A/B 评测集，并把航班查询和 PPT 模板任务纳入产物校验。")
     add_bullet(doc, "在本地和 CI 中继续保留 ACP、Tool Host、审批、Shell、checkpoint、Windows 和安装包验证。")
     add_label_paragraph(
         doc,
         "第一阶段的判断标准：",
-        "用户能够明确知道任务是否真正使用 Hermes，复杂任务能够稳定经过 Hermes Agent Loop，NeoWorker 仍然拥有所有工具副作用，并且任何失败或降级都不会被伪装成成功。",
+        "用户能够明确知道任务是否真正使用 Hermes，所有新任务能够稳定经过 Hermes Agent Loop，NeoWorker 仍然拥有所有工具副作用，并且任何失败或历史回退都不会被伪装成成功。",
     )
 
     add_heading_text(doc, "附录 依据文件", 1)
-    add_small_note(doc, "docs/hermes-runtime.md 记录三种 Hermes 接入方式、ACP Tool Host 边界和运行时生命周期。")
+    add_small_note(doc, "docs/hermes-runtime.md 记录内置 Hermes ACP Host、Tool Host 边界和运行时生命周期。")
     add_small_note(doc, "docs/hermes-tool-ownership-audit.md 记录 Hermes Agent、Hermes Model Proxy 和 Hermes ACP 的工具所有权差异。")
     add_small_note(doc, "docs/hermes-test-report.md 记录 ACP 宿主工具、审批、checkpoint、恢复、Shell、跨平台和安装包专项验证。")
-    add_small_note(doc, "src/electron/agent/executor.ts 包含 Hermes external runtime 的选择和执行分支；普通任务仍走 NeoWorker native SessionRuntime。")
+    add_small_note(doc, "src/electron/agent/executor.ts 包含内置 Hermes external runtime 的执行分支；Native SessionRuntime 仅保留历史兼容路径。")
 
     # Avoid widows around the final section and keep the document clean when opened in Word.
     for paragraph in doc.paragraphs:

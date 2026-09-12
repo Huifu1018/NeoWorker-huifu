@@ -12,6 +12,7 @@ import {
   derivePromotedWorkspaceOutputs,
   deriveCopiedSourceArtifactPathKeys,
   getProjectFileVisual,
+  mergeWorkspaceBrowserFiles,
   ProjectContextPanel,
   shouldPublishTaskOutputs,
 } from "../ProjectContextPanel";
@@ -205,6 +206,42 @@ describe("ProjectContextPanel", () => {
         timestamp: 200,
       },
     ]);
+  });
+
+  it("merges durable artifact records into the workspace browser without duplicating local files", () => {
+    const localRootFile = {
+      id: "local-report",
+      name: "report.pdf",
+      path: "/tmp/finance-workspace/report.pdf",
+      source: "local",
+    };
+    const localArtifactDirectory = {
+      id: "local-artifacts",
+      name: "artifacts",
+      path: "/tmp/finance-workspace/artifacts",
+      source: "local",
+      isDirectory: true,
+    };
+    const durableMirrorOutput = {
+      id: "artifact-nested",
+      name: "presentation.pptx",
+      path: "/Users/test/Library/Application Support/NeoWorker/artifacts/temporary-workspaces/finance-workspace-1234/artifacts/skills/task-1/ppt-master/output/presentation.pptx",
+      source: "artifacts",
+    };
+    const duplicateRootArtifact = {
+      id: "artifact-report",
+      name: "report.pdf",
+      path: "/Users/test/Library/Application Support/NeoWorker/artifacts/temporary-workspaces/finance-workspace-1234/report.pdf",
+      source: "artifacts",
+    };
+
+    expect(
+      mergeWorkspaceBrowserFiles(
+        [localRootFile, localArtifactDirectory],
+        [durableMirrorOutput, duplicateRootArtifact],
+        "/tmp/finance-workspace",
+      ).map((file) => file.id),
+    ).toEqual(["local-report", "local-artifacts", "artifact-nested"]);
   });
 
   it("recognizes source files superseded by a canonical delivery copy", () => {
@@ -460,6 +497,166 @@ describe("ProjectContextPanel", () => {
         userText: "文件在哪里？",
         assistantText: "文件位于工作区的产物目录。",
         timestamp: 400,
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("recovers session rounds from follow-up boundaries and completion summaries", () => {
+    const conversationEvents = [
+      {
+        id: "user-1",
+        taskId: task.id,
+        timestamp: 100,
+        type: "user_message",
+        payload: { message: "帮我查一下明天北京飞深圳的航班信息" },
+      },
+      {
+        id: "completed-1",
+        taskId: task.id,
+        timestamp: 200,
+        type: "task_completed",
+        payload: {
+          resultSummary: "北京到深圳航班查询完成，共找到多个直飞班次。",
+        },
+      },
+      {
+        id: "follow-up-started",
+        taskId: task.id,
+        timestamp: 300,
+        type: "follow_up_started",
+        payload: {
+          followUpMessage: "帮我看一下本地磁盘情况",
+          turnId: "turn-disk",
+        },
+      },
+      {
+        id: "follow-up-completed",
+        taskId: task.id,
+        timestamp: 400,
+        type: "follow_up_completed",
+        payload: {
+          resultSummary: "磁盘情况我查完了，数据卷剩余空间较少。",
+        },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(conversationEvents, {
+        ...task,
+        prompt: "帮我查一下明天北京飞深圳的航班信息",
+        createdAt: 50,
+        status: "completed",
+      } as Task),
+    ).toEqual([
+      {
+        id: "user-1",
+        turnId: "initial",
+        userText: "帮我查一下明天北京飞深圳的航班信息",
+        assistantText: "北京到深圳航班查询完成，共找到多个直飞班次。",
+        timestamp: 100,
+        status: "completed",
+      },
+      {
+        id: "follow-up-started",
+        turnId: "event:follow-up-started",
+        userText: "帮我看一下本地磁盘情况",
+        assistantText: "磁盘情况我查完了，数据卷剩余空间较少。",
+        timestamp: 300,
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("combines conversation rounds from related main tasks without showing subagents", () => {
+    const continuationTask = {
+      ...task,
+      id: "task-continuation",
+      title: "继续整理本周市场快报",
+      prompt: "继续整理本周市场快报",
+      createdAt: 250,
+      updatedAt: 450,
+      sessionId: "session-1",
+      agentType: "main",
+    } as Task;
+    const subTask = {
+      ...task,
+      id: "task-subagent",
+      title: "资料调研专家",
+      prompt: "搜索资料",
+      createdAt: 150,
+      updatedAt: 350,
+      sessionId: "session-1",
+      agentType: "sub",
+      parentTaskId: task.id,
+    } as Task;
+    const conversationEvents = [
+      {
+        id: "current-user",
+        taskId: task.id,
+        timestamp: 100,
+        type: "user_message",
+        payload: { message: "整理本周市场快报" },
+      },
+      {
+        id: "current-completed",
+        taskId: task.id,
+        timestamp: 200,
+        type: "task_completed",
+        payload: { resultSummary: "第一轮整理完成。" },
+      },
+      {
+        id: "continuation-user",
+        taskId: continuationTask.id,
+        timestamp: 300,
+        type: "user_message",
+        payload: { message: "继续补充结论" },
+      },
+      {
+        id: "continuation-completed",
+        taskId: continuationTask.id,
+        timestamp: 400,
+        type: "task_completed",
+        payload: { resultSummary: "结论已经补充。" },
+      },
+      {
+        id: "subagent-user",
+        taskId: subTask.id,
+        timestamp: 350,
+        type: "user_message",
+        payload: { message: "搜索资料" },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(
+        conversationEvents,
+        {
+          ...task,
+          prompt: "整理本周市场快报",
+          createdAt: 50,
+          sessionId: "session-1",
+          status: "completed",
+        } as Task,
+        [task, continuationTask, subTask],
+      ),
+    ).toEqual([
+      {
+        id: "current-user",
+        taskId: task.id,
+        turnId: "initial",
+        userText: "整理本周市场快报",
+        assistantText: "第一轮整理完成。",
+        timestamp: 100,
+        status: "completed",
+      },
+      {
+        id: "continuation-user",
+        taskId: continuationTask.id,
+        turnId: "event:continuation-user",
+        userText: "继续补充结论",
+        assistantText: "结论已经补充。",
+        timestamp: 300,
         status: "completed",
       },
     ]);

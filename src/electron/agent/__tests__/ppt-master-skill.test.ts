@@ -107,6 +107,8 @@ describe("PPT Master bundled skill", () => {
     expect(expanded).toContain("Route: native-enhance");
     expect(expanded).toContain("call `create_presentation` exactly once");
     expect(expanded).toContain("force that call through the PPT Master advanced renderer");
+    expect(expanded).toContain("create_presentation` is a NeoWorker host tool");
+    expect(expanded).toContain("does not require `python-pptx` or `cairosvg`");
     expect(expanded).toContain("Do not call `generate_presentation`");
     expect(expanded).toContain(
       "canonical task project directory is exactly `/tmp/neoworker-artifacts`",
@@ -159,6 +161,80 @@ describe("PPT Master bundled skill", () => {
         visualMode: "editorial",
       });
       expect(prepared.styleBrief).toContain("PPT Master advanced editorial system");
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("carries the applied template source into the host-pinned presentation call", () => {
+    const workspacePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-ppt-master-source-routing-"),
+    );
+    try {
+      const artifactRoot = path.join(
+        workspacePath,
+        "artifacts",
+        "skills",
+        "task-ppt-master-source-routing",
+        "ppt-master",
+      );
+      const sourcePath = path.join(workspacePath, "template.pptx");
+      fs.writeFileSync(sourcePath, "placeholder");
+      const executor = createPptMasterExecutor(
+        workspacePath,
+        artifactRoot,
+        "task-ppt-master-source-routing",
+      );
+      executor.appliedSkills[0].parameters = { source_path: sourcePath };
+      const prepared = (
+        TaskExecutor as Any
+      ).prototype.preparePresentationWorkflowToolInput.call(
+        executor,
+        "create_presentation",
+        {
+          filename: "ordinary.pptx",
+          slides: [{ title: "Template deck", slideType: "cover" }],
+        },
+      );
+
+      expect(prepared).toMatchObject({
+        sourcePath,
+        generationMode: "ppt-master",
+        presentationWorkflow: "ppt-master",
+      });
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("finds an uploaded PPTX when PPT Master was invoked with natural language", async () => {
+    const workspacePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-ppt-master-source-inference-"),
+    );
+    try {
+      const sourcePath = path.join(
+        workspacePath,
+        ".neoworker",
+        "uploads",
+        "template.pptx",
+      );
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(sourcePath, "placeholder");
+      const registry = Object.create(ToolRegistry.prototype) as Any;
+      registry.taskId = "task-ppt-master-source-inference";
+      registry.workspace = { path: workspacePath };
+      registry.daemon = {
+        getTaskById: vi.fn(async () => ({
+          title: "/ppt-master 帮我基于附件模板优化PPT",
+          prompt: `附件：${path.relative(workspacePath, sourcePath)}`,
+        })),
+      };
+
+      const inferred = await (
+        ToolRegistry as Any
+      ).prototype.inferPptMasterSourcePath.call(registry);
+
+      expect(inferred).toBe(path.resolve(sourcePath));
     } finally {
       fs.rmSync(workspacePath, { recursive: true, force: true });
     }
@@ -448,6 +524,19 @@ describe("PPT Master bundled skill", () => {
     expect(fs.existsSync(path.join(skillDirectory, "ai-image-comparison"))).toBe(false);
     expect(fs.existsSync(path.join(skillDirectory, "templates", "icons"))).toBe(false);
     expect(fs.existsSync(path.join(skillDirectory, "templates", "sounds"))).toBe(false);
+  });
+
+  it("keeps missing optional PPT Master Python modules from blocking host delivery", () => {
+    const skillDirectory = path.join(BUNDLED_SKILLS_DIR, "ppt-master");
+    const preflight = fs.readFileSync(
+      path.join(skillDirectory, "scripts", "neoworker_preflight.py"),
+      "utf8",
+    );
+
+    expect(preflight).toContain('"create_presentation": "neoWorker-host-pinned"');
+    expect(preflight).toContain('"final_delivery_requires_upstream_python_pptx": False');
+    expect(preflight).toContain('"final_delivery_requires_cairosvg": False');
+    expect(preflight).toContain("Missing optional modules must not be reported");
   });
 });
 

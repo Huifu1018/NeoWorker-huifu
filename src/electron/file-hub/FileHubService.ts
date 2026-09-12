@@ -124,17 +124,28 @@ export class FileHubService {
   }
 
   private listArtifacts(options: FileHubListOptions): UnifiedFile[] {
-    const artifacts = this.deps.getArtifacts({ limit: options.limit || 50 });
-    return artifacts.map((a: Any) => ({
-      id: `artifact:${a.id}`,
-      name: path.basename(a.path || "artifact"),
-      path: a.path,
-      source: "artifacts" as FileHubSource,
-      mimeType: a.mime_type || "application/octet-stream",
-      size: a.size || 0,
-      modifiedAt: a.created_at || Date.now(),
-      metadata: { taskId: a.task_id },
-    }));
+    const artifacts = this.deps.getArtifacts({
+      taskId: options.taskId,
+      workspaceId: options.workspaceId,
+      limit: options.limit || 50,
+    });
+    const files: UnifiedFile[] = [];
+    for (const a of artifacts) {
+      const artifactPath = String(a.path || "");
+      if (!artifactPath) continue;
+      const taskId = a.taskId || a.task_id;
+      files.push({
+        id: `artifact:${a.id}`,
+        name: path.basename(artifactPath) || "artifact",
+        path: artifactPath,
+        source: "artifacts" as FileHubSource,
+        mimeType: a.mimeType || a.mime_type || "application/octet-stream",
+        size: a.size || 0,
+        modifiedAt: a.createdAt || a.created_at || Date.now(),
+        metadata: { taskId },
+      });
+    }
+    return files;
   }
 
   // ── Search ──────────────────────────────────────────────────────

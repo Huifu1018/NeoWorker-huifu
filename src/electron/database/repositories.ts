@@ -2085,6 +2085,7 @@ export class TaskEventRepository {
   private static readonly TRUNCATED_PAYLOAD_PREVIEW_CHARS =
     TASK_TIMELINE_PAYLOAD_PREVIEW_CHARS;
   private static readonly TIMELINE_ADDITIONAL_TASK_ID_CHUNK_SIZE = 500;
+  private static readonly TIMELINE_TURN_BOUNDARY_CONTEXT_LIMIT = 80;
 
   constructor(private db: Database.Database) {}
 
@@ -2806,14 +2807,14 @@ export class TaskEventRepository {
             singleEventByteLimit,
           )
         : null;
-    const turnBoundaryContextRow =
+    const turnBoundaryContextRows =
       cursorWhere.length === 0
-        ? this.findLatestTimelineTurnBoundaryRow(
+        ? this.findTimelineTurnBoundaryRows(
             taskId,
             selectedRows,
             singleEventByteLimit,
           )
-        : null;
+        : [];
     const durableContextRows =
       cursorWhere.length === 0
         ? this.findDurableTimelineContextRows(
@@ -2835,7 +2836,7 @@ export class TaskEventRepository {
         : [];
     const contextRows = [
       planContextRow,
-      turnBoundaryContextRow,
+      ...turnBoundaryContextRows,
       ...planStepContextRows,
       ...durableContextRows,
     ].filter((row): row is Any => !!row);
@@ -2984,18 +2985,18 @@ export class TaskEventRepository {
       : row;
   }
 
-  private findLatestTimelineTurnBoundaryRow(
+  private findTimelineTurnBoundaryRows(
     taskId: string,
     selectedRows: Any[],
     singleEventByteLimit: number,
-  ): Any | null {
-    if (!taskId) return null;
+  ): Any[] {
+    if (!taskId) return [];
     const selectedIds = new Set(
       selectedRows
         .map((row) => (typeof row.id === "string" ? row.id : ""))
         .filter((id) => id.length > 0),
     );
-    const row = this.db
+    const rows = this.db
       .prepare(
         `
         SELECT
@@ -3023,15 +3024,21 @@ export class TaskEventRepository {
         WHERE task_id = ?
           AND COALESCE(legacy_type, type) IN ('user_message', 'follow_up_started')
         ORDER BY COALESCE(seq, timestamp) DESC, timestamp DESC, id DESC
-        LIMIT 1
+        LIMIT ?
       `,
       )
-      .get(taskId) as Any;
-    if (!row || selectedIds.has(String(row.id ?? ""))) return null;
-    const payloadBytes = Number(row.payload_bytes) || 0;
-    return payloadBytes > singleEventByteLimit
-      ? this.buildTimelineTruncatedPayloadRow(row, payloadBytes)
-      : row;
+      .all(
+        taskId,
+        TaskEventRepository.TIMELINE_TURN_BOUNDARY_CONTEXT_LIMIT,
+      ) as Any[];
+    return rows
+      .filter((row) => !selectedIds.has(String(row.id ?? "")))
+      .map((row) => {
+        const payloadBytes = Number(row.payload_bytes) || 0;
+        return payloadBytes > singleEventByteLimit
+          ? this.buildTimelineTruncatedPayloadRow(row, payloadBytes)
+          : row;
+      });
   }
 
   /**
@@ -3850,6 +3857,38 @@ export class ArtifactRepository {
       "SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at DESC",
     );
     const rows = stmt.all(taskId) as Any[];
+    return rows.map((row) => this.mapRowToArtifact(row));
+  }
+
+  findByWorkspaceId(workspaceId: string, limit = 100): Artifact[] {
+    const normalizedWorkspaceId =
+      typeof workspaceId === "string" ? workspaceId.trim() : "";
+    if (!normalizedWorkspaceId) return [];
+    const safeLimit =
+      typeof limit === "number" && Number.isFinite(limit)
+        ? Math.max(1, Math.min(500, Math.floor(limit)))
+        : 100;
+    const stmt = this.db.prepare(`
+      SELECT artifacts.*
+      FROM artifacts
+      INNER JOIN tasks ON tasks.id = artifacts.task_id
+      WHERE tasks.workspace_id = ?
+      ORDER BY artifacts.created_at DESC
+      LIMIT ?
+    `);
+    const rows = stmt.all(normalizedWorkspaceId, safeLimit) as Any[];
+    return rows.map((row) => this.mapRowToArtifact(row));
+  }
+
+  findRecent(limit = 100): Artifact[] {
+    const safeLimit =
+      typeof limit === "number" && Number.isFinite(limit)
+        ? Math.max(1, Math.min(500, Math.floor(limit)))
+        : 100;
+    const stmt = this.db.prepare(
+      "SELECT * FROM artifacts ORDER BY created_at DESC LIMIT ?",
+    );
+    const rows = stmt.all(safeLimit) as Any[];
     return rows.map((row) => this.mapRowToArtifact(row));
   }
 

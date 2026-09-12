@@ -1881,10 +1881,6 @@ export function renderEventDetails(
       typeof event.payload?.runtimeAgent === "string"
         ? event.payload.runtimeAgent
         : "acpx";
-    const runtimePreference =
-      typeof event.payload?.runtimePreference === "string"
-        ? event.payload.runtimePreference
-        : "auto";
     const runtimeState =
       typeof event.payload?.runtimeState === "string"
         ? event.payload.runtimeState
@@ -1896,8 +1892,7 @@ export function renderEventDetails(
     return (
       <div className="event-details">
         <div>
-          Runtime: {runtimeAgent} · preference: {runtimePreference} · state:{" "}
-          {runtimeState}
+          Runtime: {runtimeAgent} · state: {runtimeState}
         </div>
         {message ? <div>{message}</div> : null}
         {typeof event.payload?.errorCode === "string" ? (

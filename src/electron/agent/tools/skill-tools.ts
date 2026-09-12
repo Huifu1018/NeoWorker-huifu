@@ -1,5 +1,7 @@
 import * as path from "path";
 import * as fs from "fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { Workspace } from "../../../shared/types";
 import { AgentDaemon } from "../daemon";
 import { DocumentBuilder } from "../skills/document";
@@ -36,6 +38,8 @@ import type {
   FormatFactProjection,
   OfficeArtifactFormat,
 } from "../../utils/office-content-model";
+
+const execFile = promisify(execFileCallback);
 
 interface OfficeContentReferenceInput {
   sectionIds?: string[];
@@ -228,6 +232,123 @@ export class SkillTools {
     return safeRelativePath.split(path.sep).join("/");
   }
 
+  private async runPptMasterTemplateFill(
+    sourcePath: string,
+    artifactRoot: string,
+    slides: unknown[],
+    signal?: AbortSignal,
+  ): Promise<{ outputPath: string; size: number }> {
+    if (signal?.aborted) {
+      throw new Error("PPT Master template fill was cancelled.");
+    }
+
+    const resolvedSourcePath = path.isAbsolute(sourcePath)
+      ? path.resolve(sourcePath)
+      : path.resolve(this.workspace.path, sourcePath);
+    const resourcesPath =
+      process.resourcesPath || path.resolve(__dirname, "../../../../..");
+    const scriptCandidates = [
+      path.resolve(
+        resourcesPath,
+        "skills",
+        "ppt-master",
+        "scripts",
+        "neoworker_template_fill.py",
+      ),
+      path.resolve(
+        __dirname,
+        "../../../../resources/skills/ppt-master/scripts/neoworker_template_fill.py",
+      ),
+    ];
+    let scriptPath: string | null = null;
+    for (const candidate of scriptCandidates) {
+      try {
+        await fs.access(candidate);
+        scriptPath = candidate;
+        break;
+      } catch {
+        // Try the next development or packaged resource location.
+      }
+    }
+    if (!scriptPath) {
+      throw new Error(
+        "PPT Master template-fill adapter is missing from the NeoWorker resources.",
+      );
+    }
+
+    const analysisDir = path.join(artifactRoot, "analysis");
+    const outputPath = path.join(artifactRoot, "output", "presentation.pptx");
+    const slidesPath = path.join(analysisDir, "neoworker-slides.json");
+    await fs.mkdir(analysisDir, { recursive: true });
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.access(resolvedSourcePath);
+    await fs.writeFile(
+      slidesPath,
+      JSON.stringify(slides, null, 2) + "\n",
+      "utf8",
+    );
+
+    const args = [
+      scriptPath,
+      "--source",
+      resolvedSourcePath,
+      "--slides-json",
+      slidesPath,
+      "--project",
+      artifactRoot,
+      "--output",
+      outputPath,
+    ];
+    const pythonCandidates = Array.from(
+      new Set(
+        [
+          process.env.NEOWORKER_PYTHON,
+          "python3",
+          "python",
+        ].filter((candidate): candidate is string => Boolean(candidate)),
+      ),
+    );
+    let lastError: unknown = null;
+    for (const python of pythonCandidates) {
+      try {
+        await execFile(python, args, {
+          cwd: path.dirname(scriptPath),
+          timeout: 10 * 60 * 1000,
+          maxBuffer: 4 * 1024 * 1024,
+          ...(signal ? { signal } : {}),
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if ((error as Any)?.code !== "ENOENT") {
+          const stderr = String((error as Any)?.stderr || "").trim();
+          const stdout = String((error as Any)?.stdout || "").trim();
+          throw new Error(
+            `PPT Master template fill failed: ${
+              stderr || stdout || (error as Any)?.message || String(error)
+            }`,
+          );
+        }
+      }
+    }
+    if (lastError) {
+      throw new Error(
+        `PPT Master template fill requires Python 3: ${String(
+          (lastError as Any)?.message || lastError,
+        )}`,
+      );
+    }
+
+    const stats = await fs.stat(outputPath);
+    if (!stats.isFile() || stats.size <= 0) {
+      throw new Error(
+        `PPT Master template fill did not produce a usable output: ${outputPath}`,
+      );
+    }
+    return { outputPath, size: stats.size };
+  }
+
   /**
    * Create spreadsheet
    */
@@ -321,9 +442,8 @@ export class SkillTools {
     const mimeType =
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     const qualityCheck = published.qualityCheck;
+    this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
     if (!published.deduplicated) {
-      this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
-
       this.daemon.logEvent(this.taskId, "file_created", {
       path: outputRelativePath,
       type: "spreadsheet",
@@ -337,7 +457,8 @@ export class SkillTools {
       officeArtifactId: published.manifest.artifactId,
       officeManifest: published.manifest,
       });
-      this.daemon.logEvent(this.taskId, "artifact_created", {
+    }
+    this.daemon.logEvent(this.taskId, "artifact_created", {
       path: outputRelativePath,
       type: "spreadsheet",
       mimeType,
@@ -352,9 +473,10 @@ export class SkillTools {
       officeArtifactStatus: published.manifest.status,
       officeArtifactId: published.manifest.artifactId,
       officeManifest: published.manifest,
+      deduplicated: published.deduplicated === true,
+      reusedExistingArtifact: published.deduplicated === true,
       label: outputFilename,
       });
-    }
 
     return {
       success: true,
@@ -584,9 +706,7 @@ export class SkillTools {
       input.format === "docx"
         ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         : "application/pdf";
-    if (!officeDeduplicated) {
-      this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
-    }
+    this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
     console.log(
       `[SkillTools] Document created successfully: ${outputFilename} with ${blockCount} content blocks`,
     );
@@ -606,7 +726,8 @@ export class SkillTools {
       officeArtifactId: officeManifest?.artifactId,
       officeManifest,
       });
-      this.daemon.logEvent(this.taskId, "artifact_created", {
+    }
+    this.daemon.logEvent(this.taskId, "artifact_created", {
       path: outputRelativePath,
       type: "document",
       format: input.format,
@@ -622,9 +743,10 @@ export class SkillTools {
       officeArtifactStatus: input.format === "docx" ? "published" : undefined,
       officeArtifactId: officeManifest?.artifactId,
       officeManifest,
+      deduplicated: officeDeduplicated,
+      reusedExistingArtifact: officeDeduplicated,
       label: outputFilename,
       });
-    }
 
     return {
       success: true,
@@ -955,6 +1077,7 @@ export class SkillTools {
    */
   async createPresentation(input: {
     filename: string;
+    sourcePath?: string;
     generationMode?: "default" | "ppt-master";
     presentationWorkflow?: string;
     workflowArtifactRoot?: string;
@@ -1044,7 +1167,6 @@ export class SkillTools {
       throw new Error("At least one slide is required.");
     }
 
-    const officeBuilder = await this.createOfficeArtifactBuilder(execution.signal);
     const resolvedSlides = input.slides.map((slide) => ({
       ...slide,
       imagePath:
@@ -1058,6 +1180,135 @@ export class SkillTools {
       input.contentSnapshot,
     );
     const slides = presentationPlan.value;
+    if (
+      input.generationMode === "ppt-master" &&
+      typeof input.sourcePath === "string" &&
+      input.sourcePath.trim()
+    ) {
+      const artifactRoot = path.resolve(
+        input.workflowArtifactRoot ||
+          path.join(
+            this.workspace.path,
+            "artifacts",
+            "skills",
+            this.taskId,
+            "ppt-master",
+          ),
+      );
+      this.reportOfficePublishPhase("pptx", "staging", {
+        presentationWorkflow: "ppt-master",
+        sourcePath: input.sourcePath,
+        engine: "template-fill-pptx",
+      });
+      const templateResult = await this.runPptMasterTemplateFill(
+        input.sourcePath,
+        artifactRoot,
+        slides,
+        execution.signal,
+      );
+      const outputPath = templateResult.outputPath;
+      const outputRelativePath =
+        this.getWorkspaceRelativeArtifactPath(outputPath);
+      const outputFilename = path.basename(outputPath);
+      const mimeType =
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+      const qualityCheck = await this.inspectOfficeArtifact(outputPath);
+      if (qualityCheck.validation?.passed === false) {
+        throw new Error(
+          `PPT Master template output failed Office validation: ${
+            qualityCheck.modelGuidance || "validation failed"
+          }`,
+        );
+      }
+      const validationDir = path.join(artifactRoot, "validation");
+      await fs.mkdir(validationDir, { recursive: true });
+      await fs.writeFile(
+        path.join(validationDir, "workflow.log"),
+        [
+          "workflow=ppt-master",
+          "engine=template-fill-pptx-v1",
+          `source=${input.sourcePath}`,
+          `output=${outputPath}`,
+          `completedAt=${new Date().toISOString()}`,
+        ].join("\n") + "\n",
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(validationDir, "pptx-delivery-check.json"),
+        JSON.stringify(
+          {
+            schema: "ppt-master.pptx-delivery-check.v1",
+            status: "passed",
+            presentationWorkflow: "ppt-master",
+            engine: "template-fill-pptx-v1",
+            sourcePath: input.sourcePath,
+            slides: slides.length,
+            file: {
+              path: outputPath,
+              bytes: templateResult.size,
+            },
+            quality: {
+              engine: qualityCheck.engine,
+              version: qualityCheck.version,
+              status: qualityCheck.status,
+              validationPassed: qualityCheck.validation?.passed === true,
+              issueCount: qualityCheck.issueCount || 0,
+              visualRequired: qualityCheck.visual?.required === true,
+              visualPassed: qualityCheck.visual?.passed === true,
+              visualEvidencePath: qualityCheck.visual?.evidencePath,
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+      this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
+      this.daemon.logEvent(this.taskId, "file_created", {
+        path: outputRelativePath,
+        type: "presentation",
+        slides: slides.length,
+        size: templateResult.size,
+        qualityStatus: qualityCheck.status,
+        issueCount: qualityCheck.issueCount,
+        generationEngine: "template-fill-pptx-v1",
+        sourcePath: input.sourcePath,
+      });
+      this.daemon.logEvent(this.taskId, "artifact_created", {
+        path: outputRelativePath,
+        type: "presentation",
+        mimeType,
+        size: templateResult.size,
+        slides: slides.length,
+        qualityStatus: qualityCheck.status,
+        issueCount: qualityCheck.issueCount,
+        previewPath: qualityCheck.previewPath,
+        qualityEngine: qualityCheck.engine,
+        generationEngine: "template-fill-pptx-v1",
+        sourcePath: input.sourcePath,
+        deduplicated: false,
+        reusedExistingArtifact: false,
+        label: outputFilename,
+      });
+      this.reportOfficePublishPhase("pptx", "published", {
+        presentationWorkflow: "ppt-master",
+        engine: "template-fill-pptx-v1",
+        path: outputRelativePath,
+      });
+
+      return {
+        success: true,
+        path: outputRelativePath,
+        size: templateResult.size,
+        mimeType,
+        qualityCheck,
+        deduplicated: false,
+        _modelReminder:
+          "The PPTX was filled from the user's native template. The editable source project and validation files remain under the PPT Master artifact directory.",
+      };
+    }
+
+    const officeBuilder = await this.createOfficeArtifactBuilder(execution.signal);
     const officeProfile = selectOfficeCliOfficialProfile(
       "pptx",
       `${input.title || filename} ${input.audience || ""} ${input.tone || ""} ${
@@ -1196,9 +1447,8 @@ export class SkillTools {
         "utf8",
       );
     }
+    this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
     if (!published.deduplicated) {
-      this.daemon.registerArtifact(this.taskId, outputPath, mimeType);
-
       this.daemon.logEvent(this.taskId, "file_created", {
       path: outputRelativePath,
       type: "presentation",
@@ -1212,7 +1462,8 @@ export class SkillTools {
       officeArtifactId: published.manifest.artifactId,
       officeManifest: published.manifest,
       });
-      this.daemon.logEvent(this.taskId, "artifact_created", {
+    }
+    this.daemon.logEvent(this.taskId, "artifact_created", {
       path: outputRelativePath,
       type: "presentation",
       mimeType,
@@ -1227,9 +1478,10 @@ export class SkillTools {
       officeArtifactStatus: published.manifest.status,
       officeArtifactId: published.manifest.artifactId,
       officeManifest: published.manifest,
+      deduplicated: published.deduplicated === true,
+      reusedExistingArtifact: published.deduplicated === true,
       label: outputFilename,
       });
-    }
 
     return {
       success: true,

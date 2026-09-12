@@ -407,7 +407,7 @@ describe("TaskEventRepository.findTimelinePage", () => {
     expect(page.summary.planStepCount).toBe(2);
   });
 
-  it("pins the latest follow-up boundary after more than 900 later events", () => {
+  it("pins recent turn boundaries after more than 900 later events", () => {
     insertEvent({
       id: "original-user",
       seq: 1,
@@ -445,6 +445,7 @@ describe("TaskEventRepository.findTimelinePage", () => {
     const page = repo.findTimelinePage({ taskId: "task-1", limit: 1 });
 
     expect(page.events.map((event) => event.id)).toEqual([
+      "original-user",
       "original-plan",
       "follow-up",
       "follow-up-noise-949",
@@ -763,6 +764,32 @@ class FakeTaskEventDb {
   }
 
   private selectRows(sql: string, args: unknown[]): FakeTaskEventRow[] {
+    if (
+      sql.includes("WHERE task_id = ?") &&
+      sql.includes("'user_message', 'follow_up_started'") &&
+      sql.includes("timeline_order")
+    ) {
+      const taskId = String(args[0] ?? "");
+      const limit = Number(args[args.length - 1]) || 100;
+      return this.rows
+        .filter(
+          (row) =>
+            row.task_id === taskId &&
+            ["user_message", "follow_up_started"].includes(
+              row.legacy_type || row.type,
+            ),
+        )
+        .map((row) => ({ ...row, timeline_order: row.seq ?? row.timestamp }))
+        .sort((a, b) => {
+          const orderDelta = (b.timeline_order ?? 0) - (a.timeline_order ?? 0);
+          if (orderDelta !== 0) return orderDelta;
+          const timestampDelta = b.timestamp - a.timestamp;
+          if (timestampDelta !== 0) return timestampDelta;
+          return b.id.localeCompare(a.id);
+        })
+        .slice(0, limit);
+    }
+
     if (sql.includes("durable_timeline_context")) {
       const taskId = String(args[0] ?? "");
       return this.rows

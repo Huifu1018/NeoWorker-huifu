@@ -60,6 +60,7 @@ import {
 } from "../electron/control-plane/StrategicPlannerService";
 import { attachControlPlaneTaskLifecycleSync } from "../electron/control-plane/task-run-sync";
 import { NumbatService } from "../electron/security/numbat";
+import { installBundledOfficeCliRuntime } from "../electron/utils/officecli-runtime";
 
 interface StartedControlPlane {
   server: ControlPlaneServer;
@@ -226,6 +227,10 @@ async function startControlPlane(options: {
 }
 
 async function main(): Promise<void> {
+  // The headless daemon owns task execution too, so it must expose the same
+  // bundled Office runtime as the Electron desktop entrypoint.
+  installBundledOfficeCliRuntime();
+
   // Daemon is always headless; set an env flag to keep core logic consistent even if the caller
   // forgot to pass `--headless`.
   if (!process.env.NEOWORKER_HEADLESS) {

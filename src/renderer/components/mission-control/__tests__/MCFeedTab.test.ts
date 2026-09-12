@@ -69,7 +69,7 @@ describe("MCFeedTab", () => {
     const markup = renderFeed(false);
 
     expect(markup).toContain("Tool activity captured");
-    expect(markup).toContain("Show evidence (2)");
+    expect(markup).toContain("显示证据（2）");
     expect(markup).not.toContain("Tool used - scratchpad_write");
   });
 

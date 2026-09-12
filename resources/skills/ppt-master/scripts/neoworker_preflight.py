@@ -27,6 +27,14 @@ OPTIONAL_MODULES = (
     "cairosvg",
 )
 
+OPTIONAL_MODULE_SCOPES = {
+    "pptx": "upstream-source-inspection",
+    "openpyxl": "spreadsheet-backed-data-import",
+    "PIL": "preview-blankness-check",
+    "lxml": "upstream-pptx-helpers",
+    "cairosvg": "optional-svg-raster-fallback",
+}
+
 
 def main() -> int:
     missing_paths = [item for item in REQUIRED_PATHS if not (ROOT / item).is_file()]
@@ -39,7 +47,17 @@ def main() -> int:
         "platform": platform.platform(),
         "skill_root": str(ROOT),
         "missing_required_paths": missing_paths,
+        "host_renderer": {
+            "create_presentation": "neoWorker-host-pinned",
+            "final_delivery_requires_upstream_python_pptx": False,
+            "final_delivery_requires_cairosvg": False,
+            "note": (
+                "Missing optional modules must not be reported as a missing "
+                "NeoWorker create_presentation renderer."
+            ),
+        },
         "optional_modules": modules,
+        "optional_module_scopes": OPTIONAL_MODULE_SCOPES,
         "packaging": {
             "heavy_comparison_gallery": False,
             "bundled_icon_corpus": False,

@@ -1,5 +1,8 @@
 import type { TaskEvent } from "../../shared/types";
 import { getEffectiveTaskEventType } from "./task-event-compat";
+import {
+  mergeTaskEventsByIdentity,
+} from "./task-event-stream";
 
 const RENDERER_NOISE_EVENT_TYPES = new Set([
   "log",
@@ -351,7 +354,6 @@ export function appendRendererTaskEvents(
   if (incomingEvents.length === 0) return previousEvents;
 
   const replacements = new Map<string, TaskEvent>();
-  const idReplacements = new Map<string, TaskEvent>();
   const appends: TaskEvent[] = [];
   for (const event of incomingEvents) {
     const key = getTransientEventReplacementKey(event);
@@ -378,39 +380,11 @@ export function appendRendererTaskEvents(
     }
   }
 
-  // Replace events by ID: when the backend re-emits an event with updated
-  // payload (e.g. async mail-compose frame materialization), replace the
-  // existing event in-place instead of appending a duplicate.
-  if (appends.length > 0) {
-    const remaining: TaskEvent[] = [];
-    for (const event of appends) {
-      const eventId = typeof event.id === "string" ? event.id.trim() : "";
-      if (eventId) {
-        idReplacements.set(eventId, event);
-      } else {
-        remaining.push(event);
-      }
-    }
-
-    if (idReplacements.size > 0) {
-      const usedIds = new Set<string>();
-      nextEvents = nextEvents.map((event) => {
-        const existingId = typeof event.id === "string" ? event.id.trim() : "";
-        if (existingId && idReplacements.has(existingId)) {
-          usedIds.add(existingId);
-          return idReplacements.get(existingId)!;
-        }
-        return event;
-      });
-      for (const [id, event] of idReplacements) {
-        if (!usedIds.has(id)) remaining.push(event);
-      }
-    }
-
-    if (remaining.length > 0) {
-      nextEvents = [...nextEvents, ...remaining];
-    }
-  }
-
-  return capTaskEvents(nextEvents);
+  // Merge by the canonical event identity after transient replacement. The
+  // backend may re-emit the same event with a new renderer id while keeping
+  // its durable eventId, and live IPC delivery can arrive out of timestamp
+  // order. Keeping this as the final step prevents duplicate assistant
+  // messages/artifact cards and makes the timeline stable for the UI.
+  const mergedEvents = mergeTaskEventsByIdentity(nextEvents, appends);
+  return capTaskEvents(mergeTaskEventsByIdentity([], mergedEvents));
 }

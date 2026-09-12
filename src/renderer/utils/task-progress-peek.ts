@@ -247,8 +247,8 @@ function deriveStatus(
   isTaskWorking: boolean,
 ): TaskProgressPeekStatus {
   if (!task) return "idle";
-  if (task.terminalStatus === "awaiting_approval" || task.status === "blocked")
-    return "waiting";
+  if (task.terminalStatus === "awaiting_approval") return "waiting";
+  if (task.status === "blocked") return "blocked";
   if (
     isTaskWorking ||
     task.status === "executing" ||
@@ -260,7 +260,6 @@ function deriveStatus(
   if (task.status === "cancelled") return "cancelled";
   if (task.status === "paused" || task.status === "interrupted")
     return "paused";
-  if (task.status === "blocked") return "blocked";
   return "idle";
 }
 
@@ -277,6 +276,7 @@ function getStatusLabel(status: TaskProgressPeekStatus): string {
     case "paused":
       return localizeProgressText("Paused");
     case "blocked":
+      return localizeProgressText("Blocked");
     case "waiting":
       return localizeProgressText("Waiting");
     default:

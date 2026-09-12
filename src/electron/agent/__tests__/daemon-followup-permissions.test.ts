@@ -353,6 +353,116 @@ describe("AgentDaemon follow-up permission overrides", () => {
     vi.useRealTimers();
   });
 
+  it("queues a second follow-up while the first dispatch is entering the executor", async () => {
+    let releaseFirstDispatch: (() => void) | undefined;
+    const firstDispatch = new Promise<void>((resolve) => {
+      releaseFirstDispatch = resolve;
+    });
+    const task = {
+      id: "task-dispatch-race",
+      title: "Existing task",
+      workspaceId: "workspace-1",
+      status: "completed",
+      agentConfig: {},
+    } as Any;
+    const workspace = {
+      id: "workspace-1",
+      name: "Workspace",
+      path: "/tmp/workspace",
+      isTemp: false,
+      permissions: {
+        read: true,
+        write: true,
+        delete: false,
+        network: true,
+        shell: false,
+      },
+    } as Any;
+    const executor = {
+      isRunning: false,
+      sendMessage: vi.fn().mockImplementation(async () => {
+        await firstDispatch;
+      }),
+      updateTaskAgentConfig: vi.fn(),
+      updateWorkspace: vi.fn(),
+      suppressNextUserMessageEvent: vi.fn(),
+    };
+    const daemonLike = {
+      activeTasks: new Map([
+        [
+          task.id,
+          {
+            executor,
+            lastAccessed: 0,
+            status: "active",
+          },
+        ],
+      ]),
+      taskRepo: {
+        findById: vi.fn().mockReturnValue(task),
+        touch: vi.fn(),
+        update: vi.fn(),
+      },
+      workspaceRepo: {
+        findById: vi.fn().mockReturnValue(workspace),
+      },
+      annotationRepo: {
+        listOpenByTask: vi.fn().mockReturnValue([]),
+      },
+      deferredUserFollowUps: new Map(),
+      deferredUserFollowUpDrains: new Map(),
+      deferredUserFollowUpDispatches: new Set(),
+      activeUserFollowUpDispatches: new Set(),
+      taskAccessSnapshotByTaskId: new Map(),
+      logEvent: vi.fn(),
+      processOrphanedFollowUps: vi.fn(),
+      isSideChatTask: vi.fn().mockReturnValue(false),
+      buildSideChatTurnAgentConfigOverride: vi.fn().mockReturnValue(undefined),
+      syncTaskAccessPolicyForFollowUp: vi.fn().mockReturnValue(false),
+      applyTaskAccessSnapshot: vi.fn().mockImplementation((value) => value),
+      applyAgentRoleOverrides: vi.fn().mockImplementation((value) => ({
+        task: value,
+      })),
+      applyTaskWorkspaceOverrides: vi.fn().mockImplementation((_task, value) => value),
+      buildAnnotationFollowUpContext: vi.fn((_, message) => ({
+        message,
+        annotations: [],
+      })),
+      persistTaskAttachmentBindings: vi.fn(),
+    } as Any;
+    Object.setPrototypeOf(daemonLike, AgentDaemon.prototype);
+
+    const firstPromise = AgentDaemon.prototype.sendMessage.call(
+      daemonLike,
+      task.id,
+      "第一条追问",
+    );
+    await vi.waitFor(() => expect(executor.sendMessage).toHaveBeenCalledTimes(1));
+
+    const secondResult = await AgentDaemon.prototype.sendMessage.call(
+      daemonLike,
+      task.id,
+      "第二条追问",
+    );
+
+    expect(secondResult).toEqual({
+      queued: true,
+      queueItem: expect.objectContaining({
+        taskId: task.id,
+        message: "第二条追问",
+      }),
+    });
+    expect(daemonLike.deferredUserFollowUps.get(task.id)).toEqual([
+      expect.objectContaining({
+        message: "第二条追问",
+        displayMessage: "第二条追问",
+      }),
+    ]);
+
+    releaseFirstDispatch?.();
+    await firstPromise;
+  });
+
   it("applies full-access follow-up overrides before deferring a separate turn on an active executor", async () => {
     const task = {
       id: "550e8400-e29b-41d4-a716-446655440000",

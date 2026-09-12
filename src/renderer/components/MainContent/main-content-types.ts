@@ -4,7 +4,6 @@ import type {
   PermissionMode,
   AgentConfig,
   IntegrationMentionSelection,
-  TaskRuntimePreference,
 } from "../../../shared/types";
 
 export type SettingsTab =
@@ -49,7 +48,6 @@ export interface CreateTaskOptions {
   verificationAgent?: boolean;
   executionMode?: ExecutionMode;
   taskDomain?: TaskDomain;
-  runtimePreference?: TaskRuntimePreference;
   chronicleMode?: import("../../../shared/types").ChronicleTaskMode;
   videoGenerationMode?: boolean;
   agentConfig?: AgentConfig;

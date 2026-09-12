@@ -82,6 +82,8 @@ export class HermesRuntimeAdapter {
   private checkpointWrite: Promise<void> = Promise.resolve();
   private activePrompt?: Promise<HermesPromptResult>;
   private text = "";
+  private lastToolBoundary = 0;
+  private sawToolActivity = false;
   private acceptingUpdates = false;
   private connected = false;
   private connecting?: Promise<HermesSessionCheckpoint>;
@@ -107,6 +109,14 @@ export class HermesRuntimeAdapter {
       const update = params.update;
       if (!update || typeof update !== "object" || Array.isArray(update)) return;
       const value = update as AcpObject;
+      const sessionUpdate = String(value.sessionUpdate || "");
+      if (
+        sessionUpdate === "tool_call" ||
+        sessionUpdate === "tool_call_update" ||
+        sessionUpdate === "tool_result"
+      ) {
+        this.markToolBoundary();
+      }
       if (this.acceptingUpdates && value.sessionUpdate === "agent_message_chunk") {
         const content = value.content as AcpObject | undefined;
         if (content?.type === "text" && typeof content.text === "string") {
@@ -141,6 +151,7 @@ export class HermesRuntimeAdapter {
           ...bridge,
           taskId: bridge.taskId,
           execute: async (input) => {
+            this.markToolBoundary();
             this.updateToolProgress(input.toolCallId, "running");
             // Persist before dispatching the host operation. If persistence
             // fails, fail closed so a side effect is never started without a
@@ -273,6 +284,8 @@ export class HermesRuntimeAdapter {
         }
         this.hostToolServer?.resumeToolCalls();
         this.text = "";
+        this.lastToolBoundary = 0;
+        this.sawToolActivity = false;
         this.acceptingUpdates = true;
         const result = await this.client.prompt(checkpoint.sessionId, text, {
           timeoutMs: this.options.timeoutMs ?? 300_000, signal,
@@ -287,7 +300,14 @@ export class HermesRuntimeAdapter {
           );
         }
         if (typeof result.stopReason !== "string") throw new Error("Hermes prompt returned no stop reason");
-        return { assistantText: this.text, stopReason: this.cancelRequested ? "cancelled" : result.stopReason, sessionId: checkpoint.sessionId };
+        const assistantText = this.sawToolActivity
+          ? this.text.slice(this.lastToolBoundary)
+          : this.text;
+        return {
+          assistantText,
+          stopReason: this.cancelRequested ? "cancelled" : result.stopReason,
+          sessionId: checkpoint.sessionId,
+        };
       } catch (error) {
         // Never resubmit an interrupted prompt automatically: tools may already
         // have produced side effects. The user can restore the existing session.
@@ -500,6 +520,11 @@ export class HermesRuntimeAdapter {
     else if (status === "completed") this.completedToolCallIds.add(normalized);
     else if (status === "failed") this.failedToolCallIds.add(normalized);
     else if (status === "unknown") this.unknownToolCallIds.add(normalized);
+  }
+
+  private markToolBoundary(): void {
+    this.sawToolActivity = true;
+    this.lastToolBoundary = this.text.length;
   }
 
   private boundedToolCallIds(values: Set<string>): string[] {

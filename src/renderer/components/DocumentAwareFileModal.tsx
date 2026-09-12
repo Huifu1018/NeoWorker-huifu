@@ -1,4 +1,3 @@
-import { DocumentEditorModal } from "./DocumentEditorModal";
 import { FileViewer } from "./FileViewer";
 
 type DocumentAwareFileModalProps = {
@@ -13,30 +12,15 @@ export function DocumentAwareFileModal({
   onClose,
 }: DocumentAwareFileModalProps) {
   const lowerPath = filePath.toLowerCase();
-  if (lowerPath.endsWith(".pdf")) {
-    return (
-      <FileViewer
-        filePath={filePath}
-        workspacePath={workspacePath}
-        onClose={onClose}
-        variant="side-pane"
-      />
-    );
-  }
-  if (lowerPath.endsWith(".docx")) {
-    return (
-      <DocumentEditorModal
-        filePath={filePath}
-        workspacePath={workspacePath}
-        onClose={onClose}
-      />
-    );
-  }
+
+  // Opening an attachment is a preview action. Keep the structured document
+  // editor separate so it cannot replace the normal Word preview by accident.
   return (
     <FileViewer
       filePath={filePath}
       workspacePath={workspacePath}
       onClose={onClose}
+      variant={lowerPath.endsWith(".pdf") ? "side-pane" : "modal"}
     />
   );
 }

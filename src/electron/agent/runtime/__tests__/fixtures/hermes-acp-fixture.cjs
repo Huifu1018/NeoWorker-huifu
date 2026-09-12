@@ -46,6 +46,20 @@ readline.createInterface({input:process.stdin}).on('line', line => {
      })().catch(error => send({id,error:{code:-32001,message:error.message}}));
      break;
    }
+   if (params.prompt[0].text === 'narrated-host-tool') {
+     void (async () => {
+       send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'让我先检查可用的数据源。'}}}});
+       const server = mcpServers.find(item => item.name === 'neoworker');
+       const headers = Object.fromEntries(server.headers.map(item => [item.name, item.value]));
+       headers['content-type'] = 'application/json';
+       const init = await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:1,method:'initialize',params:{}})});
+       headers['mcp-session-id'] = init.headers.get('mcp-session-id');
+       await fetch(server.url, {method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'run_command',arguments:{command:'echo host'}}})});
+       send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'最终答案：已完成。'}}}});
+       result(id,{stopReason:'end_turn'}); promptId=undefined;
+     })().catch(error => send({id,error:{code:-32001,message:error.message}}));
+     break;
+   }
    if (params.prompt[0].text === 'host-dependency-install') {
      void (async () => {
        const server = mcpServers.find(item => item.name === 'neoworker');

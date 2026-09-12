@@ -90,6 +90,7 @@ import {
   ChannelRepository,
   ChannelUserRepository,
   AnnotationRepository,
+  ArtifactRepository,
   TaskEventRepository,
   TaskRepository,
   WorkspaceRepository,
@@ -3960,6 +3961,7 @@ if (isCliDirectRunMode()) {
         }
 
         // File Hub
+        const fileHubArtifactRepo = new ArtifactRepository(db);
         const fileHubService = new FileHubService(
           {
             getWorkspacePath: (wsId) => {
@@ -3979,7 +3981,34 @@ if (isCliDirectRunMode()) {
                 return "";
               }
             },
-            getArtifacts: () => [],
+            getArtifacts: (query = {}) => {
+              try {
+                const limit =
+                  typeof query.limit === "number" && Number.isFinite(query.limit)
+                    ? Math.max(1, Math.min(500, Math.floor(query.limit)))
+                    : 100;
+                if (
+                  typeof query.workspaceId === "string" &&
+                  query.workspaceId.trim().length > 0
+                ) {
+                  return fileHubArtifactRepo.findByWorkspaceId(
+                    query.workspaceId.trim(),
+                    limit,
+                  );
+                }
+                if (
+                  typeof query.taskId === "string" &&
+                  query.taskId.trim().length > 0
+                ) {
+                  return fileHubArtifactRepo.findByTaskId(
+                    query.taskId.trim(),
+                  ).slice(0, limit);
+                }
+                return fileHubArtifactRepo.findRecent(limit);
+              } catch {
+                return [];
+              }
+            },
             getConnectedSources: () => [],
           },
           db,

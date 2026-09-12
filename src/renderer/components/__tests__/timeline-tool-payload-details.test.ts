@@ -80,6 +80,7 @@ describe("timeline tool payload details", () => {
     expect(title).toContain("NeoWorker");
     expect(details).toContain("hermes");
     expect(details).toContain("HERMES_UNAVAILABLE");
+    expect(details).not.toContain("preference");
   });
 
   it("shows native runtime status explicitly in the timeline", () => {

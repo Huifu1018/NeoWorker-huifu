@@ -26,6 +26,12 @@ interface TaskRuntimeRoutingInput {
   route: IntentRoute;
   strategy: Pick<DerivedTaskStrategy, "executionMode" | "taskDomain">;
   agentConfig?: AgentConfig;
+  /**
+   * New tasks are created with the embedded Hermes Harness as their agent
+   * loop. This flag is intentionally separate from the persisted preference
+   * field so legacy tasks can keep their historical runtime unchanged.
+   */
+  forceHermesForNewTask?: boolean;
 }
 
 const COMPLEX_WORK_INTENTS = new Set<IntentRoute["intent"]>([
@@ -150,6 +156,34 @@ export function resolveTaskRuntimeRoute(
   const preference = normalizePreference(input.agentConfig?.runtimePreference);
   const existingRuntime = input.agentConfig?.externalRuntime;
   const explicitPreference = input.agentConfig?.runtimePreference;
+
+  // An explicitly delegated ACP runtime belongs to the caller that created
+  // the task (for example Claude Code). Never replace it while normalizing a
+  // newly-created task.
+  if (input.forceHermesForNewTask && existingRuntime) {
+    return {
+      preference,
+      resolved: "external",
+      runtimeAgent: runtimeAgentOf(existingRuntime),
+      allowFallback: existingRuntime.agent === "codex",
+      reason: "existing_external_runtime",
+      signals: ["existing-external-runtime"],
+    };
+  }
+
+  // New NeoWorker tasks always use the embedded Hermes ACP Harness. The
+  // persisted runtimePreference remains only as a compatibility field for
+  // older tasks and integrations; it is not a user-selectable route anymore.
+  if (input.forceHermesForNewTask) {
+    return {
+      preference: "hermes",
+      resolved: "hermes",
+      runtimeAgent: "hermes",
+      allowFallback: false,
+      reason: "new_task_hermes_default",
+      signals: ["new-task-default"],
+    };
+  }
 
   if (preference === "hermes") {
     return {

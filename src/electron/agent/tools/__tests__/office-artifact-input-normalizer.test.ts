@@ -92,6 +92,7 @@ describe("Office artifact input normalizers", () => {
   it("preserves host-only PPT Master routing fields", () => {
     const normalized = normalizePresentationArtifactInput({
       filename: "/tmp/artifacts/ppt-master/output/presentation.pptx",
+      sourcePath: "/tmp/source-template.pptx",
       generationMode: "ppt-master",
       presentationWorkflow: "ppt-master",
       workflowArtifactRoot: "/tmp/artifacts/ppt-master",
@@ -102,6 +103,7 @@ describe("Office artifact input normalizers", () => {
       generationMode: "ppt-master",
       presentationWorkflow: "ppt-master",
       workflowArtifactRoot: "/tmp/artifacts/ppt-master",
+      sourcePath: "/tmp/source-template.pptx",
     });
   });
 

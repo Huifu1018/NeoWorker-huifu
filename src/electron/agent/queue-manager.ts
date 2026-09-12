@@ -44,6 +44,7 @@ type DaemonCallbacks = {
   emitQueueUpdate: (status: QueueStatus) => void;
   getTaskById: (taskId: string) => Task | undefined;
   updateTaskStatus: (taskId: string, status: TaskStatus) => void;
+  onTaskStartFailure: (taskId: string, error: unknown) => void;
   onTaskTimeout: (taskId: string) => Promise<void>; // Called when a task times out
 };
 
@@ -438,6 +439,14 @@ export class TaskQueueManager {
       await this.callbacks.startTaskImmediate(task);
     } catch (error) {
       console.error(`[TaskQueueManager] Failed to start task ${task.id}:`, error);
+      try {
+        this.callbacks.onTaskStartFailure(task.id, error);
+      } catch (failureHandlingError) {
+        console.error(
+          `[TaskQueueManager] Failed to finalize task ${task.id} start failure:`,
+          failureHandlingError,
+        );
+      }
       this.runningTaskIds.delete(task.id);
       this.taskStartTimes.delete(task.id);
       this.emitQueueUpdate();

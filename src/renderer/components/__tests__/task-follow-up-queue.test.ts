@@ -65,10 +65,10 @@ describe("Task follow-up queue", () => {
 
   it("keeps a queue action next to stop while the selected task is running", () => {
     const runningControls = mainContentSource.slice(
-      mainContentSource.indexOf("{isTaskWorking && onStopTask ? ("),
+      mainContentSource.indexOf("{isFollowUpActive && onStopTask ? ("),
       mainContentSource.indexOf(
         "</div>\n              ) : (",
-        mainContentSource.indexOf("{isTaskWorking && onStopTask ? ("),
+        mainContentSource.indexOf("{isFollowUpActive && onStopTask ? ("),
       ),
     );
 
@@ -81,5 +81,14 @@ describe("Task follow-up queue", () => {
       runningControls.indexOf("stop-btn-simple"),
     );
     expect(styles).toContain(".queue-follow-up-btn");
+  });
+
+  it("remounts the contenteditable composer when the draft context changes", () => {
+    expect(mainContentSource).toContain(
+      "key={`welcome-composer:${composerDraftCacheKey}`}",
+    );
+    expect(mainContentSource).toContain(
+      "key={`session-composer:${composerDraftCacheKey}`}",
+    );
   });
 });

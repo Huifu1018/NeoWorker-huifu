@@ -44,6 +44,12 @@ metadata:
   `create_presentation` tool exactly once. The host pins that call to the
   PPT Master advanced renderer, canonical output path, and validation ledger;
   it is not the ordinary quick-template path while this skill is active.
+- `create_presentation` is a NeoWorker host tool, not an upstream Python
+  renderer. If the tool catalog exposes it, do not report it as missing and do
+  not substitute upstream full-page renderers for the final delivery. The
+  host-pinned native template path does not require `python-pptx` or
+  `cairosvg`; those modules are optional only for route-specific preview or
+  upstream visual features.
 - Do not call `generate_presentation`, and do not call `create_presentation`
   more than once for the same delivery. Repair the slide plan before that one
   build rather than creating competing deck variants.

@@ -53,6 +53,7 @@
     "build:daemon": "tsc -p config/typescript/tsconfig.daemon.json",
     "build:cli": "tsc -p config/typescript/tsconfig.cli.json",
     "build:connectors": "node scripts/build-connectors.mjs",
+    "build:hermes-runtime": "node scripts/build_hermes_runtime.mjs",
     "build:healthkit-bridge": "node scripts/build_healthkit_bridge.mjs",
     "build:location-helper-macos": "node scripts/build_location_helper_macos.mjs",
     "build:location-helpers": "node scripts/copy_location_helpers.mjs",
@@ -61,8 +62,8 @@
     "numbat:build": "node scripts/build_numbat_runtime.mjs",
     "numbat:verify": "node scripts/build_numbat_runtime.mjs --verify-only",
     "setup:officecli": "node scripts/setup_officecli.mjs",
-    "package": "npm run build:with-numbat && node scripts/run_electron_builder.mjs --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
-    "package:win:x64": "npm run numbat:build -- --target=win32-x64 && npm run build && node scripts/run_electron_builder.mjs --win --x64 --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
+    "package": "npm run build:with-numbat && npm run build:hermes-runtime && node scripts/run_electron_builder.mjs --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
+    "package:win:x64": "npm run numbat:build -- --target=win32-x64 && npm run build && npm run build:hermes-runtime -- --target=win32-x64 && node scripts/run_electron_builder.mjs --win --x64 --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
     "package:mac": "node scripts/package-mac-with-env.mjs",
     "package:mac:unsigned": "cross-env NEOWORKER_MAC_UNSIGNED=1 node scripts/package-mac-with-env.mjs",
     "package:linux:server": "npm run numbat:build && npm run build:daemon && npm run build:connectors && node scripts/package-linux-server.mjs",
@@ -226,8 +227,11 @@
     ],
     "extraResources": [
       {
-        "from": "scripts/hermes-acp-neoworker-host.py",
-        "to": "hermes-runtime/hermes-acp-neoworker-host.py"
+        "from": "build/hermes-runtime",
+        "to": "hermes-runtime",
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "resources/skills",
@@ -238,7 +242,13 @@
           "**/LICENSE.txt",
           "**/references/**",
           "**/assets/**",
-          "**/scripts/**"
+          "**/scripts/**",
+          "ppt-master/workflows/**",
+          "ppt-master/templates/**",
+          "ppt-master/requirements.txt",
+          "ppt-master/LICENSE",
+          "ppt-master/SPONSORS*.md",
+          "ppt-master/THIRD_PARTY_NOTICES.md"
         ]
       },
       {

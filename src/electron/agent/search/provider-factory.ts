@@ -328,21 +328,6 @@ export class SearchProviderFactory {
       console.error("[SearchProviderFactory] Failed to load settings from database:", error);
     }
 
-    // Keep the built-in route as the default when the user has not selected a
-    // provider. This avoids making the first search depend on an optional paid
-    // provider key; configured providers remain available as fallbacks.
-    if (!settings.primaryProvider) {
-      settings.primaryProvider = "duckduckgo";
-      const configuredProviders = this.getConfiguredProvidersFromSettings(settings);
-      if (configuredProviders.length > 0 && !settings.fallbackProvider) {
-        settings.fallbackProvider = configuredProviders[0];
-        console.log(
-          `[SearchProviderFactory] Auto-selected fallback provider: ${settings.fallbackProvider}`,
-        );
-      }
-      console.log("[SearchProviderFactory] Using built-in DuckDuckGo as the default provider");
-    }
-
     this.cachedSettings = settings;
     return settings;
   }
@@ -453,7 +438,8 @@ export class SearchProviderFactory {
    */
   static createProvider(overrideType?: SearchProviderType): SearchProvider {
     const settings = this.loadSettings();
-    const providerType = overrideType || settings.primaryProvider;
+    const providerType =
+      overrideType || settings.primaryProvider || this.getProviderExecutionOrder(settings)[0];
 
     if (!providerType) {
       throw new Error("No search provider configured");
@@ -492,8 +478,9 @@ export class SearchProviderFactory {
     const settings = this.loadSettings();
     const preferFlight = query.preferFlight === true || isFlightQuery(query.query);
 
-    // getProviderExecutionOrder uses the built-in DuckDuckGo/Bing route by
-    // default; explicit primary/fallback settings still retain their order.
+    // Automatic routing prefers configured providers. DuckDuckGo/Bing remains
+    // available as the free route when no paid provider is configured, while
+    // an explicitly requested provider is always honored first.
     // When a provider is explicitly requested we still allow fallback on quota/rate errors.
     const providerExecutionOrder = this.getProviderExecutionOrder(settings, { preferFlight });
     const providersToTry = query.provider
@@ -671,10 +658,11 @@ export class SearchProviderFactory {
 
   /**
    * Build the provider execution order for automatic search fallback.
-   * - Always respect the user's explicit primary/fallback ordering.
-   * - When no preference exists, use the built-in DuckDuckGo/Bing route first.
-   * - Fill remaining providers from the detected configured list.
-   * - Keep DuckDuckGo available as a final fallback for explicitly configured paid routes.
+   * - Respect an explicit primary/fallback ordering.
+   * - In automatic mode, prefer configured providers (Brave remains the
+   *   historical first choice when it is one of several configured services).
+   * - Use DuckDuckGo only when no paid provider is configured. Its provider
+   *   implementation can still fall back internally to Bing.
    */
   private static getProviderExecutionOrder(
     settings: SearchSettings,
@@ -692,26 +680,27 @@ export class SearchProviderFactory {
       }
     };
 
-    // Keep this branch for callers that pass an unhydrated settings object
-    // directly. loadSettings() normally materializes DuckDuckGo as primary.
-    if (options.preferFlight && !settings.primaryProvider) {
-      addProviderIfAvailable("duckduckgo");
-    }
-
     if (settings.primaryProvider) {
       addProviderIfAvailable(settings.primaryProvider);
+      addProviderIfAvailable(settings.fallbackProvider);
     } else if (configuredProviders.length > 1 && configuredProviders.includes("brave")) {
       addProviderIfAvailable("brave");
     }
-
-    addProviderIfAvailable(settings.fallbackProvider);
 
     // Fill in any remaining configured providers.
     for (const provider of configuredProviders) {
       addProviderIfAvailable(provider);
     }
 
-    addProviderIfAvailable("duckduckgo");
+    // Do not silently downgrade a configured search setup to DDG. The
+    // built-in route is the automatic choice only when no paid provider is
+    // configured at all. Keep the option argument for call-site compatibility:
+    // flight intent affects query construction, not provider priority.
+    void options;
+    if (configuredProviders.length === 0) {
+      addProviderIfAvailable("duckduckgo");
+    }
+
     return orderedProviders;
   }
 

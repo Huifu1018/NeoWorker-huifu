@@ -125,6 +125,10 @@ describe("PromptComposerInput", () => {
     expect(promptComposerInputSource).toContain(
       "reportDraftPresence(snapshot.value)",
     );
+    expect(promptComposerInputSource).toContain(
+      'data-has-draft={latestDraftPresenceRef.current ? "true" : "false"}',
+    );
+    expect(promptComposerInputSource).toContain("reportDraftPresence(value)");
   });
 
   it("preserves two links when they are pasted back-to-back before a render", () => {

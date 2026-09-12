@@ -687,6 +687,7 @@ export const PromptComposerInput = forwardRef<
       hasPendingProgrammaticEditRef.current = false;
       latestValueRef.current = value;
       latestMentionsRef.current = validMentions;
+      reportDraftPresence(value);
     }
     resize();
     if (isComposingRef.current) return;
@@ -694,7 +695,14 @@ export const PromptComposerInput = forwardRef<
     if (!pending) return;
     pendingSelectionRef.current = null;
     applySelection(pending.start, pending.end);
-  }, [applySelection, parts, resize, validMentions, value]);
+  }, [
+    applySelection,
+    parts,
+    reportDraftPresence,
+    resize,
+    validMentions,
+    value,
+  ]);
 
   const emitDomChange = useCallback(
     (shrink: boolean) => {
@@ -997,6 +1005,7 @@ export const PromptComposerInput = forwardRef<
       aria-multiline="true"
       aria-label={ariaLabel}
       data-placeholder={placeholder || ""}
+      data-has-draft={latestDraftPresenceRef.current ? "true" : "false"}
       onInput={handleInput}
       onKeyDown={handleKeyDown}
       onKeyUp={handleCursorChange}

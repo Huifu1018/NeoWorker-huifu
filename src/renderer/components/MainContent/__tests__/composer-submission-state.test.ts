@@ -34,4 +34,16 @@ describe("composer submission state", () => {
       }),
     ).toBe(true);
   });
+
+  it("keeps the composer available while a follow-up IPC call waits for the turn", () => {
+    expect(
+      isComposerSubmissionBusy({
+        isTaskWorking: false,
+        hasPendingFollowUpDispatch: true,
+        isUploadingAttachments: false,
+        isPreparingMessage: true,
+        isQueueingFollowUp: false,
+      }),
+    ).toBe(false);
+  });
 });

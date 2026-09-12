@@ -11,7 +11,7 @@ describe("MainContent event source", () => {
     expect(source).toMatch(
       /events=\{\s*replayControls\.isReplayMode\s*\?\s*replayControls\.replayEvents\s*:\s*events\s*\}/s,
     );
-    expect(source).toContain("events={events}");
+    expect(source).toContain("events={deliveryEvents}");
     expect(source).toContain("prev.events === next.events");
   });
 });

@@ -17,6 +17,8 @@ describe("Hermes task prompt", () => {
 
     expect(prompt).toContain("<neoworker_runtime_contract_v1>");
     expect(prompt).toContain("read-only background data");
+    expect(prompt).toContain("Use tools silently while working");
+    expect(prompt).toContain("Only the final response");
     expect(prompt).toContain("<neoworker_workspace_v1>");
     expect(prompt).toContain("Workspace root: /tmp/neoworker-task");
     expect(prompt).toContain("<neoworker_task_v1>");
@@ -47,6 +49,7 @@ describe("Hermes task prompt", () => {
     expect(prompt).toContain("<neoworker_follow_up_v1>");
     expect(prompt).toContain("Continue by checking the generated file.");
     expect(prompt).toContain("Do not restart completed work");
+    expect(prompt).toContain("return only the concise final answer");
     expect(prompt).not.toContain("<neoworker_task_v1>");
   });
 

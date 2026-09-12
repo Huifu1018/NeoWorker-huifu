@@ -6,6 +6,8 @@ import {
   filterAdjacentDuplicateTimelineFailures,
   filterVerboseTimelineNoise,
   IMPORTANT_EVENT_TYPES,
+  isInternalAssistantMessage,
+  isHermesStreamingEvent,
   isImportantTaskEvent,
   isLlmRequestCancelledEvent,
   shouldShowTaskEventInStepFeed,
@@ -29,6 +31,47 @@ function makeEvent(
 }
 
 describe("task event visibility helpers", () => {
+  it("does not treat internal assistant notes or Hermes stream chunks as user-facing records", () => {
+    const internal = makeEvent("assistant_message", {
+      internal: true,
+      message: "让我先检查可用的数据源。",
+    });
+    const rawStream = makeEvent("llm_streaming", {
+      runtime: "hermes",
+      text: "我正在查询数据。",
+      streaming: true,
+    });
+    const timelineStream = makeEvent(
+      "timeline_step_updated",
+      {
+        legacyType: "llm_streaming",
+        runtime: "hermes",
+        text: "我正在查询数据。",
+        streaming: true,
+      },
+      { id: "timeline-stream" },
+    );
+    const final = makeEvent("assistant_message", {
+      message: "查询完成。",
+    });
+
+    expect(isInternalAssistantMessage(internal)).toBe(true);
+    expect(isHermesStreamingEvent(rawStream)).toBe(true);
+    expect(isImportantTaskEvent(internal)).toBe(false);
+    expect(shouldShowTaskEventInSummaryMode(internal, "completed")).toBe(false);
+    expect(filterVerboseTimelineNoise([internal, rawStream, timelineStream, final])).toEqual([
+      final,
+    ]);
+    expect(shouldShowTaskEventInStepFeed(rawStream, { verboseSteps: true })).toBe(false);
+    expect(shouldShowTaskEventInStepFeed(timelineStream, { verboseSteps: true })).toBe(false);
+    expect(
+      shouldShowTaskEventInStepFeed(
+        makeEvent("llm_streaming", { runtime: "native", text: "实时回答" }),
+        { verboseSteps: true },
+      ),
+    ).toBe(true);
+  });
+
   it("includes artifact_created as an important summary event", () => {
     expect(IMPORTANT_EVENT_TYPES).toContain("artifact_created");
     expect(

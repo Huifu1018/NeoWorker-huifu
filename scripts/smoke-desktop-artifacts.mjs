@@ -271,6 +271,46 @@ async function validateNumbatRuntime(resourcesRoot, targetKey) {
   );
 }
 
+async function validatePackagedOfficeAndPptMasterResources(resourcesRoot) {
+  const officeBinaryName = process.platform === "win32" ? "officecli.exe" : "officecli";
+  const officeBinary = path.join(resourcesRoot, "officecli", officeBinaryName);
+  await fs.access(
+    officeBinary,
+    process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK,
+  );
+  run(officeBinary, ["--version"], { shell: false, quiet: true });
+
+  const skillRoot = path.join(resourcesRoot, "skills", "ppt-master");
+  const requiredSkillFiles = [
+    "SKILL.md",
+    "LICENSE",
+    "SPONSORS.md",
+    "SPONSORS_CN.md",
+    "requirements.txt",
+    "workflows/routing.md",
+    "workflows/generate-pptx.md",
+    "workflows/template-fill-pptx.md",
+    "workflows/native-enhance-pptx.md",
+    "scripts/neoworker_preflight.py",
+    "scripts/attribution_guard.py",
+    "templates/charts/charts_index.json",
+    "templates/tables/tables_index.json",
+  ];
+  const missing = [];
+  for (const relativePath of requiredSkillFiles) {
+    try {
+      await fs.access(path.join(skillRoot, relativePath));
+    } catch {
+      missing.push(relativePath);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Packaged PPT Master skill is incomplete; missing: ${missing.join(", ")}`,
+    );
+  }
+}
+
 /**
  * Verify that the application archive contains the host-owned Hermes bridge
  * and execution boundary. Checking the archive itself catches packaging
@@ -286,6 +326,7 @@ async function validatePackagedNeoWorkerRuntime(asarPath) {
   const required = [
     "dist/electron/electron/agent/runtime/hermes-runtime-adapter.js",
     "dist/electron/electron/agent/runtime/hermes-acp-client.js",
+    "dist/electron/electron/agent/runtime/hermes-provider-bridge.js",
     "dist/electron/electron/agent/runtime/hermes-tool-host-mcp.js",
     "dist/electron/electron/agent/runtime/hermes-host-launcher.js",
     "dist/electron/electron/agent/runtime/tool-host-protocol.js",
@@ -296,13 +337,39 @@ async function validatePackagedNeoWorkerRuntime(asarPath) {
   if (missing.length > 0) {
     throw new Error(`Packaged app.asar is missing Hermes/Tool Host runtime files: ${missing.join(", ")}`);
   }
-  const launcherName = "hermes-acp-neoworker-host.py";
-  const [sourceLauncher, packagedLauncher] = await Promise.all([
-    fs.readFile(path.join(ROOT, "scripts", launcherName)),
-    fs.readFile(path.join(path.dirname(asarPath), "hermes-runtime", launcherName)),
-  ]);
-  if (!sourceLauncher.equals(packagedLauncher)) {
-    throw new Error("Packaged Hermes host launcher does not match the source being delivered");
+  const platform = process.platform === "win32" ? "win32" : "darwin";
+  const binaryName = platform === "win32"
+    ? "hermes-acp-neoworker-host.exe"
+    : "hermes-acp-neoworker-host";
+  const hermesRuntimeRoot = path.join(path.dirname(asarPath), "hermes-runtime");
+  const hermesBinary = path.join(hermesRuntimeRoot, binaryName);
+  await fs.access(hermesBinary, platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK);
+  const hermesManifest = JSON.parse(
+    await fs.readFile(path.join(hermesRuntimeRoot, "manifest.json"), "utf8"),
+  );
+  if (
+    hermesManifest.hermesAgentVersion !== "0.18.0" ||
+    hermesManifest.platform !== platform ||
+    hermesManifest.executable !== binaryName
+  ) {
+    throw new Error(`Packaged Hermes runtime manifest is invalid: ${JSON.stringify(hermesManifest)}`);
+  }
+  const runtimeCheck = run(hermesBinary, ["--neoworker-runtime-check"], {
+    shell: false,
+    quiet: true,
+  });
+  let runtimeCheckResult;
+  try {
+    runtimeCheckResult = JSON.parse(String(runtimeCheck.stdout || "").trim());
+  } catch (error) {
+    throw new Error(`Packaged Hermes runtime check returned invalid JSON: ${error}`);
+  }
+  if (
+    runtimeCheckResult?.ok !== true ||
+    runtimeCheckResult?.frozen !== true ||
+    runtimeCheckResult?.hermesAgentVersion !== hermesManifest.hermesAgentVersion
+  ) {
+    throw new Error(`Packaged Hermes runtime check failed: ${JSON.stringify(runtimeCheckResult)}`);
   }
 }
 
@@ -473,6 +540,9 @@ async function smokeMac({ releaseDir, expectedVersion, allowUnsigned }) {
       path.join(appPath, "Contents", "Resources"),
       `darwin-${process.arch}`,
     );
+    await validatePackagedOfficeAndPptMasterResources(
+      path.join(appPath, "Contents", "Resources"),
+    );
     assertMacCodeSignature(appPath, allowUnsigned);
     await smokeLaunchMac(executablePath);
     console.log(`[desktop-smoke] macOS DMG passed: ${dmg.name} (${path.basename(appPath)})`);
@@ -603,6 +673,9 @@ Write-Output $item.VersionInfo.ProductVersion
     await validateNumbatRuntime(
       path.join(path.dirname(appExe), "resources"),
       `win32-${process.arch}`,
+    );
+    await validatePackagedOfficeAndPptMasterResources(
+      path.join(path.dirname(appExe), "resources"),
     );
     await validatePackagedNeoWorkerRuntime(path.join(path.dirname(appExe), "resources", "app.asar"));
 

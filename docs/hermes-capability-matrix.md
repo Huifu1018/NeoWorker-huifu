@@ -28,13 +28,14 @@ NeoWorker 采用“**Hermes 负责 Agent Loop，NeoWorker 负责 Tool Host 和�
 | Hermes 原生 context / memory / project plugins / kanban | 无 | 宿主模式关闭 | 防止 Hermes 的隐式上下文或工具绕过 NeoWorker 的任务边界。 |
 | 旧 Hermes-native session | Hermes | 兼容保留 | 仅用于已有 `toolOwnership=hermes` 或缺失 ownership 标记的历史 checkpoint。 |
 
-## 运行时选择
+## 运行时策略
 
-| 选择 | 行为 | 失败策略 |
+| 范围 | 行为 | 失败策略 |
 | --- | --- | --- |
-| `Auto` | 复杂执行、结构化网页查询、研究、代码/操作和多步 Office 任务优先 Hermes；简单对话留在 NeoWorker native loop。 | Hermes 在任何宿主副作用开始前不可用时，可记录 fallback 并回到 native loop。 |
-| `Hermes` | 强制使用 Hermes ACP Harness 和 NeoWorker Tool Host。 | ACP 启动或运行失败时 fail closed，不降级。 |
-| `Native` | 强制使用 NeoWorker 原生 SessionRuntime/TurnKernel。 | 不启动 Hermes。 |
+| 新建 NeoWorker 任务 | 固定使用内置 Hermes ACP Harness 和 NeoWorker Tool Host，不根据提示词复杂度切换 Native。 | ACP 启动或运行失败时 fail closed，不降级、不静默改走 Native。 |
+| 已有 Hermes 任务 | 继续使用已持久化的 Hermes ACP session/checkpoint。 | 保持 Hermes 失败语义，必要时要求用户显式继续。 |
+| 已有 Native 任务 | 保留 NeoWorker 原生 SessionRuntime/TurnKernel，保证历史任务可恢复。 | 不因续问或重新打开而自动迁移到 Hermes。 |
+| 显式委托 ACP 任务 | 保留调用方指定的 Claude/Codex 等外部 ACP runtime。 | 按外部 runtime 自身策略处理，不被新任务默认覆盖。 |
 
 ## 验收门槛
 
@@ -43,8 +44,8 @@ NeoWorker 采用“**Hermes 负责 Agent Loop，NeoWorker 负责 Tool Host 和�
 1. `tools/list` 只暴露当前任务允许的 NeoWorker 工具，不出现 Hermes 原生文件或终端工具。
 2. 每个副作用调用都能按 `taskId + toolCallId` 找到 request、approval、running 和 terminal lifecycle。
 3. 取消、断线或进程崩溃后，未知副作用必须要求显式确认，不能自动重放。
-4. Auto、Hermes、Native 三种选择的路由和失败策略都有确定性测试。
-5. 时间线能明确显示当前 runtime 是 Hermes active、native fallback 还是 forced failure。
+4. 新任务固定 Hermes、旧任务兼容 Native、Hermes fail-closed 都有确定性测试。
+5. 时间线能明确显示当前 runtime 是 Hermes active、Native active 或 forced failure。
 6. 不把 Hermes provider/API Server 的成功回答误判为 NeoWorker 已经拥有本地副作用。
 
 对应测试入口：

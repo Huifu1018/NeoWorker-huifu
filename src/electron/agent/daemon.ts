@@ -567,6 +567,13 @@ export class AgentDaemon extends EventEmitter {
   private deferredUserFollowUpDrains: Map<string, Promise<void>> = new Map();
   /** Lets the drain dispatch its head item without re-queuing behind the tail. */
   private deferredUserFollowUpDispatches: Set<string> = new Set();
+  /**
+   * A direct follow-up can be inside TaskExecutor.sendMessage before the
+   * executor mutex/status becomes observable to a second IPC request. Mark it
+   * here so that the second request enters the same visible FIFO instead of
+   * racing the first turn.
+   */
+  private activeUserFollowUpDispatches: Set<string> = new Set();
   /** Rechecks the lifecycle boundary when status/event settlement lags mutex release. */
   private deferredUserFollowUpRetryTimers: Map<
     string,
@@ -674,6 +681,18 @@ export class AgentDaemon extends EventEmitter {
       getTaskById: (taskId: string) => this.taskRepo.findById(taskId),
       updateTaskStatus: (taskId: string, status: TaskStatus) =>
         this.taskRepo.update(taskId, { status }),
+      onTaskStartFailure: (taskId: string, error: unknown) => {
+        const message =
+          error instanceof Error ? error.message : String(error || "Unknown task start failure");
+        this.failTask(taskId, message, {
+          terminalStatus: "failed",
+          failureClass: "dependency_unavailable",
+        });
+        this.logEvent(taskId, "error", {
+          message,
+          source: "task_queue_start",
+        });
+      },
       onTaskTimeout: (taskId: string) => this.handleTaskTimeout(taskId),
     });
     this.verificationOutcomeV2Enabled =
@@ -1000,21 +1019,15 @@ export class AgentDaemon extends EventEmitter {
       TaskFollowUpInput,
       | "executionMode"
       | "taskDomain"
-      | "runtimePreference"
       | "requestedSkillId"
       | "permissionMode"
       | "shellAccess"
       | "integrationMentions"
       | "agentConfigOverride"
     >,
-    routingPrompt?: string,
   ): { task: Task; changed: boolean } {
     const hasExecutionMode = typeof options?.executionMode === "string";
     const hasTaskDomain = typeof options?.taskDomain === "string";
-    const hasRuntimePreference =
-      options?.runtimePreference === "auto" ||
-      options?.runtimePreference === "hermes" ||
-      options?.runtimePreference === "native";
     const hasRequestedSkillId = typeof options?.requestedSkillId === "string";
     const hasPermissionMode = typeof options?.permissionMode === "string";
     const hasShellAccess = typeof options?.shellAccess === "boolean";
@@ -1024,7 +1037,6 @@ export class AgentDaemon extends EventEmitter {
     if (
       !hasExecutionMode &&
       !hasTaskDomain &&
-      !hasRuntimePreference &&
       !hasRequestedSkillId &&
       !hasPermissionMode &&
       !hasShellAccess &&
@@ -1064,30 +1076,6 @@ export class AgentDaemon extends EventEmitter {
     }
     if (hasTaskDomain && nextAgentConfig.taskDomain !== options?.taskDomain) {
       nextAgentConfig.taskDomain = options?.taskDomain;
-      changed = true;
-    }
-    if (
-      hasRuntimePreference &&
-      nextAgentConfig.runtimePreference !== options?.runtimePreference
-    ) {
-      nextAgentConfig.runtimePreference = options?.runtimePreference;
-      if (options?.runtimePreference === "auto") {
-        // Selecting Auto in the composer is an explicit request to recompute
-        // the route for the current prompt, including leaving a prior Hermes
-        // selection when the task is no longer a Hermes candidate.
-        delete nextAgentConfig.externalRuntime;
-      }
-      const rerouted = this.deriveTaskStrategy({
-        title: task.title,
-        prompt: routingPrompt || task.prompt,
-        routingPrompt: routingPrompt || task.rawPrompt || task.userPrompt || task.prompt,
-        agentConfig: nextAgentConfig,
-      });
-      if (rerouted.agentConfig.externalRuntime) {
-        nextAgentConfig.externalRuntime = rerouted.agentConfig.externalRuntime;
-      } else {
-        delete nextAgentConfig.externalRuntime;
-      }
       changed = true;
     }
     if (
@@ -1387,6 +1375,7 @@ export class AgentDaemon extends EventEmitter {
     routingPrompt?: string;
     agentConfig?: AgentConfig;
     lastProgressScore?: number;
+    forceHermesForNewTask?: boolean;
   }): {
     route: IntentRoute;
     strategy: DerivedTaskStrategy;
@@ -1460,6 +1449,7 @@ export class AgentDaemon extends EventEmitter {
       route,
       strategy,
       agentConfig: input.agentConfig,
+      forceHermesForNewTask: input.forceHermesForNewTask,
     });
     const existingExternalRuntime = input.agentConfig?.externalRuntime;
     const requestedRuntimePreference = input.agentConfig?.runtimePreference;
@@ -1468,19 +1458,12 @@ export class AgentDaemon extends EventEmitter {
       requestedRuntimePreference === "hermes" ||
       requestedRuntimePreference === "native";
 
-    // Ordinary tasks are explicitly persisted as Auto so the executor can
-    // distinguish an auto-routed Hermes session (which may fall back) from a
-    // legacy task that explicitly supplied an ACP runtime.
-    if (!existingExternalRuntime && requestedRuntimePreference === undefined) {
-      agentConfig.runtimePreference = "auto";
-    }
-
     if (runtime.resolved === "hermes") {
       agentConfig.externalRuntime = buildHermesExternalRuntimeConfig(
         agentConfig.permissionMode,
       );
       agentConfig.runtimePreference =
-        requestedRuntimePreference || "auto";
+        input.forceHermesForNewTask ? "hermes" : requestedRuntimePreference || "auto";
     } else if (
       runtime.resolved === "native" &&
       (hasExplicitRuntimePreference || existingExternalRuntime?.agent === "hermes")
@@ -3657,6 +3640,7 @@ export class AgentDaemon extends EventEmitter {
       prompt: params.prompt,
       routingPrompt: params.prompt,
       agentConfig: params.agentConfig,
+      forceHermesForNewTask: true,
     });
     const isCronTask = params.source === "cron";
     const cronBudgetProfile = isCronTask
@@ -10450,6 +10434,46 @@ export class AgentDaemon extends EventEmitter {
     }
   }
 
+  private emitTaskFailureAssistantMessage(
+    taskId: string,
+    errorMessage: string,
+    failureClass?: Task["failureClass"],
+  ): void {
+    const detail = String(errorMessage || "").trim();
+    if (!detail) return;
+
+    // Executor-level failures already emit a terminal assistant message. Keep
+    // daemon-level startup/resume/queue failures visible too, but never append
+    // a second copy when both layers observe the same exception.
+    try {
+      const events =
+        typeof (this as Any).getTaskEventsForReplay === "function"
+          ? this.getTaskEventsForReplay(taskId)
+          : [];
+      const alreadyEmitted = events.some((event) => {
+        if (!this.isLegacyEventType(event, "assistant_message")) return false;
+        const payload =
+          event.payload &&
+          typeof event.payload === "object" &&
+          !Array.isArray(event.payload)
+            ? (event.payload as Record<string, unknown>)
+            : {};
+        return payload.terminalFailure === true;
+      });
+      if (alreadyEmitted) return;
+    } catch {
+      // Failure reporting must never make the original failure disappear.
+    }
+
+    const punctuation = /[.!?。！？]$/.test(detail) ? "" : "。";
+    this.logEvent(taskId, "assistant_message", {
+      message: `本轮任务未能完成：${detail}${punctuation}当前会话和已产生的结果已保留，请重试。`,
+      terminalFailure: true,
+      ...(failureClass ? { failureClass } : {}),
+      source: "daemon_failure",
+    });
+  }
+
   failTask(
     taskId: string,
     errorMessage: string,
@@ -10603,6 +10627,11 @@ export class AgentDaemon extends EventEmitter {
         ? { verificationReport: metadata.verificationReport.trim() }
         : {}),
     });
+    this.emitTaskFailureAssistantMessage(
+      taskId,
+      errorMessage,
+      metadata?.failureClass,
+    );
 
     if (this.teamOrchestrator) {
       void this.teamOrchestrator.onTaskTerminal(taskId).catch(() => {});
@@ -12629,7 +12658,6 @@ export class AgentDaemon extends EventEmitter {
       | "activeArtifactContext"
       | "executionMode"
       | "taskDomain"
-      | "runtimePreference"
       | "requestedSkillId"
       | "permissionMode"
       | "shellAccess"
@@ -12664,7 +12692,6 @@ export class AgentDaemon extends EventEmitter {
     const overrideResult = this.applyTaskFollowUpOverrides(
       task,
       effectiveOptions,
-      message,
     );
     if (overrideResult.changed) {
       this.taskRepo.update(taskId, {
@@ -12764,6 +12791,7 @@ export class AgentDaemon extends EventEmitter {
     const queuedBeforeSend = this.deferredUserFollowUps.get(taskId) || [];
     const isQueuedDispatch =
       this.deferredUserFollowUpDispatches?.has(taskId) === true;
+    this.activeUserFollowUpDispatches ||= new Set();
     const currentStatus = deriveCanonicalTaskStatus(effectiveTask);
     const previousRunIsUnsettled =
       currentStatus === "pending" ||
@@ -12774,7 +12802,8 @@ export class AgentDaemon extends EventEmitter {
       !isQueuedDispatch &&
       (previousRunIsUnsettled ||
         queuedBeforeSend.length > 0 ||
-        this.deferredUserFollowUpDrains?.has(taskId) === true);
+        this.deferredUserFollowUpDrains?.has(taskId) === true ||
+        this.activeUserFollowUpDispatches.has(taskId));
     if (executor.isRunning || mustQueueBehindExisting) {
       const integrationMentions =
         effectiveTask.agentConfig?.integrationMentions;
@@ -12818,14 +12847,19 @@ export class AgentDaemon extends EventEmitter {
         ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}),
       });
     }
-    await executor.sendMessage(
-      effectiveMessage,
-      images,
-      quotedAssistantMessage,
-      {
-        agentConfigOverride: effectiveOptions?.agentConfigOverride,
-      },
-    );
+    this.activeUserFollowUpDispatches.add(taskId);
+    try {
+      await executor.sendMessage(
+        effectiveMessage,
+        images,
+        quotedAssistantMessage,
+        {
+          agentConfigOverride: effectiveOptions?.agentConfigOverride,
+        },
+      );
+    } finally {
+      this.activeUserFollowUpDispatches.delete(taskId);
+    }
     // A new message can arrive while this follow-up itself is executing.
     // Continue draining daemon-owned follow-ups until the conversation catches up.
     this.processOrphanedFollowUps(taskId, executor);
@@ -13272,6 +13306,7 @@ export class AgentDaemon extends EventEmitter {
 
     this.activeTasks.clear();
     this.pendingTaskImages.clear();
+    this.activeUserFollowUpDispatches.clear();
 
     // Remove all EventEmitter listeners to prevent memory leaks
     this.removeAllListeners();

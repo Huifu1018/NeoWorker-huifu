@@ -33,15 +33,23 @@ export interface FileHubSearchResult {
 
 export interface FileHubListOptions {
   source: FileHubSource;
+  workspaceId?: string;
+  taskId?: string;
   path?: string;
   query?: string;
   limit?: number;
   offset?: number;
 }
 
+export interface FileHubArtifactQuery {
+  taskId?: string;
+  workspaceId?: string;
+  limit?: number;
+}
+
 export interface FileHubServiceDeps {
   getWorkspacePath: (workspaceId: string) => string;
-  getArtifacts: (query?: { taskId?: string; limit?: number }) => Any[];
+  getArtifacts: (query?: FileHubArtifactQuery) => Any[];
   /** Check which cloud connectors are configured */
   getConnectedSources: () => FileHubSource[];
   log?: (...args: unknown[]) => void;

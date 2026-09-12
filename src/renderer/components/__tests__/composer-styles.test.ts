@@ -207,4 +207,12 @@ describe("Composer styles", () => {
       /data-has-draft="true"[\s\S]*?\.lets-go-btn\.composer-send-empty:not\(:disabled\)[\s\S]*?cursor:\s*pointer;[\s\S]*?background:\s*var\(--color-primary\);/,
     );
   });
+
+  it("does not let the welcome empty-state rule override a visible draft", () => {
+    const source = readFileSync(mainContentStylesPath, "utf8");
+
+    expect(source).toMatch(
+      /\.welcome-input-container\.cli-input-container:not\(\s*:has\(\.prompt-composer-input\[data-has-draft="true"\]\)\s*\)[\s\S]*?\.lets-go-btn\.lets-go-btn-sm\.composer-send-empty:not\(:disabled\)/,
+    );
+  });
 });

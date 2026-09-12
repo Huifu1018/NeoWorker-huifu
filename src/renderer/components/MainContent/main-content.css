@@ -19148,13 +19148,16 @@
   }
 }
 
-/* Keep an empty composer visibly inactive without blocking a click. The click
-   handler reads the live contenteditable value, which protects pasted/IME text
-   when React state is one frame behind the DOM. Keep this after the welcome
-   button variants so their active blue style cannot override the empty state. */
-.welcome-input-container.cli-input-container
+/* Keep a truly empty composer visibly inactive without blocking a click. The
+   live DOM draft must be excluded here: contenteditable can receive text one
+   frame before React updates the empty-state class. */
+.welcome-input-container.cli-input-container:not(
+    :has(.prompt-composer-input[data-has-draft="true"])
+  )
   .lets-go-btn.lets-go-btn-sm.composer-send-empty:not(:disabled),
-.welcome-input-container.cli-input-container
+.welcome-input-container.cli-input-container:not(
+    :has(.prompt-composer-input[data-has-draft="true"])
+  )
   .lets-go-btn.lets-go-btn-sm.composer-send-empty:not(:disabled):hover {
   border-color: var(--color-border-subtle);
   background: var(--color-background-secondary);

@@ -53,15 +53,25 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
       const status = await window.electronAPI.getSearchConfigStatus();
       setConfigStatus(status);
       setPrimaryProvider(status.primaryProvider);
-      setFallbackProvider(status.fallbackProvider);
+      setFallbackProvider(
+        status.primaryProvider === null ? null : status.fallbackProvider,
+      );
+      const visibleProviders = status.providers.filter(
+        (provider) => provider.configured && provider.type !== "duckduckgo",
+      );
       setActiveProvider((prev) => {
         if (
           prev &&
-          status.providers.some((provider) => provider.type === prev)
+          visibleProviders.some((provider) => provider.type === prev)
         ) {
           return prev;
         }
-        return status.primaryProvider ?? status.providers[0]?.type ?? null;
+        return (
+          (status.primaryProvider &&
+          visibleProviders.some((provider) => provider.type === status.primaryProvider)
+            ? status.primaryProvider
+            : visibleProviders[0]?.type) ?? null
+        );
       });
       onStatusChange?.(status.isConfigured);
     } catch (error) {
@@ -147,9 +157,11 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
     }
   };
 
-  // Every configured provider is selectable. DuckDuckGo is always available without an API key.
+  // DuckDuckGo is an internal fallback route, not a user-configurable provider.
   const selectableProviders =
-    configStatus?.providers.filter((p) => p.configured) || [];
+    configStatus?.providers.filter(
+      (p) => p.configured && p.type !== "duckduckgo",
+    ) || [];
   const hasMultipleProviders = selectableProviders.length > 1;
   const activeProviderConfig =
     configStatus?.providers.find((p) => p.type === activeProvider) || null;
@@ -176,7 +188,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
         </div>
 
         <div className="llm-provider-tabs">
-          {configStatus?.providers.map((provider) => (
+          {selectableProviders.map((provider) => (
             <button
               key={provider.type}
               className={`llm-provider-tab ${activeProvider === provider.type ? "active" : ""}`}
@@ -461,6 +473,29 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
             </div>
 
             <div className="provider-options">
+              <label
+                className={`provider-option ${primaryProvider === null ? "selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="primaryProvider"
+                  checked={primaryProvider === null}
+                  disabled={preferenceStatus === "saving"}
+                  onChange={() => void saveProviderPreferences(null, null)}
+                />
+                <div className="provider-option-content">
+                  <span className="provider-name">
+                    {t("searchSettings.primary.auto", "Automatic")}
+                  </span>
+                  <span className="provider-description">
+                    {t(
+                      "searchSettings.primary.autoDescription",
+                      "Prefer configured providers. Use DuckDuckGo/Bing only as the free route when none are configured.",
+                    )}
+                  </span>
+                </div>
+              </label>
+
               {selectableProviders.map((provider) => (
                 <label
                   key={provider.type}
@@ -493,7 +528,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
             </div>
           </div>
 
-          {hasMultipleProviders && (
+          {hasMultipleProviders && primaryProvider !== null && (
             <div className="settings-section search-provider-choice-section">
               <h3>{t("searchSettings.fallback.title", "Fallback Provider")}</h3>
               <p className="settings-description">

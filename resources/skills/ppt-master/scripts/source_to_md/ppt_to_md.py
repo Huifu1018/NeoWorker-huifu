@@ -12,7 +12,8 @@ and slide-internal jumps are emitted as ``[text](url)`` / ``[text](#slide-N)``,
 with a shape-level ``click_action`` fallback.
 
 Dependency:
-    pip install python-pptx
+    python-pptx is optional. When it is unavailable, the converter uses the
+    repository's dependency-free Open XML fallback.
 
 API stability note:
     Detecting slide-internal jumps (``ppaction://hlinksldjump``) reads
@@ -50,10 +51,23 @@ from template_fill_pptx.diagram_read import (  # noqa: E402
     smartart_to_markdown,
 )
 
-from pptx import Presentation
-from pptx.enum.action import PP_ACTION
-from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.oxml.ns import qn
+try:
+    from pptx import Presentation
+    from pptx.enum.action import PP_ACTION
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.oxml.ns import qn
+
+    _PYTHON_PPTX_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised on clean NeoWorker installs
+    Presentation = None  # type: ignore[assignment,misc]
+    PP_ACTION = None  # type: ignore[assignment,misc]
+    MSO_SHAPE_TYPE = None  # type: ignore[assignment,misc]
+    qn = None  # type: ignore[assignment]
+    _PYTHON_PPTX_AVAILABLE = False
+
+from xml_ppt_to_md import (  # noqa: E402
+    convert_presentation_to_markdown_xml,
+)
 
 configure_utf8_stdio()
 
@@ -1069,6 +1083,13 @@ def convert_presentation_to_markdown(
     out_file.parent.mkdir(parents=True, exist_ok=True)
     asset_dir = out_file.parent / f"{out_file.stem}_files"
     _reset_generated_asset_dir(asset_dir)
+
+    if not _PYTHON_PPTX_AVAILABLE:
+        return convert_presentation_to_markdown_xml(
+            str(input_file),
+            str(out_file),
+            asset_dir=asset_dir,
+        )
 
     presentation = Presentation(str(input_file))
     conversion_warnings: list[str] = []

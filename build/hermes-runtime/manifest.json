@@ -1,0 +1,12 @@
+{
+  "name": "NeoWorker embedded Hermes ACP runtime",
+  "hermesAgentVersion": "0.18.0",
+  "pyInstallerVersion": "6.22.2",
+  "platform": "darwin",
+  "arch": "arm64",
+  "executable": "hermes-acp-neoworker-host",
+  "sha256": "e9f38e41b41e3dbb2f2eb2c4afd98ed9a9a95f86b2271172a51bbb27aad00555",
+  "license": "MIT",
+  "source": "https://github.com/NousResearch/hermes-agent",
+  "builtAt": "2026-09-12T09:37:04.669Z"
+}

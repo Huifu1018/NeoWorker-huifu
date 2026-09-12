@@ -153,6 +153,16 @@ if (officeCliBuild.status !== 0) {
   process.exit(officeCliBuild.status ?? 1);
 }
 
+log("Building the embedded Hermes ACP runtime …");
+const hermesRuntimeBuild = spawnSync("npm", ["run", "build:hermes-runtime"], {
+  cwd: ROOT,
+  stdio: "inherit",
+  env: process.env,
+});
+if (hermesRuntimeBuild.status !== 0) {
+  process.exit(hermesRuntimeBuild.status ?? 1);
+}
+
 log("Running npm run build …");
 const build = spawnSync("npm", ["run", "build"], {
   cwd: ROOT,

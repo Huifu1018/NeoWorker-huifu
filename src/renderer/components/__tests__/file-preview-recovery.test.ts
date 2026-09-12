@@ -17,7 +17,7 @@ const electronMainSource = readFileSync(
 
 describe("file preview recovery", () => {
   it("offers both an in-place retry and opening the original file", () => {
-    expect(source).toContain('t("fileViewer.retryPreview", "重试预览")');
+    expect(source).toContain('t("fileViewer.retryPreview", "Retry preview")');
     expect(source).toContain("onClick={() => void loadFile()}");
     expect(source).toContain("onClick={handleOpenExternal}");
     expect(source).toContain(

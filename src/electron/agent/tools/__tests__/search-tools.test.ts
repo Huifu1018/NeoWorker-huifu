@@ -303,7 +303,7 @@ describe("SearchTools", () => {
       );
       expect(SearchProviderFactory.clearCache).not.toHaveBeenCalled();
       expect(mockDaemon.logEvent).toHaveBeenCalledWith("test-task-id", "log", {
-        message: expect.stringContaining("via duckduckgo"),
+        message: expect.stringContaining("via automatic"),
       });
     });
 

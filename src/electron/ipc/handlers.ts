@@ -166,6 +166,7 @@ import type { MailboxCommitmentState } from "../../shared/mailbox";
 import * as os from "os";
 import { AgentDaemon } from "../agent/daemon";
 import { RuntimeVisibilityService } from "../agent/RuntimeVisibilityService";
+import { buildHermesExternalRuntimeConfig } from "../agent/runtime/hermes-runtime-routing";
 import {
   LLMProviderFactory,
   LLMProviderConfig,
@@ -4660,12 +4661,21 @@ export async function setupIpcHandlers(
         throw new Error("The selected agent is unavailable.");
       }
     }
-    let normalizedAgentConfig: AgentConfig | undefined = agentConfig
-      ? {
-          ...agentConfig,
-          ...(agentConfig.autonomousMode ? { allowUserInput: false } : {}),
-        }
-      : undefined;
+    // Renderer-created work is always backed by the embedded Hermes Harness.
+    // Explicit delegated ACP runtimes (Claude/Codex/Hermes) remain untouched,
+    // while the old runtimePreference field is ignored for new user tasks.
+    const normalizedAgentConfig: AgentConfig = {
+      ...(agentConfig || {}),
+      ...(agentConfig?.externalRuntime
+        ? {}
+        : {
+            externalRuntime: buildHermesExternalRuntimeConfig(
+              agentConfig?.permissionMode,
+            ),
+            runtimePreference: "hermes" as const,
+          }),
+      ...(agentConfig?.autonomousMode ? { allowUserInput: false } : {}),
+    };
 
     const task = taskRepo.create({
       title,

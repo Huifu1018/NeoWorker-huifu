@@ -135,6 +135,10 @@ import {
 import { HermesAcpError } from "./runtime/hermes-acp-client";
 import { resolveHermesHostLauncher } from "./runtime/hermes-host-launcher";
 import {
+  buildHermesProviderBridgeEnvironment,
+  resolveHermesProviderBridge,
+} from "./runtime/hermes-provider-bridge";
+import {
   buildHermesFollowUpPrompt,
   buildHermesInitialPrompt,
   buildHermesRecoveryPrompt,
@@ -218,6 +222,7 @@ import { SessionRecallService } from "../memory/SessionRecallService";
 import { RuntimeVisibilityService } from "./RuntimeVisibilityService";
 import { ExternalMemoryProviderRegistry } from "../memory/ExternalMemoryProvider";
 import { UserProfileService } from "../memory/UserProfileService";
+import { getUserDataDir } from "../utils/user-data-dir";
 import { KnowledgeGraphService } from "../knowledge-graph/KnowledgeGraphService";
 import { MemorySynthesizer } from "../memory/MemorySynthesizer";
 import { TranscriptStore } from "../memory/TranscriptStore";
@@ -4607,8 +4612,19 @@ export class TaskExecutor {
     const runtime = this.getAcpxExternalRuntimeConfig();
     if (!runtime) return true;
     if (runtime.agent === "claude") return false;
-    if (runtime.agent !== "hermes") return true;
-    return this.task.agentConfig?.runtimePreference === "auto";
+    if (runtime.agent === "hermes") return false;
+    return true;
+  }
+
+  private getExternalRuntimeUnavailableErrorMessage(
+    runtimeAgentName: string,
+    scope: "initial" | "follow_up",
+  ): string {
+    const suffix = scope === "follow_up" ? " for follow-up" : "";
+    if (this.isHermesExternalRuntimeTask()) {
+      return `${runtimeAgentName} acpx runtime unavailable${suffix}. This task uses NeoWorker's embedded Hermes Harness; a separate Hermes Agent installation is not required. Check the packaged Hermes ACP Host and application logs.`;
+    }
+    return `${runtimeAgentName} acpx runtime unavailable${suffix}. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`;
   }
 
   private emitRuntimeStatus(
@@ -4934,6 +4950,94 @@ export class TaskExecutor {
     }
   }
 
+  private isLikelyIntermediateHermesResponse(
+    result: Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>,
+  ): boolean {
+    const stopReason = String(result.stopReason || "");
+    if (stopReason === "cancelled") return false;
+    if (stopReason && stopReason !== "end_turn") return true;
+
+    const text = String(result.assistantText || "").trim();
+    if (!text) return true;
+
+    // Do not auto-continue real blockers or explicit handoff questions. Those
+    // need to stay visible to the user instead of looping in the background.
+    if (
+      /(?:请(?:提供|确认|选择|授权|登录|补充)|需要你(?:提供|确认|选择|授权)|无法|不能|权限|授权|登录|api\s*key|API\s*Key|\?|？)/i.test(
+        text,
+      )
+    ) {
+      return false;
+    }
+
+    return /(?:我(?:需要|还要|将|会|正在|来|继续).{0,80}(?:查|查询|检索|搜索|确认|核对|获取|继续|处理|分析)|(?:接下来|下一步|还需要).{0,80}(?:查|查询|检索|搜索|确认|核对|获取|继续|处理|分析)|\b(?:I need to|I'll|I will|I'm going to|I am going to|Let me|Next,? I|I still need to)\b.{0,120}\b(?:check|look up|query|search|fetch|verify|continue|inspect|analyze)\b)/i.test(
+      text,
+    );
+  }
+
+  private buildHermesCompletionContinuationPrompt(
+    previousText: string,
+    turnKind: "initial" | "follow_up" | "resume",
+  ): string {
+    const excerpt = String(previousText || "").trim().slice(0, 2_000);
+    return [
+      "<neoworker_completion_guard_v1>",
+      `The previous Hermes ${turnKind} response looked like an in-progress note, not a final answer.`,
+      excerpt ? `Previous response:\n${excerpt}` : "",
+      "Continue the same user request now. Do not start a different task and do not answer with another plan.",
+      "Use the NeoWorker tools if more evidence is needed. Finish only when you can provide the requested final answer, or when you can state a concrete blocker for the current request.",
+      "</neoworker_completion_guard_v1>",
+    ].filter(Boolean).join("\n");
+  }
+
+  private async runHermesPromptToCompletion(
+    runtime: HermesRuntimeAdapter,
+    prompt: string,
+    isResuming: boolean,
+    turnKind: "initial" | "follow_up" | "resume",
+  ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
+    const maxContinuations = 2;
+    let result = await this.runHermesPromptWithTransientRetry(
+      runtime,
+      prompt,
+      isResuming,
+    );
+
+    for (let attempt = 0; attempt < maxContinuations; attempt += 1) {
+      if (this.cancelled || this.paused) break;
+      if (!this.isLikelyIntermediateHermesResponse(result)) break;
+
+      const continuationPrompt = this.buildHermesCompletionContinuationPrompt(
+        result.assistantText,
+        turnKind,
+      );
+      this.emitEvent("progress_update", {
+        phase: "hermes_runtime",
+        state: "continuing",
+        attempt: attempt + 1,
+        maxAttempts: maxContinuations,
+        stopReason: result.stopReason,
+        message: "Hermes returned an in-progress note; continuing the current turn before queued messages.",
+      });
+      this.emitEvent("log", {
+        metric: "hermes_runtime_completion_guard",
+        taskId: this.task.id,
+        turnKind,
+        attempt: attempt + 1,
+        maxAttempts: maxContinuations,
+        stopReason: result.stopReason,
+      });
+
+      result = await this.runHermesPromptWithTransientRetry(
+        runtime,
+        continuationPrompt,
+        false,
+      );
+    }
+
+    return result;
+  }
+
   /**
    * Keep transient retry backoff cancellable. A user cancellation can happen
    * after the provider error but before the bounded retry delay elapses; in
@@ -5056,10 +5160,11 @@ export class TaskExecutor {
         mode: isResuming ? "checkpoint_retry" : "initial_prompt",
         checkpointSessionId: checkpoint?.sessionId,
       });
-      const result = await this.runHermesPromptWithTransientRetry(
+      const result = await this.runHermesPromptToCompletion(
         runtime,
         prompt,
         isResuming,
+        "initial",
       );
       this.hermesCheckpoint = runtime.getCheckpoint();
       if (this.paused && result.stopReason === "cancelled") {
@@ -5109,10 +5214,11 @@ export class TaskExecutor {
           toolProgress?.unknownToolCallIds?.length ||
           toolProgress?.activeToolCallIds?.length,
         );
-        const result = await this.runHermesPromptWithTransientRetry(
+        const result = await this.runHermesPromptToCompletion(
           runtime,
           followUp,
           isResuming,
+          "follow_up",
         );
         this.hermesCheckpoint = runtime.getCheckpoint();
         const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true, requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({ rawPrompt: message }) });
@@ -6360,7 +6466,7 @@ export class TaskExecutor {
   }
 
   private getMaxPlanSteps(): number {
-    const configured = this.task.agentConfig?.maxPlanSteps;
+    const configured = (this as Any).task?.agentConfig?.maxPlanSteps;
     if (Number.isInteger(configured) && Number(configured) > 0) {
       return Math.max(2, Math.min(Number(configured), MAX_TOTAL_STEPS));
     }
@@ -6368,7 +6474,7 @@ export class TaskExecutor {
   }
 
   private getInitialPlanStepLimit(): number {
-    const configured = this.task.agentConfig?.maxPlanSteps;
+    const configured = (this as Any).task?.agentConfig?.maxPlanSteps;
     const configuredLimit =
       Number.isInteger(configured) && Number(configured) > 0
         ? Math.max(2, Math.min(Number(configured), MAX_INITIAL_PLAN_STEPS))
@@ -6381,8 +6487,9 @@ export class TaskExecutor {
 
   private getPlanningStepProfile(): "compact" | "standard" | "workflow" {
     const executionMode = this.getEffectiveExecutionMode();
+    const task = (this as Any).task || {};
     const taskIntent = String(
-      this.task.agentConfig?.taskIntent || "",
+      task.agentConfig?.taskIntent || "",
     ).toLowerCase();
     const taskPrompt = String(
       this.getExecutionTaskPrompt() || this.getContractPrompt() || "",
@@ -6394,7 +6501,7 @@ export class TaskExecutor {
       taskIntent === "planning" ||
       taskIntent === "thinking";
     const workflowIntent =
-      this.task.agentConfig?.deepWorkMode === true ||
+      task.agentConfig?.deepWorkMode === true ||
       taskIntent === "workflow" ||
       taskIntent === "deep_work" ||
       taskPrompt.length > 1200;
@@ -9926,8 +10033,21 @@ ${transcript}
     // saved legacy session; silently switching an existing native-tool
     // transcript would make side-effect recovery ambiguous.
     const hostOwned = !this.hermesCheckpoint || this.hermesCheckpoint.toolOwnership === "neoworker";
+    const hermesSettings =
+      this.cachedLlmSettings ?? LLMProviderFactory.loadSettings();
+    const hermesProviderBridge = resolveHermesProviderBridge(
+      hermesSettings,
+      this.provider?.type ?? hermesSettings.providerType,
+      this.modelId || String(hermesSettings.modelKey || ""),
+    );
+    const hermesHome = path.join(getUserDataDir(), "hermes-runtime");
     const options: HermesRuntimeOptions = {
       cwd: this.workspace.path,
+      firstByteTimeoutMs: 90_000,
+      env: buildHermesProviderBridgeEnvironment(
+        hermesProviderBridge,
+        hermesHome,
+      ),
       checkpoint: this.hermesCheckpoint,
       getLogSequence: () => {
         // Checkpoints are persisted before and after every host tool call.
@@ -15923,22 +16043,25 @@ ${transcript}
   }
 
   private promptRequiresDirectAnswer(): boolean {
+    const task = (this as Any).task || {};
     return promptRequiresDirectAnswerUtil(
-      this.task.title,
+      task.title,
       this.getContractPrompt(),
     );
   }
 
   private promptRequestsDecision(): boolean {
+    const task = (this as Any).task || {};
     return promptRequestsDecisionUtil(
-      this.task.title,
+      task.title,
       this.getContractPrompt(),
     );
   }
 
   private promptIsWatchSkipRecommendationTask(): boolean {
+    const task = (this as Any).task || {};
     return promptIsWatchSkipRecommendationTaskUtil(
-      this.task.title,
+      task.title,
       this.getContractPrompt(),
     );
   }
@@ -16872,11 +16995,12 @@ ${transcript}
   }
 
   private getCanonicalTaskIntentQuery(): string {
+    const task = (this as Any).task || {};
     return buildCanonicalTaskIntentQuery({
-      title: this.task.title,
-      prompt: this.task.prompt,
-      rawPrompt: this.task.rawPrompt,
-      userPrompt: this.task.userPrompt,
+      title: task.title,
+      prompt: task.prompt,
+      rawPrompt: task.rawPrompt,
+      userPrompt: task.userPrompt,
     });
   }
 
@@ -17004,6 +17128,7 @@ ${transcript}
   }
 
   private buildCompletionContract(): CompletionContract {
+    const task = (this as Any).task || {};
     const canonicalIntent = this.getCanonicalTaskIntentQuery();
     const contract = buildCompletionContractUtil({
       // The canonical query contains only user-authored intent. Do not let a
@@ -17014,7 +17139,7 @@ ${transcript}
       requiresDecisionSignal: this.promptRequestsDecision(),
       isWatchSkipRecommendationTask: this.promptIsWatchSkipRecommendationTask(),
     });
-    const workerRole = resolveWorkerRoleKind(this.task.workerRole);
+    const workerRole = resolveWorkerRoleKind(task.workerRole);
     if (workerRole === "researcher" || workerRole === "verifier") {
       // These delegation roles are explicitly read-only.  Their deliverable is
       // a findings/verdict message consumed by the parent task, even when the
@@ -30093,9 +30218,22 @@ You are continuing a previous conversation. The context from the previous conver
     ]
       .filter(Boolean)
       .join(" ");
+    const application = this.getAppliedSkillApplication("ppt-master");
+    const skillParameters =
+      application?.parameters && typeof application.parameters === "object"
+        ? application.parameters
+        : {};
+    const sourcePath =
+      typeof original.sourcePath === "string" && original.sourcePath.trim()
+        ? original.sourcePath
+        : typeof skillParameters.source_path === "string" &&
+            skillParameters.source_path.trim()
+          ? skillParameters.source_path
+          : undefined;
 
     return {
       ...original,
+      ...(sourcePath ? { sourcePath } : {}),
       filename: path.join(artifactRoot, "output", "presentation.pptx"),
       generationMode: "ppt-master",
       presentationWorkflow: "ppt-master",
@@ -31694,7 +31832,10 @@ You are continuing a previous conversation. The context from the previous conver
             );
             if (!fallbackAllowed) {
               throw new Error(
-                `${runtimeAgentName} acpx runtime unavailable. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`,
+                this.getExternalRuntimeUnavailableErrorMessage(
+                  runtimeAgentName,
+                  "initial",
+                ),
               );
             }
             this.disableExternalRuntimeForFallback(
@@ -32371,6 +32512,14 @@ You are continuing a previous conversation. The context from the previous conver
         };
         errorPayload.errorCode = TASK_ERROR_CODES.TURN_LIMIT_EXCEEDED;
       }
+      this.emitEvent("assistant_message", {
+        message:
+          userFacingError ||
+          "本轮任务未能完成，当前会话已保留，请重试。",
+        terminalFailure: true,
+        failureClass,
+        technicalError: rawError,
+      });
       this.emitTerminalFailureOnce(errorPayload);
     } finally {
       // Cleanup resources (e.g., close browser)
@@ -41912,15 +42061,32 @@ Return ONLY a JSON object:
 
       logger.error(`${this.logTag} Resumed task execution failed:`, error);
       this.saveConversationSnapshot();
+      const failureClass = this.classifyFailure(error);
+      const userFacingError = this.buildTaskFailureMessage(
+        error,
+        failureClass,
+      );
       this.daemon.updateTask(this.task.id, {
         status: "failed",
-        error: error?.message || String(error),
+        error: userFacingError,
         completedAt: Date.now(),
+        terminalStatus: "failed",
+        failureClass,
         ...this.applyRuntimeTaskProjectionToTask(),
       });
+      this.emitEvent("assistant_message", {
+        message:
+          userFacingError ||
+          "恢复执行失败，当前会话已保留，请重试。",
+        terminalFailure: true,
+        failureClass,
+        technicalError: error?.message || String(error),
+      });
       this.emitTerminalFailureOnce({
-        message: error.message,
+        message: userFacingError,
+        technicalError: error?.message || String(error),
         stack: error.stack,
+        failureClass,
       });
     } finally {
       await this.toolRegistry.cleanup().catch((e) => {
@@ -43735,7 +43901,10 @@ Return ONLY a JSON object:
           );
           if (!fallbackAllowed) {
             throw new Error(
-              `${runtimeAgentName} acpx runtime unavailable for follow-up. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`,
+              this.getExternalRuntimeUnavailableErrorMessage(
+                runtimeAgentName,
+                "follow_up",
+              ),
             );
           }
           this.disableExternalRuntimeForFallback(
@@ -47010,10 +47179,11 @@ Return ONLY a JSON object:
         toolProgress?.unknownToolCallIds?.length ||
         toolProgress?.activeToolCallIds?.length,
       );
-      const result = await this.runHermesPromptWithTransientRetry(
+      const result = await this.runHermesPromptToCompletion(
         runtime,
         continuation,
         isResuming,
+        "resume",
       );
       this.hermesCheckpoint = runtime.getCheckpoint();
       const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });

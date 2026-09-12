@@ -58,7 +58,7 @@ describe("deriveTaskProgressPeekModel", () => {
     });
 
     expect(model.progressPercent).toBe(50);
-    expect(model.progressText).toBe("2 of 4 steps complete");
+    expect(model.progressText).toBe("2 / 4 个步骤已完成");
     expect(model.activeStep?.id).toBe("c");
     expect(model.status).toBe("working");
   });
@@ -73,9 +73,9 @@ describe("deriveTaskProgressPeekModel", () => {
     });
 
     expect(model.progressPercent).toBeNull();
-    expect(model.progressText).toBe("No plan steps yet");
+    expect(model.progressText).toBe("还没有计划步骤");
     expect(model.activeStep).toBeNull();
-    expect(model.statusLabel).toBe("Completed");
+    expect(model.statusLabel).toBe("已完成");
   });
 
   it("collects recent user-facing activity and filters noise", () => {
@@ -102,7 +102,7 @@ describe("deriveTaskProgressPeekModel", () => {
 
     expect(model.recentActivity.map((activity) => activity.label)).toEqual([
       "Reading renderer timeline code",
-      "Completed Inspect files",
+      "已完成：Inspect files",
     ]);
     expect(model.recentActivity[1]?.tone).toBe("success");
   });
@@ -117,7 +117,7 @@ describe("deriveTaskProgressPeekModel", () => {
     });
 
     expect(model.status).toBe("waiting");
-    expect(model.statusLabel).toBe("Waiting");
+    expect(model.statusLabel).toBe("等待中");
   });
 
   it("preserves blocked status when the task is not awaiting approval", () => {
@@ -130,7 +130,7 @@ describe("deriveTaskProgressPeekModel", () => {
     });
 
     expect(model.status).toBe("blocked");
-    expect(model.statusLabel).toBe("Waiting");
+    expect(model.statusLabel).toBe("阻塞");
   });
 });
 
@@ -140,7 +140,7 @@ describe("humanizeProgressStepDescription", () => {
       humanizeProgressStepDescription(
         "Use the `Skill` tool with skill ID `novelist`.",
       ),
-    ).toBe("Run the Novelist skill");
+    ).toBe("运行 小说创作 技能");
     expect(
       humanizeProgressStepDescription(
         "assistant to=read_file path=`src/App.tsx`",

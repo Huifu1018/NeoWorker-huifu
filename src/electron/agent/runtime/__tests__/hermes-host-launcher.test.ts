@@ -25,8 +25,9 @@ afterEach(() => {
 describe("Hermes host launcher resolution", () => {
   it("finds the shipped source launcher", () => {
     const launch = resolveHermesHostLauncher();
-    expect(path.basename(launch.args[0]!)).toBe("hermes-acp-neoworker-host.py");
-    expect(fs.existsSync(launch.args[0]!)).toBe(true);
+    const hostPath = launch.args[0] || launch.command;
+    expect(path.basename(hostPath)).toMatch(/^hermes-acp-neoworker-host(?:\.py|\.exe)?$/);
+    expect(fs.existsSync(hostPath)).toBe(true);
   });
 
   it("preserves an explicitly configured Python path including spaces", () => {

@@ -185,9 +185,9 @@ export class SearchTools {
     region?: string;
     maxUses?: number;
   }): Promise<SearchResponse> {
-    // DuckDuckGo is always available as a free fallback, so web_search never
-    // needs to return "not configured". searchWithFallback handles the full
-    // provider chain including DDG as last resort.
+    // Automatic routing is resolved by SearchProviderFactory. The log should
+    // describe the routing mode rather than guessing that DDG will be used
+    // before the provider chain has run.
     const searchQuery: SearchQuery = {
       query: input.query,
       searchType: input.searchType || "web",
@@ -199,7 +199,7 @@ export class SearchTools {
     };
 
     const settings = SearchProviderFactory.loadSettings();
-    const providerName = input.provider || settings.primaryProvider || "duckduckgo";
+    const providerName = input.provider || settings.primaryProvider || "automatic";
     this.daemon.logEvent(this.taskId, "log", {
       message: `Searching ${searchQuery.searchType}: "${input.query}" via ${providerName}`,
     });

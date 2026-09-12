@@ -141,6 +141,23 @@ function getPayloadText(payload: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+/**
+ * Hermes and the native executor can persist assistant-shaped progress notes
+ * alongside the real reply. They are useful telemetry, but must never become
+ * a conversation bubble or a summary answer.
+ */
+export function isInternalAssistantMessage(event: TaskEvent): boolean {
+  if (getEffectiveTaskEventType(event) !== "assistant_message") return false;
+  const payload = asObject(event.payload);
+  if (payload.internal !== true) return false;
+  return !hasAssistantMediaDirective(getPayloadText(payload, "message"));
+}
+
+export function isHermesStreamingEvent(event: TaskEvent): boolean {
+  if (getEffectiveTaskEventType(event) !== "llm_streaming") return false;
+  return asObject(event.payload).runtime === "hermes";
+}
+
 export function isLlmRequestCancelledEvent(event: TaskEvent): boolean {
   const payload = asObject(event.payload);
   const message = [
@@ -242,9 +259,7 @@ function isUserFacingFinalReplyEvent(event: TaskEvent): boolean {
     return true;
   }
   if (effectiveType !== "assistant_message") return false;
-  const payload = asObject(event.payload);
-  const message = typeof payload.message === "string" ? payload.message : "";
-  return payload.internal !== true || hasAssistantMediaDirective(message);
+  return !isInternalAssistantMessage(event);
 }
 
 function buildFinalReplyTimestampsByTask(
@@ -350,6 +365,7 @@ export function isUserVisibleTaskArtifactEvent(event: TaskEvent): boolean {
 export function isImportantTaskEvent(event: TaskEvent): boolean {
   if (isImplementationOnlyBrowserActionEvent(event)) return false;
   if (!isUserVisibleTaskArtifactEvent(event)) return false;
+  if (isInternalAssistantMessage(event)) return false;
   const effectiveType = getEffectiveTaskEventType(event);
   if (IMPORTANT_EVENT_TYPES.includes(effectiveType as EventType)) return true;
   if (effectiveType !== "tool_result") return false;
@@ -600,6 +616,11 @@ function isLowValueVerboseLifecycleEvent(event: TaskEvent): boolean {
   const message = getEventMessage(event);
   const effectiveType = getEffectiveTaskEventType(event);
 
+  // Hermes ACP message chunks are live progress, not durable conversation turns.
+  // Keep them out of the execution-record projection; the header heartbeat and
+  // tool/action summaries already provide the useful state.
+  if (isHermesStreamingEvent(event)) return true;
+
   // timeline_step_updated events are internal executor status beacons.
   // Preserve user-visible chat messages, which are persisted as
   // timeline_step_updated + legacyType=user_message/assistant_message in timeline v2.
@@ -723,6 +744,13 @@ export function filterVerboseTimelineNoise(
   const completedTaskIds = new Set<string>();
   for (const event of events) {
     if (!isUserVisibleTaskArtifactEvent(event)) continue;
+    // Hermes can emit raw assistant_message notes while it is deciding which
+    // tool to use. They are not the durable reply and should not become a
+    // second transcript in the execution-record view. Timeline-v2 assistant
+    // updates remain eligible for the existing structured-note rules below.
+    if (event.type === "assistant_message" && isInternalAssistantMessage(event)) {
+      continue;
+    }
     const effectiveType = getEffectiveTaskEventType(event);
     if (effectiveType === "task_started" || effectiveType === "user_message") {
       completedTaskIds.delete(event.taskId);
@@ -817,6 +845,7 @@ export function shouldShowTaskEventInStepFeed(
   options?: { verboseSteps?: boolean; taskStatus?: TaskStatus },
 ): boolean {
   if (!isUserVisibleTaskArtifactEvent(event)) return false;
+  if (isHermesStreamingEvent(event)) return false;
   if (isInjectedContextStepFailure(event)) return false;
   if (isImplementationOnlyBrowserActionEvent(event)) return false;
   if (isToolBatchTimelineGroupEvent(event)) return false;

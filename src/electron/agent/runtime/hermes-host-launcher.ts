@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const LAUNCHER_FILENAME = "hermes-acp-neoworker-host.py";
+const HERMES_HOST_BINARY_BASENAME = "hermes-acp-neoworker-host";
 const HERMES_EXECUTABLE = "hermes";
 
 function readUnixShebangInterpreter(executable: string): string | undefined {
@@ -101,8 +102,39 @@ export function resolveHermesPythonCommand(
   return platform === "win32" ? "python" : "python3";
 }
 
+function hermesHostBinaryFilename(platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? `${HERMES_HOST_BINARY_BASENAME}.exe`
+    : HERMES_HOST_BINARY_BASENAME;
+}
+
+function isPackagedElectronApp(resourcesPath: string | undefined): boolean {
+  // electron-builder's packaged app always has app.asar beside extraResources.
+  // In development, Electron uses default_app.asar instead, so source-mode
+  // fallback remains available for local adapter development.
+  return Boolean(resourcesPath && fs.existsSync(path.join(resourcesPath, "app.asar")));
+}
+
 export function resolveHermesHostLauncher(): { command: string; args: string[] } {
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const binaryFilename = hermesHostBinaryFilename(process.platform);
+  const binaryCandidates = [
+    ...(resourcesPath ? [path.join(resourcesPath, "hermes-runtime", binaryFilename)] : []),
+    path.resolve(__dirname, "../../../../build/hermes-runtime", binaryFilename),
+    path.resolve(__dirname, "../../../../../build/hermes-runtime", binaryFilename),
+  ];
+  const binary = binaryCandidates.find((candidate) => fs.existsSync(candidate));
+  if (binary) return { command: binary, args: [] };
+
+  if (isPackagedElectronApp(resourcesPath)) {
+    throw new Error(
+      `NeoWorker's bundled Hermes runtime is missing from ${path.join(
+        resourcesPath!,
+        "hermes-runtime",
+      )}. Reinstall NeoWorker instead of installing Hermes separately.`,
+    );
+  }
+
   const candidates = [
     ...(resourcesPath ? [path.join(resourcesPath, "hermes-runtime", LAUNCHER_FILENAME)] : []),
     path.resolve(__dirname, "../../../../scripts", LAUNCHER_FILENAME),

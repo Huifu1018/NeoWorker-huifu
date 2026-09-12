@@ -9,11 +9,34 @@ tools when disabling a platform bundle. No installed Hermes files are changed.
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from importlib.metadata import version
 
 
 SUPPORTED_HERMES_VERSION = "0.18.0"
+
+
+def neoworker_provider_kwargs():
+    """Read the provider selected by NeoWorker, never Hermes user config."""
+    provider = os.environ.get("NEOWORKER_HERMES_PROVIDER", "").strip()
+    if not provider:
+        return {}
+
+    result = {
+        "provider": provider,
+        "model": os.environ.get("NEOWORKER_HERMES_MODEL", "").strip(),
+        "api_mode": os.environ.get("NEOWORKER_HERMES_API_MODE", "").strip() or None,
+        "base_url": os.environ.get("NEOWORKER_HERMES_BASE_URL", "").strip() or None,
+        "api_key": os.environ.get("NEOWORKER_HERMES_API_KEY", "").strip() or None,
+    }
+    result = {key: value for key, value in result.items() if value is not None}
+    # A configured NeoWorker route must never inherit a second provider's
+    # external subprocess command from a Hermes config file.
+    result["command"] = None
+    result["args"] = []
+    return result
 
 
 def host_owned_agent_kwargs(kwargs):
@@ -23,11 +46,48 @@ def host_owned_agent_kwargs(kwargs):
         result["disabled_toolsets"] = None
         result["skip_context_files"] = True
         result["skip_memory"] = True
+        result.update(neoworker_provider_kwargs())
     return result
 
 
+def installed_hermes_version():
+    # The frozen executable is built from the pinned Hermes distribution. Its
+    # metadata is not needed at runtime, and avoiding a filesystem lookup also
+    # keeps the standalone binary independent from the user's Python install.
+    if getattr(sys, "frozen", False):
+        return SUPPORTED_HERMES_VERSION
+    return version("hermes-agent")
+
+
+def runtime_check():
+    """Validate the embedded ACP runtime without starting a model session."""
+    installed_version = installed_hermes_version()
+    if installed_version != SUPPORTED_HERMES_VERSION:
+        raise RuntimeError(
+            "NeoWorker embedded ACP requires hermes-agent "
+            f"{SUPPORTED_HERMES_VERSION}; found {installed_version}."
+        )
+
+    # Import the same modules used by the live host. This catches incomplete
+    # PyInstaller collection while keeping the check credential-free.
+    import acp  # noqa: F401
+    import acp_adapter.entry  # noqa: F401
+    import acp_adapter.server  # noqa: F401
+    import run_agent  # noqa: F401
+
+    print(json.dumps({
+        "ok": True,
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "hermesAgentVersion": installed_version,
+    }))
+
+
 def main():
-    installed_version = version("hermes-agent")
+    if "--neoworker-runtime-check" in sys.argv[1:]:
+        runtime_check()
+        return
+
+    installed_version = installed_hermes_version()
     if installed_version != SUPPORTED_HERMES_VERSION:
         raise RuntimeError(
             "NeoWorker host-owned ACP requires hermes-agent "

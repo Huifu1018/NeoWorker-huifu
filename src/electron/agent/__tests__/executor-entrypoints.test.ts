@@ -462,7 +462,7 @@ describe("TaskExecutor entrypoint guards", () => {
     executor.sendMessageUnified = vi.fn(async () => undefined);
 
     await expect(executor.sendMessageUnlocked("hello")).rejects.toThrow(
-      "Hermes Agent acpx runtime unavailable for follow-up",
+      "Hermes Agent acpx runtime unavailable for follow-up. This task uses NeoWorker's embedded Hermes Harness; a separate Hermes Agent installation is not required.",
     );
     expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
     expect(executor.sendMessageUnified).not.toHaveBeenCalled();
@@ -475,7 +475,7 @@ describe("TaskExecutor entrypoint guards", () => {
     );
   });
 
-  it("falls back from an Auto Hermes runtime when Hermes is unavailable", async () => {
+  it("does not fall back from a legacy Auto Hermes runtime when Hermes is unavailable", async () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
 
     executor.task = {
@@ -499,20 +499,17 @@ describe("TaskExecutor entrypoint guards", () => {
     executor.emitEvent = vi.fn();
     executor.sendMessageUnified = vi.fn(async () => undefined);
 
-    await executor.sendMessageUnlocked("hello");
-
-    expect(executor.disableExternalRuntimeForFallback).toHaveBeenCalledTimes(1);
-    expect(executor.sendMessageUnified).toHaveBeenCalledWith(
-      "hello",
-      undefined,
-      undefined,
+    await expect(executor.sendMessageUnlocked("hello")).rejects.toThrow(
+      "Hermes Agent acpx runtime unavailable for follow-up",
     );
+
+    expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
+    expect(executor.sendMessageUnified).not.toHaveBeenCalled();
     expect(executor.emitEvent).toHaveBeenCalledWith(
       "progress_update",
       expect.objectContaining({
         runtimeAgent: "hermes",
-        runtimeState: "fallback",
-        fallbackTarget: "native",
+        runtimeState: "failed",
       }),
     );
   });

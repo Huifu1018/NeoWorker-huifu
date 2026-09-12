@@ -81,21 +81,22 @@ Attached files (relative to workspace):
     expect(result.agentConfig.llmProfileHint).toBe("cheap");
   });
 
-  it("materializes the Auto Hermes route into a new task config", () => {
+  it("materializes the embedded Hermes route into every new task config", () => {
     const daemonLike = Object.create(AgentDaemon.prototype) as Any;
 
     const hermesTask = daemonLike.deriveTaskStrategy({
       title: "查询航班",
       prompt: "帮我查询明天北京飞深圳的航班信息",
       agentConfig: {},
+      forceHermesForNewTask: true,
     });
 
     expect(hermesTask.runtime).toMatchObject({
       resolved: "hermes",
       runtimeAgent: "hermes",
-      preference: "auto",
+      preference: "hermes",
     });
-    expect(hermesTask.agentConfig.runtimePreference).toBe("auto");
+    expect(hermesTask.agentConfig.runtimePreference).toBe("hermes");
     expect(hermesTask.agentConfig.externalRuntime).toMatchObject({
       kind: "acpx",
       agent: "hermes",
@@ -105,14 +106,34 @@ Attached files (relative to workspace):
       title: "问候",
       prompt: "你好，介绍一下你自己",
       agentConfig: {},
+      forceHermesForNewTask: true,
     });
 
     expect(nativeTask.runtime).toMatchObject({
+      resolved: "hermes",
+      preference: "hermes",
+    });
+    expect(nativeTask.agentConfig.runtimePreference).toBe("hermes");
+    expect(nativeTask.agentConfig.externalRuntime).toMatchObject({
+      kind: "acpx",
+      agent: "hermes",
+    });
+  });
+
+  it("keeps legacy task strategy routing adaptive when no new-task flag is present", () => {
+    const daemonLike = Object.create(AgentDaemon.prototype) as Any;
+
+    const legacyNativeTask = daemonLike.deriveTaskStrategy({
+      title: "问候",
+      prompt: "你好，介绍一下你自己",
+      agentConfig: { runtimePreference: "auto" },
+    });
+
+    expect(legacyNativeTask.runtime).toMatchObject({
       resolved: "native",
       preference: "auto",
     });
-    expect(nativeTask.agentConfig.runtimePreference).toBe("auto");
-    expect(nativeTask.agentConfig.externalRuntime).toBeUndefined();
+    expect(legacyNativeTask.agentConfig.externalRuntime).toBeUndefined();
   });
 
   it("does not resume startup background system tasks", () => {

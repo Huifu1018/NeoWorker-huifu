@@ -32,7 +32,6 @@ import {
   StepFeedbackAction,
   ExecutionMode,
   TaskDomain,
-  TaskRuntimePreference,
   InputRequest,
   QuotedAssistantMessage,
   PermissionMode,
@@ -116,6 +115,8 @@ import { shouldShowPersistentNeedsUserActionBanner } from "../../utils/task-comp
 import {
   filterAdjacentDuplicateTimelineFailures,
   filterVerboseTimelineNoise,
+  isInternalAssistantMessage,
+  isHermesStreamingEvent,
   shouldShowTaskEventInStepFeed,
   shouldShowTaskEventInSummaryMode,
 } from "../../utils/task-event-visibility";
@@ -730,7 +731,6 @@ interface MainContentProps {
     options?: {
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
-      runtimePreference?: TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;
@@ -886,7 +886,8 @@ function shouldRenderAssistantMessageInTranscript(
   eventIndex: number,
 ): boolean {
   const event = events[eventIndex];
-  if (!event || event.type !== "timeline_step_updated") return true;
+  if (!event || isInternalAssistantMessage(event)) return false;
+  if (event.type !== "timeline_step_updated") return true;
   if (isUserFacingPlanStepResult(event)) return true;
   if (event.payload?.internal === true) return false;
 
@@ -2286,11 +2287,14 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
 
         const event = item.event as TaskEvent;
         const effectiveType = getEffectiveTaskEventType(event);
+        const commandOutputsAfterEvent = commandOutputSessionsByInsertIndex.get(item.eventIndex);
+        const hasCommandOutputs = Boolean(commandOutputsAfterEvent?.length);
+        if (isInternalAssistantMessage(event)) {
+          return hasCommandOutputs;
+        }
         const isUserMessage = effectiveType === "user_message";
         const isAssistantMessage = effectiveType === "assistant_message";
         const isCompletionSummaryMessage = getCompletionSummaryText(event).length > 0;
-        const commandOutputsAfterEvent = commandOutputSessionsByInsertIndex.get(item.eventIndex);
-        const hasCommandOutputs = Boolean(commandOutputsAfterEvent?.length);
 
         if (
           !showChatTaskExecutionRows &&
@@ -3204,13 +3208,26 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
 
               const event = item.event;
               const effectiveType = getEffectiveTaskEventType(event);
+              const commandOutputsAfterEvent = commandOutputSessionsByInsertIndex.get(
+                item.eventIndex,
+              );
+              if (
+                isHermesStreamingEvent(event) ||
+                isInternalAssistantMessage(event)
+              ) {
+                if (commandOutputsAfterEvent && commandOutputsAfterEvent.length > 0) {
+                  return (
+                    <Fragment key={event.id || `event-${item.eventIndex}`}>
+                      {renderCommandOutputs(commandOutputsAfterEvent)}
+                    </Fragment>
+                  );
+                }
+                return null;
+              }
               const isUserMessage = effectiveType === "user_message";
               const isAssistantMessage = effectiveType === "assistant_message";
               const completionSummaryText = getCompletionSummaryText(event);
               const isCompletionSummaryMessage = completionSummaryText.length > 0;
-              const commandOutputsAfterEvent = commandOutputSessionsByInsertIndex.get(
-                item.eventIndex,
-              );
 
               if (
                 isChatTask &&
@@ -5163,7 +5180,9 @@ function MainContentComponent({
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [isPreparingMessage, setIsPreparingMessage] = useState(false);
   const [isQueueingFollowUp, setIsQueueingFollowUp] = useState(false);
+  const [activeFollowUpDispatchCount, setActiveFollowUpDispatchCount] = useState(0);
   const queueFollowUpInFlightRef = useRef(false);
+  const submissionSequenceRef = useRef(0);
   const [composerProcessingStage, setComposerProcessingStage] = useState<
     "idle" | "importing" | "reading" | "creating" | "sending"
   >("idle");
@@ -5186,6 +5205,12 @@ function MainContentComponent({
     setIntegrationMentionSpans([]);
     setComposerSkillContext(null);
     setQuotedAssistantMessage(null);
+    setIsUploadingAttachments(false);
+    setIsPreparingMessage(false);
+    setIsQueueingFollowUp(false);
+    setComposerProcessingStage("idle");
+    queueFollowUpInFlightRef.current = false;
+    setActiveFollowUpDispatchCount(0);
     pendingProgrammaticResizeRef.current = true;
   }, [composerDraftCacheKey]);
 
@@ -5536,9 +5561,6 @@ function MainContentComponent({
   const [chronicleEnabledForTask, setChronicleEnabledForTask] = useState(true);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("execute");
   const [executionModeDirty, setExecutionModeDirty] = useState(false);
-  const [runtimePreference, setRuntimePreference] =
-    useState<TaskRuntimePreference>("auto");
-  const [runtimePreferenceDirty, setRuntimePreferenceDirty] = useState(false);
   const [chatModeUpgradePrompt, setChatModeUpgradePrompt] = useState(false);
   const [defaultPermissionAccessMode, setDefaultPermissionAccessMode] =
     useState<PermissionAccessMode>("full");
@@ -5558,9 +5580,6 @@ function MainContentComponent({
     permissionAccessMode,
     shellEnabled,
   );
-  const composerRuntimeOverrides = runtimePreferenceDirty
-    ? { runtimePreference }
-    : {};
   const [modeSuggestions, setModeSuggestions] = useState<ModeSuggestion[]>([]);
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const modeSuggestionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -5581,7 +5600,6 @@ function MainContentComponent({
     const settings = deriveComposerTaskSettings(task.agentConfig);
     setExecutionMode(settings.executionMode);
     setTaskDomain(settings.taskDomain);
-    setRuntimePreference(settings.runtimePreference);
     setAutonomousModeEnabled(settings.autonomousModeEnabled);
     setCollaborativeModeEnabled(settings.collaborativeModeEnabled);
     setMultiLlmModeEnabled(settings.multiLlmModeEnabled);
@@ -5589,7 +5607,6 @@ function MainContentComponent({
     setChronicleEnabledForTask(settings.chronicleEnabledForTask);
     setVerificationAgentEnabled(settings.verificationAgentEnabled);
     setExecutionModeDirty(false);
-    setRuntimePreferenceDirty(false);
     setTaskDomainDirty(
       task.agentConfig?.taskDomain != null && settings.taskDomain !== "auto",
     );
@@ -5600,13 +5617,6 @@ function MainContentComponent({
     setExecutionMode(mode);
     setExecutionModeDirty(true);
   }, []);
-  const setRuntimePreferenceSelection = useCallback(
-    (preference: TaskRuntimePreference) => {
-      setRuntimePreference(preference);
-      setRuntimePreferenceDirty(true);
-    },
-    [],
-  );
   const composerModeSelection = deriveComposerModeSelection({
     executionMode,
     executionModeDirty,
@@ -5765,14 +5775,12 @@ function MainContentComponent({
               }
             : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
-          ...composerRuntimeOverrides,
           ...composerPermissionOverrides,
         });
       } else {
         onSendMessage(text, undefined, undefined, {
           ...(executionModeDirty ? { executionMode } : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
-          ...composerRuntimeOverrides,
           ...composerPermissionOverrides,
         });
       }
@@ -6163,8 +6171,6 @@ function MainContentComponent({
   const overflowToggleBtnRef = useRef<HTMLButtonElement>(null);
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const modeDropdownRef = useRef<HTMLDivElement>(null);
-  const [showRuntimeDropdown, setShowRuntimeDropdown] = useState(false);
-  const runtimeDropdownRef = useRef<HTMLDivElement>(null);
   const [guardrailDefaultMaxAutoContinuations, setGuardrailDefaultMaxAutoContinuations] = useState<
     number | null
   >(null);
@@ -6360,6 +6366,10 @@ function MainContentComponent({
     [task, events, hasActiveChildren, optimisticFollowUpStartedAt],
   );
   const isTaskWorkingForDuration = workTiming.isActive;
+  const isFollowUpActive =
+    isTaskWorking ||
+    isTaskWorkingForDuration ||
+    activeFollowUpDispatchCount > 0;
 
   // Reset wrappingUp state when task stops working or task changes
   useEffect(() => {
@@ -7451,22 +7461,6 @@ function MainContentComponent({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showModeDropdown]);
 
-  // Close runtime dropdown on click outside
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (
-        runtimeDropdownRef.current &&
-        !runtimeDropdownRef.current.contains(e.target as Node)
-      ) {
-        setShowRuntimeDropdown(false);
-      }
-    };
-    if (showRuntimeDropdown) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showRuntimeDropdown]);
-
   // Close overflow menu on click outside (welcome view)
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -7705,90 +7699,6 @@ function MainContentComponent({
                 </button>
               );
             })}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const renderComposerRuntimeControl = () => {
-    const runtimeOptions: Array<{
-      value: TaskRuntimePreference;
-      label: string;
-      hint: string;
-      Icon: typeof Sparkles;
-    }> = [
-      {
-        value: "auto",
-        label: translate("composer.runtime.auto", "Auto"),
-        hint: translate(
-          "composer.runtime.autoHint",
-          "Use Hermes for complex, multi-step tasks",
-        ),
-        Icon: Sparkles,
-      },
-      {
-        value: "hermes",
-        label: translate("composer.runtime.hermes", "Hermes"),
-        hint: translate(
-          "composer.runtime.hermesHint",
-          "Require Hermes Harness for this task",
-        ),
-        Icon: Compass,
-      },
-      {
-        value: "native",
-        label: translate("composer.runtime.native", "Native"),
-        hint: translate(
-          "composer.runtime.nativeHint",
-          "Use NeoWorker's native execution loop",
-        ),
-        Icon: Terminal,
-      },
-    ];
-    const selected = runtimeOptions.find((option) => option.value === runtimePreference) ||
-      runtimeOptions[0];
-    const SelectedIcon = selected.Icon;
-
-    return (
-      <div className="input-status-mode-wrap" ref={runtimeDropdownRef}>
-        <button
-          type="button"
-          className="input-status-mode menu-tooltip-target"
-          onClick={() => setShowRuntimeDropdown((visible) => !visible)}
-          data-tooltip={`${selected.label} · ${selected.hint}`}
-          aria-haspopup="listbox"
-          aria-expanded={showRuntimeDropdown}
-        >
-          <SelectedIcon size={12} aria-hidden />
-          {selected.label}
-        </button>
-        {showRuntimeDropdown && (
-          <div
-            className="input-status-mode-dropdown"
-            role="listbox"
-            aria-label={translate(
-              "composer.runtime.options",
-              "Runtime options",
-            )}
-          >
-            {runtimeOptions.map(({ value, label, hint, Icon }) => (
-              <button
-                key={value}
-                type="button"
-                className={`input-status-mode-option ${runtimePreference === value ? "active" : ""}`}
-                onClick={() => {
-                  setRuntimePreferenceSelection(value);
-                  setShowRuntimeDropdown(false);
-                }}
-                role="option"
-                aria-selected={runtimePreference === value}
-                title={hint}
-              >
-                <Icon size={14} aria-hidden />
-                <span>{label}</span>
-              </button>
-            ))}
           </div>
         )}
       </div>
@@ -8191,7 +8101,8 @@ function MainContentComponent({
   const [isCliInputFocused, setIsCliInputFocused] = useState(false);
   const [isPromptComposing, setIsPromptComposing] = useState(false);
   const isComposerSendBusy = isComposerSubmissionBusy({
-    isTaskWorking,
+    isTaskWorking: isFollowUpActive,
+    hasPendingFollowUpDispatch: activeFollowUpDispatchCount > 0,
     isUploadingAttachments,
     isPreparingMessage,
     isQueueingFollowUp,
@@ -8247,7 +8158,10 @@ function MainContentComponent({
   useEffect(() => {
     if (!composerDraftRequest) return;
 
+    composerDraftValueRef.current = composerDraftRequest.value;
     setInputValue(composerDraftRequest.value);
+    setHasLiveComposerDraft(Boolean(composerDraftRequest.value.trim()));
+    cacheComposerDraft(composerDraftCacheKeyRef.current, composerDraftRequest.value);
     setComposerSkillContext(
       composerDraftRequest.skillId
         ? {
@@ -8869,7 +8783,11 @@ function MainContentComponent({
   };
 
   const handleSend = async () => {
-    const isFollowUpQueueSubmission = Boolean(task?.id && isTaskWorking);
+    const submissionId = ++submissionSequenceRef.current;
+    const isCurrentSubmission = () => submissionSequenceRef.current === submissionId;
+    const isFollowUpQueueSubmission = Boolean(task?.id && isFollowUpActive);
+    let followUpDispatchStarted = false;
+    let followUpDispatchKey: string | null = null;
     if (isFollowUpQueueSubmission) {
       if (queueFollowUpInFlightRef.current) return;
     } else if (isUploadingAttachments || isPreparingMessage) {
@@ -9181,7 +9099,6 @@ function MainContentComponent({
             taskDomain,
             agentConfig: goalAgentConfig,
             ...createIntegrationMentionOptions,
-            ...composerRuntimeOverrides,
             ...activeComposerPermissionOverrides,
           },
           imagePayload,
@@ -9263,7 +9180,6 @@ function MainContentComponent({
                 executionMode: "plan",
                 taskDomain,
                 ...createIntegrationMentionOptions,
-                ...composerRuntimeOverrides,
                 ...activeComposerPermissionOverrides,
               }
             : shortcut.action === "review"
@@ -9275,7 +9191,6 @@ function MainContentComponent({
                   multitaskLaneCount: 4,
                   multitaskAssignmentMode: "auto_split",
                   ...createIntegrationMentionOptions,
-                  ...composerRuntimeOverrides,
                   ...activeComposerPermissionOverrides,
                 }
               : shortcut.action === "cost" || shortcut.action === "diagnostic"
@@ -9283,14 +9198,12 @@ function MainContentComponent({
                     executionMode: "analyze",
                     taskDomain,
                     ...createIntegrationMentionOptions,
-                    ...composerRuntimeOverrides,
                     ...activeComposerPermissionOverrides,
                   }
                 : {
                     executionMode: "plan",
                     taskDomain,
                     ...createIntegrationMentionOptions,
-                    ...composerRuntimeOverrides,
                     ...activeComposerPermissionOverrides,
                   };
         setComposerProcessingStage("creating");
@@ -9343,7 +9256,6 @@ function MainContentComponent({
         const modeOptions: CreateTaskOptions = {
           ...(executionModeDirty ? { executionMode } : {}),
           ...(taskDomainDirty ? { taskDomain } : {}),
-          ...composerRuntimeOverrides,
           chronicleMode: chronicleEnabledForTask ? "inherit" : "disabled",
           videoGenerationMode: taskDomain === "media" ? true : undefined,
           ...(executionModeDirty || clarifyingCheckinsEnabled || Boolean(composerSkillContext)
@@ -9399,14 +9311,36 @@ function MainContentComponent({
         // bubble is rendered immediately; delaying this clear duplicates the
         // submitted query in both the timeline and the composer.
         clearSubmittedComposerDraft();
-        await onSendMessage(message, imagePayload, quotedAssistantMessage ?? undefined, {
-          ...(executionModeDirty ? { executionMode } : {}),
-          ...(taskDomainDirty ? { taskDomain } : {}),
-          ...(composerSkillContext ? { requestedSkillId: composerSkillContext.skillId } : {}),
-          ...composerRuntimeOverrides,
-          integrationMentions: submittedIntegrationMentions,
-          ...activeComposerPermissionOverrides,
-        });
+        followUpDispatchStarted = true;
+        followUpDispatchKey = composerDraftCacheKeyRef.current;
+        setActiveFollowUpDispatchCount((count) => count + 1);
+        const followUpPromise = onSendMessage(
+          message,
+          imagePayload,
+          quotedAssistantMessage ?? undefined,
+          {
+            ...(executionModeDirty ? { executionMode } : {}),
+            ...(taskDomainDirty ? { taskDomain } : {}),
+            ...(composerSkillContext
+              ? { requestedSkillId: composerSkillContext.skillId }
+              : {}),
+            integrationMentions: submittedIntegrationMentions,
+            ...activeComposerPermissionOverrides,
+          },
+        );
+
+        // The IPC promise may remain pending until the whole Hermes turn
+        // finishes. The message has already been handed to the runtime, so
+        // local preparation must end now and the next message must remain
+        // sendable. The daemon owns FIFO ordering from this point onward.
+        setIsPreparingMessage(false);
+        setIsUploadingAttachments(false);
+        setComposerProcessingStage("idle");
+        if (isFollowUpQueueSubmission) {
+          queueFollowUpInFlightRef.current = false;
+          setIsQueueingFollowUp(false);
+        }
+        await followUpPromise;
       }
 
       const submittedWelcomeSuggestionDraft = activeWelcomeSuggestionDraft;
@@ -9441,32 +9375,46 @@ function MainContentComponent({
         setInputValue("");
         updateAttachmentDraftForKey(submittedAttachmentDraftKey, []);
       }
-      setComposerSkillContext(null);
-      setActiveWelcomeSuggestionDraft(null);
-      setQuotedAssistantMessage(null);
-      setMentionOpen(false);
-      setMentionQuery("");
-      setMentionTarget(null);
-      setModeSuggestions([]);
-      if (composerModeSelection === "auto") {
-        setExecutionModeDirty(false);
-        setTaskDomainDirty(false);
+      if (isCurrentSubmission()) {
+        setComposerSkillContext(null);
+        setActiveWelcomeSuggestionDraft(null);
+        setQuotedAssistantMessage(null);
+        setMentionOpen(false);
+        setMentionQuery("");
+        setMentionTarget(null);
+        setModeSuggestions([]);
+        if (composerModeSelection === "auto") {
+          setExecutionModeDirty(false);
+          setTaskDomainDirty(false);
+        }
       }
     } catch (error) {
       console.error("Failed to send message:", error);
       sendFailed = true;
-      restoreSubmittedComposerDraft();
+      if (isCurrentSubmission()) {
+        restoreSubmittedComposerDraft();
+      }
       const baseError = error instanceof Error ? error.message : "Failed to send message.";
-      reportAttachmentError(baseError);
+      if (isCurrentSubmission()) {
+        reportAttachmentError(baseError);
+      }
     } finally {
-      setIsUploadingAttachments(false);
-      setIsPreparingMessage(false);
-      setComposerProcessingStage("idle");
-      if (isFollowUpQueueSubmission) {
+      if (!followUpDispatchStarted) {
+        setIsUploadingAttachments(false);
+        setIsPreparingMessage(false);
+        setComposerProcessingStage("idle");
+      }
+      if (followUpDispatchStarted && followUpDispatchKey) {
+        const dispatchKey = followUpDispatchKey;
+        if (composerDraftCacheKeyRef.current === dispatchKey) {
+          setActiveFollowUpDispatchCount((count) => Math.max(0, count - 1));
+        }
+      }
+      if (isFollowUpQueueSubmission && !followUpDispatchStarted) {
         queueFollowUpInFlightRef.current = false;
         setIsQueueingFollowUp(false);
       }
-      if (!sendFailed) {
+      if (!sendFailed && isCurrentSubmission()) {
         setAttachmentError(null);
       }
     }
@@ -10428,7 +10376,6 @@ function MainContentComponent({
     onCreateTask(title, prompt, {
       executionMode: "plan",
       taskDomain: "auto",
-      ...composerRuntimeOverrides,
       ...composerPermissionOverrides,
     });
     setWelcomeTaskSuggestions((current) => current.filter((item) => item.id !== suggestion.id));
@@ -10894,7 +10841,9 @@ function MainContentComponent({
   const lastAssistantMessage = useMemo(() => {
     const assistantMessages = filteredEvents.filter((event) => {
       const effectiveType = getEffectiveTaskEventType(event);
-      if (effectiveType === "assistant_message") return true;
+      if (effectiveType === "assistant_message") {
+        return !isInternalAssistantMessage(event);
+      }
       return getCompletionSummaryText(event).length > 0;
     });
     return assistantMessages.length > 0 ? assistantMessages[assistantMessages.length - 1] : null;
@@ -12102,6 +12051,7 @@ function MainContentComponent({
                 <div className="mention-autocomplete-wrapper" ref={mentionContainerRef}>
                   {showCliPlaceholder && <TypewriterPlaceholder phrases={placeholderPlaylist} />}
                   <PromptComposerInput
+                    key={`welcome-composer:${composerDraftCacheKey}`}
                     ref={promptInputRef}
                     className={`welcome-input cli-input input-textarea${
                       !inputValue
@@ -12814,7 +12764,6 @@ function MainContentComponent({
                 </div>
                 <div className="input-status-right">
                   {renderComposerModeControl()}
-                  {renderComposerRuntimeControl()}
                   {FEATURE_VISIBILITY.capabilityCenter &&
                     composerModeSelection !== "chat" && (
                     <div className="skills-menu-container" ref={skillsMenuRef}>
@@ -13344,7 +13293,10 @@ function MainContentComponent({
             taskPrompt={task.userPrompt || task.rawPrompt || task.prompt || task.title}
           />
         )}
-        <TaskFollowUpQueue taskId={remoteSession ? null : selectedTaskId} active={isTaskWorking} />
+        <TaskFollowUpQueue
+          taskId={remoteSession ? null : selectedTaskId}
+          active={isFollowUpActive}
+        />
         <div
           className={`input-container session-composer ${isDraggingFiles ? "drag-over" : ""} ${collaborativeRun && (onOpenChildAgentSidebar || onSelectChildTask) ? "input-container-with-agents" : ""}`}
           onDragOver={handleDragOver}
@@ -13684,6 +13636,7 @@ function MainContentComponent({
             </div>
             <div className="mention-autocomplete-wrapper" ref={mentionContainerRef}>
               <PromptComposerInput
+                key={`session-composer:${composerDraftCacheKey}`}
                 ref={promptInputRef}
                 className="input-field input-textarea"
                 placeholder={agentContext.getMessage("placeholderActive")}
@@ -13753,7 +13706,7 @@ function MainContentComponent({
                   />
                 )}
               </button>
-              {isTaskWorkingForDuration && onStopTask ? (
+              {isFollowUpActive && onStopTask ? (
                 <div className="task-control-buttons">
                   <button
                     className={`queue-follow-up-btn${
@@ -13854,7 +13807,6 @@ function MainContentComponent({
           </div>
           <div className="input-status-right">
             {renderComposerModeControl()}
-            {renderComposerRuntimeControl()}
             {FEATURE_VISIBILITY.capabilityCenter && composerModeSelection !== "chat" && (
               <div className="skills-menu-container" ref={skillsMenuRef}>
                 <button

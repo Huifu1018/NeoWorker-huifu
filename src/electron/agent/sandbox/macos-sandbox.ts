@@ -14,6 +14,7 @@ import * as fs from "fs";
 import * as os from "os";
 import { Workspace } from "../../../shared/types";
 import { ISandbox, SandboxType, SandboxOptions, SandboxResult, isSafeEnvironmentKey } from "./sandbox-factory";
+import { resolveBundledOfficeCliExecutable } from "../../utils/officecli-runtime";
 import {
   createSecureTempFile,
   escapeSandboxProfileString,
@@ -432,7 +433,12 @@ export class MacOSSandbox implements ISandbox {
     safeEnv.LANG = process.env.LANG || "en_US.UTF-8";
     safeEnv.TMPDIR = os.tmpdir();
 
+    const bundledOfficeCli = resolveBundledOfficeCliExecutable();
+    const bundledOfficeCliDirectory = bundledOfficeCli
+      ? path.dirname(bundledOfficeCli)
+      : undefined;
     safeEnv.PATH = [
+      bundledOfficeCliDirectory,
       "/opt/homebrew/bin",
       "/opt/homebrew/sbin",
       "/usr/local/bin",
@@ -440,7 +446,9 @@ export class MacOSSandbox implements ISandbox {
       "/bin",
       "/usr/sbin",
       "/sbin",
-    ].join(":");
+    ]
+      .filter((entry): entry is string => Boolean(entry))
+      .join(":");
 
     // Allow task-scoped variables without inheriting the host environment.
     // Keep the fixed runtime variables above authoritative so a task cannot

@@ -76,6 +76,37 @@ class HostLauncherTests(unittest.TestCase):
         launcher.host_owned_agent_kwargs(original)
         self.assertEqual(original["enabled_toolsets"], ["hermes-acp"])
 
+    def test_uses_neoworker_provider_settings_instead_of_hermes_config(self):
+        with patch.dict(
+            launcher.os.environ,
+            {
+                "NEOWORKER_HERMES_PROVIDER": "deepseek",
+                "NEOWORKER_HERMES_MODEL": "deepseek-chat",
+                "NEOWORKER_HERMES_API_MODE": "chat_completions",
+                "NEOWORKER_HERMES_BASE_URL": "https://api.deepseek.com",
+                "NEOWORKER_HERMES_API_KEY": "secret-from-neoworker",
+            },
+        ):
+            result = launcher.host_owned_agent_kwargs(
+                {
+                    "platform": "acp",
+                    "model": "model-from-hermes",
+                    "provider": "provider-from-hermes",
+                    "base_url": "https://hermes-config.example",
+                    "api_key": "hermes-secret",
+                    "command": "external-provider",
+                    "args": ["--from-hermes"],
+                }
+            )
+
+        self.assertEqual(result["provider"], "deepseek")
+        self.assertEqual(result["model"], "deepseek-chat")
+        self.assertEqual(result["api_mode"], "chat_completions")
+        self.assertEqual(result["base_url"], "https://api.deepseek.com")
+        self.assertEqual(result["api_key"], "secret-from-neoworker")
+        self.assertIsNone(result["command"])
+        self.assertEqual(result["args"], [])
+
     def test_surfaces_a_provider_failure_as_structured_acp_metadata(self):
         run_agent = types.ModuleType("run_agent")
 

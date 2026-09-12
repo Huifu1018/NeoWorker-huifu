@@ -14,6 +14,7 @@ const ZH_EXACT_PROGRESS_TEXT: Record<string, string> = {
   "awaiting approval": "等待审批",
   "awaiting instruction": "等待指令",
   "beginning task.": "开始任务。",
+  blocked: "阻塞",
   building: "构建中",
   cancelled: "已取消",
   "collect details from you": "向你收集细节",

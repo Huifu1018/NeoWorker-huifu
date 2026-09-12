@@ -2998,7 +2998,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
       activeArtifactContext?: import("../shared/types").ActiveArtifactContext;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
-      runtimePreference?: import("../shared/types").TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;
@@ -3019,9 +3018,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
         ? { executionMode: options.executionMode }
         : {}),
       ...(options?.taskDomain ? { taskDomain: options.taskDomain } : {}),
-      ...(options?.runtimePreference
-        ? { runtimePreference: options.runtimePreference }
-        : {}),
       ...(options?.requestedSkillId
         ? { requestedSkillId: options.requestedSkillId }
         : {}),
@@ -6907,7 +6903,6 @@ export interface ElectronAPI {
       activeArtifactContext?: import("../shared/types").ActiveArtifactContext;
       executionMode?: ExecutionMode;
       taskDomain?: TaskDomain;
-      runtimePreference?: import("../shared/types").TaskRuntimePreference;
       requestedSkillId?: string;
       permissionMode?: PermissionMode;
       shellAccess?: boolean;
@@ -7433,18 +7428,18 @@ export interface ElectronAPI {
   // Search Settings
   getSearchSettings: () => Promise<{
     primaryProvider:
-      "tavily" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
     fallbackProvider:
-      "tavily" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
   }>;
   saveSearchSettings: (settings: Any) => Promise<{ success: boolean }>;
   getSearchConfigStatus: () => Promise<{
     primaryProvider:
-      "tavily" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
     fallbackProvider:
-      "tavily" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
     providers: Array<{
-      type: "tavily" | "brave" | "serpapi" | "google" | "duckduckgo";
+      type: "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo";
       name: string;
       description: string;
       configured: boolean;

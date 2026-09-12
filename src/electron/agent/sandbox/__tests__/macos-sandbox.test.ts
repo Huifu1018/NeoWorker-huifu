@@ -1,5 +1,7 @@
 import { EventEmitter } from "events";
 import fs from "fs";
+import os from "os";
+import path from "path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { ChildProcess } from "child_process";
 import type { Workspace } from "../../../../shared/types";
@@ -91,6 +93,39 @@ describe("MacOSSandbox", () => {
     expect(bin).toBe("sandbox-exec");
     expect(args.slice(2)).toEqual(["/bin/sh", "-c", command]);
     expect(options.shell).toBe(false);
+  });
+
+  it("puts the packaged OfficeCLI directory on the sandbox PATH", async () => {
+    const resourcesRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-officecli-resource-"),
+    );
+    const officeCliDirectory = path.join(resourcesRoot, "officecli");
+    fs.mkdirSync(officeCliDirectory, { recursive: true });
+    fs.writeFileSync(path.join(officeCliDirectory, "officecli"), "");
+
+    const previousResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+    Object.defineProperty(process, "resourcesPath", {
+      configurable: true,
+      value: resourcesRoot,
+    });
+
+    const proc = makeChildProcess();
+    spawnMock.mockImplementationOnce(() => proc);
+    try {
+      const resultPromise = new MacOSSandbox(makeWorkspace()).execute("which officecli", [], {
+        cwd: "/tmp/neoworker workspace",
+        timeout: 1000,
+      });
+      const [, , options] = spawnMock.mock.calls[0];
+      expect(options.env.PATH.split(":")[0]).toBe(officeCliDirectory);
+      await expect(resultPromise).resolves.toMatchObject({ exitCode: 0 });
+    } finally {
+      Object.defineProperty(process, "resourcesPath", {
+        configurable: true,
+        value: previousResourcesPath,
+      });
+      fs.rmSync(resourcesRoot, { recursive: true, force: true });
+    }
   });
 
   it("passes explicit command arguments directly through sandbox-exec", async () => {

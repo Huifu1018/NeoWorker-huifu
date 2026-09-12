@@ -72,11 +72,52 @@ export type WorkspaceFile = {
   id: string;
   name: string;
   path: string;
+  source?: string;
   mimeType?: string;
   size?: number;
   modifiedAt?: number;
   isDirectory?: boolean;
 };
+
+function normalizeWorkspaceFileEntry(
+  entry: Any,
+  fallbackSource: string,
+): WorkspaceFile | null {
+  const filePath = String(entry?.path || "");
+  if (!filePath) return null;
+  return {
+    id: typeof entry?.id === "string" ? entry.id : filePath,
+    name: String(entry?.name || fileName(filePath)),
+    path: filePath,
+    source: typeof entry?.source === "string" ? entry.source : fallbackSource,
+    mimeType: typeof entry?.mimeType === "string" ? entry.mimeType : undefined,
+    size: typeof entry?.size === "number" ? entry.size : undefined,
+    modifiedAt:
+      typeof entry?.modifiedAt === "number" ? entry.modifiedAt : undefined,
+    isDirectory: Boolean(entry?.isDirectory),
+  };
+}
+
+export function mergeWorkspaceBrowserFiles(
+  localFiles: WorkspaceFile[],
+  artifactFiles: WorkspaceFile[],
+  workspacePath?: string,
+): WorkspaceFile[] {
+  const merged: WorkspaceFile[] = [];
+  const seenKeys = new Set<string>();
+  const add = (file: WorkspaceFile) => {
+    const key =
+      getArtifactPathIdentityKey(file.path, workspacePath) ||
+      file.path.toLowerCase();
+    if (!key || seenKeys.has(key)) return;
+    seenKeys.add(key);
+    merged.push(file);
+  };
+
+  localFiles.forEach(add);
+  artifactFiles.forEach(add);
+  return merged;
+}
 
 export function derivePromotedWorkspaceOutputs(options: {
   isWorkspaceRoot: boolean;
@@ -247,6 +288,7 @@ export type SessionTaskNode = {
 
 export type SessionConversationRound = {
   id: string;
+  taskId?: string;
   turnId: string;
   userText: string;
   assistantText?: string;
@@ -272,20 +314,72 @@ function normalizeConversationText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function payloadString(
+  payload: TaskEvent["payload"] | undefined,
+  key: string,
+): string {
+  if (!payload || typeof payload !== "object") return "";
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function payloadNestedString(
+  payload: TaskEvent["payload"] | undefined,
+  key: string,
+  nestedKey: string,
+): string {
+  if (!payload || typeof payload !== "object") return "";
+  const nested = (payload as Record<string, unknown>)[key];
+  if (!nested || typeof nested !== "object") return "";
+  const value = (nested as Record<string, unknown>)[nestedKey];
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function eventConversationText(event: TaskEvent): string {
   const effectiveType = getEffectiveTaskEventType(event);
   if (
     effectiveType === "user_message" ||
     effectiveType === "assistant_message"
   ) {
-    return typeof event.payload?.message === "string"
-      ? event.payload.message.trim()
-      : "";
+    return payloadString(event.payload, "message");
+  }
+  if (effectiveType === "follow_up_started") {
+    return (
+      payloadString(event.payload, "followUpMessage") ||
+      payloadString(event.payload, "message")
+    );
   }
   return "";
 }
 
-export function buildSessionConversationRounds(
+function eventCompletionConversationText(event: TaskEvent): string {
+  const effectiveType = getEffectiveTaskEventType(event);
+  if (
+    effectiveType === "task_completed" ||
+    effectiveType === "follow_up_completed"
+  ) {
+    return (
+      payloadString(event.payload, "resultSummary") ||
+      payloadString(event.payload, "semanticSummary") ||
+      payloadNestedString(event.payload, "bestKnownOutcome", "resultSummary") ||
+      payloadString(event.payload, "message")
+    );
+  }
+  if (
+    effectiveType === "task_failed" ||
+    effectiveType === "follow_up_failed" ||
+    effectiveType === "task_cancelled"
+  ) {
+    return (
+      payloadString(event.payload, "error") ||
+      payloadString(event.payload, "message") ||
+      payloadString(event.payload, "reason")
+    );
+  }
+  return "";
+}
+
+function buildTaskConversationRounds(
   events: TaskEvent[],
   task?: Task,
 ): SessionConversationRound[] {
@@ -318,7 +412,10 @@ export function buildSessionConversationRounds(
 
   for (const event of orderedEvents) {
     const effectiveType = getEffectiveTaskEventType(event);
-    if (effectiveType === "user_message") {
+    if (
+      effectiveType === "user_message" ||
+      effectiveType === "follow_up_started"
+    ) {
       const userText = eventConversationText(event);
       if (!userText) continue;
       const normalizedCurrentText = normalizeConversationText(
@@ -331,9 +428,35 @@ export function buildSessionConversationRounds(
           normalizedCurrentText.startsWith(normalizedUserText) ||
           normalizedUserText.startsWith(normalizedCurrentText));
       if (repeatsSyntheticPrompt && current) {
+        if (effectiveType === "user_message") {
+          current.id = event.id;
+          current.timestamp = event.timestamp;
+          current.synthetic = false;
+        }
+        continue;
+      }
+      if (
+        current?.synthetic &&
+        !current.assistantText &&
+        !current.completed &&
+        !current.failed
+      ) {
         current.id = event.id;
+        current.turnId = `event:${event.id}`;
+        current.userText = userText;
         current.timestamp = event.timestamp;
         current.synthetic = false;
+        continue;
+      }
+      const repeatsPendingUserMessage =
+        effectiveType === "follow_up_started" &&
+        current &&
+        !current.synthetic &&
+        !current.assistantText &&
+        !current.completed &&
+        !current.failed &&
+        normalizedCurrentText === normalizedUserText;
+      if (repeatsPendingUserMessage) {
         continue;
       }
       finishCurrent();
@@ -359,6 +482,10 @@ export function buildSessionConversationRounds(
       effectiveType === "task_completed" ||
       effectiveType === "follow_up_completed"
     ) {
+      if (!current.assistantText) {
+        const completionText = eventCompletionConversationText(event);
+        if (completionText) current.assistantText = completionText;
+      }
       current.completed = true;
       continue;
     }
@@ -367,6 +494,10 @@ export function buildSessionConversationRounds(
       effectiveType === "follow_up_failed" ||
       effectiveType === "task_cancelled"
     ) {
+      if (!current.assistantText) {
+        const failureText = eventCompletionConversationText(event);
+        if (failureText) current.assistantText = failureText;
+      }
       current.failed = true;
     }
   }
@@ -393,6 +524,43 @@ export function buildSessionConversationRounds(
             ? "working"
             : "waiting",
     };
+  });
+}
+
+export function buildSessionConversationRounds(
+  events: TaskEvent[],
+  task?: Task,
+  sessionTasks: Task[] = [],
+): SessionConversationRound[] {
+  const uniqueSessionTasks = new Map(
+    sessionTasks
+      .filter(
+        (sessionTask) =>
+          Boolean(sessionTask?.id) &&
+          sessionTask.agentType !== "sub" &&
+          sessionTask.agentType !== "parallel",
+      )
+      .map((sessionTask) => [sessionTask.id, sessionTask]),
+  );
+  if (task?.id) {
+    uniqueSessionTasks.set(task.id, task);
+  }
+  if (uniqueSessionTasks.size <= 1) {
+    return buildTaskConversationRounds(events, task);
+  }
+
+  const rounds = Array.from(uniqueSessionTasks.values()).flatMap(
+    (sessionTask) =>
+      buildTaskConversationRounds(events, sessionTask).map((round) => ({
+        ...round,
+        taskId: sessionTask.id,
+      })),
+  );
+  return rounds.sort((left, right) => {
+    if (left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp;
+    }
+    return left.id.localeCompare(right.id);
   });
 }
 
@@ -557,6 +725,11 @@ function sessionTextPreview(text: string, limit = 220): string {
     : cleaned;
 }
 
+const SESSION_CONVERSATION_TASK_LIMIT = 24;
+const SESSION_CONVERSATION_EVENT_LIMIT = 160;
+const SESSION_CONVERSATION_BYTE_LIMIT = 512 * 1024;
+const SESSION_CONVERSATION_SINGLE_EVENT_BYTE_LIMIT = 64 * 1024;
+
 function SessionConversationRoundCard({
   round,
   index,
@@ -566,7 +739,7 @@ function SessionConversationRoundCard({
   round: SessionConversationRound;
   index: number;
   initiallyOpen: boolean;
-  onNavigate: (turnId: string) => void;
+  onNavigate: (round: SessionConversationRound) => void;
 }) {
   const [isOpen, setIsOpen] = useState(initiallyOpen);
   const answerId = `project-session-round-answer-${round.id.replace(
@@ -587,7 +760,7 @@ function SessionConversationRoundCard({
             "Jump to conversation round {round}",
             { round: index + 1 },
           )}
-          onClick={() => onNavigate(round.turnId)}
+          onClick={() => onNavigate(round)}
         >
           <span className="project-session-round-index">{index + 1}</span>
           <span className="project-session-round-copy">
@@ -1011,12 +1184,23 @@ export function ProjectContextPanel({
     () => new Set(),
   );
   const [projectName, setProjectName] = useState<string | null>(null);
+  const [sessionTaskEvents, setSessionTaskEvents] = useState<
+    Record<string, TaskEvent[]>
+  >({});
   const handleNavigateConversationRound = useCallback(
-    (turnId: string) => {
-      if (!task?.id) return;
-      requestConversationTurnNavigation({ taskId: task.id, turnId });
+    (round: SessionConversationRound) => {
+      const targetTaskId = round.taskId || task?.id;
+      if (!targetTaskId) return;
+      if (targetTaskId !== task?.id) {
+        onSelectTask?.(targetTaskId);
+        return;
+      }
+      requestConversationTurnNavigation({
+        taskId: targetTaskId,
+        turnId: round.turnId,
+      });
     },
-    [task?.id],
+    [onSelectTask, task?.id],
   );
 
   useLayoutEffect(() => {
@@ -1050,6 +1234,116 @@ export function ProjectContextPanel({
     },
     [],
   );
+
+  const sessionConversationTasks = useMemo(() => {
+    const candidates = sessionTasks.length > 0 ? sessionTasks : task ? [task] : [];
+    const unique = new Map(
+      candidates
+        .filter(
+          (candidate) =>
+            candidate.agentType !== "sub" && candidate.agentType !== "parallel",
+        )
+        .map((candidate) => [candidate.id, candidate]),
+    );
+    if (task?.id && !unique.has(task.id)) unique.set(task.id, task);
+
+    const ordered = [...unique.values()].sort(
+      (left, right) => left.createdAt - right.createdAt,
+    );
+    if (ordered.length <= SESSION_CONVERSATION_TASK_LIMIT) return ordered;
+
+    const recent = ordered.slice(-SESSION_CONVERSATION_TASK_LIMIT);
+    if (task && !recent.some((candidate) => candidate.id === task.id)) {
+      recent[0] = task;
+      recent.sort((left, right) => left.createdAt - right.createdAt);
+    }
+    return recent;
+  }, [sessionTasks, task]);
+
+  const sessionConversationTaskKey = useMemo(
+    () =>
+      sessionConversationTasks
+        .map(
+          (sessionTask) =>
+            `${sessionTask.id}:${sessionTask.updatedAt}:${sessionTask.status}`,
+        )
+        .join("|"),
+    [sessionConversationTasks],
+  );
+
+  useEffect(() => {
+    if (activeTab !== "session") return;
+    const tasksToLoad = sessionConversationTasks.filter(
+      (sessionTask) => sessionTask.id !== task?.id,
+    );
+    if (tasksToLoad.length === 0) return;
+    if (
+      !window.electronAPI?.getTaskTimelinePage &&
+      !window.electronAPI?.getTaskEvents
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    const loadSessionTaskEvents = async () => {
+      const loadedEntries = await Promise.all(
+        tasksToLoad.map(async (sessionTask) => {
+          let loadedEvents: TaskEvent[] = [];
+          if (window.electronAPI?.getTaskTimelinePage) {
+            try {
+              const timelinePage = await window.electronAPI.getTaskTimelinePage({
+                taskId: sessionTask.id,
+                limit: SESSION_CONVERSATION_EVENT_LIMIT,
+                byteLimit: SESSION_CONVERSATION_BYTE_LIMIT,
+                singleEventByteLimit:
+                  SESSION_CONVERSATION_SINGLE_EVENT_BYTE_LIMIT,
+              });
+              loadedEvents = Array.isArray(timelinePage?.events)
+                ? timelinePage.events
+                : [];
+            } catch {
+              // Older preload/main pairs may not expose the projected page.
+            }
+          }
+          if (loadedEvents.length === 0 && window.electronAPI?.getTaskEvents) {
+            try {
+              const legacyEvents = await window.electronAPI.getTaskEvents(
+                sessionTask.id,
+              );
+              loadedEvents = Array.isArray(legacyEvents) ? legacyEvents : [];
+            } catch {
+              // Keep the task prompt visible even when history is unavailable.
+            }
+          }
+          return [sessionTask.id, loadedEvents] as const;
+        }),
+      );
+      if (cancelled) return;
+
+      setSessionTaskEvents((previous) => {
+        const allowedTaskIds = new Set(tasksToLoad.map((item) => item.id));
+        const next = Object.fromEntries(
+          Object.entries(previous).filter(([taskId]) =>
+            allowedTaskIds.has(taskId),
+          ),
+        ) as Record<string, TaskEvent[]>;
+        for (const [taskId, loadedEvents] of loadedEntries) {
+          next[taskId] = loadedEvents;
+        }
+        return next;
+      });
+    };
+
+    void loadSessionTaskEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTab,
+    sessionConversationTaskKey,
+    sessionConversationTasks,
+    task?.id,
+  ]);
 
   const taskUi = useMemo(
     () =>
@@ -1102,13 +1396,67 @@ export function ProjectContextPanel({
     }
     setIsLoadingFiles(true);
     try {
-      const files = await window.electronAPI.listHubFiles({
+      const workspaceId = workspace?.id;
+      const workspacePath = workspace?.path;
+      const isWorkspaceRoot =
+        Boolean(workspacePath) && currentFolderPath === workspacePath;
+      const sessionArtifactTaskIds =
+        isWorkspaceRoot &&
+        workspaceId &&
+        (workspace?.isTemp === true || isTempWorkspaceId(workspaceId))
+          ? Array.from(
+              new Set(
+                (sessionTasks.length > 0 ? sessionTasks : task ? [task] : [])
+                  .map((item) => item?.id)
+                  .filter(
+                    (id): id is string =>
+                      typeof id === "string" && id.length > 0,
+                  ),
+              ),
+            )
+          : [];
+      const localFilesRequest = window.electronAPI.listHubFiles({
         source: "local",
         path: currentFolderPath,
         limit: 250,
       });
+      const artifactRequests =
+        isWorkspaceRoot && workspaceId
+          ? [
+              window.electronAPI.listHubFiles({
+                source: "artifacts",
+                workspaceId,
+                path: workspacePath,
+                limit: 250,
+              }),
+              ...sessionArtifactTaskIds.map((taskId) =>
+                window.electronAPI.listHubFiles({
+                  source: "artifacts",
+                  taskId,
+                  limit: 50,
+                }),
+              ),
+            ]
+          : [];
+      const [localEntries, artifactEntryGroups] = await Promise.all([
+        localFilesRequest,
+        artifactRequests.length > 0
+          ? Promise.all(artifactRequests)
+          : Promise.resolve([]),
+      ]);
+      const artifactEntries = artifactEntryGroups.flatMap((entries) =>
+        Array.isArray(entries) ? entries : [],
+      );
+      const localFiles = (Array.isArray(localEntries) ? localEntries : [])
+        .map((entry) => normalizeWorkspaceFileEntry(entry, "local"))
+        .filter((entry): entry is WorkspaceFile => Boolean(entry));
+      const artifactFiles = artifactEntries
+        .map((entry) => normalizeWorkspaceFileEntry(entry, "artifacts"))
+        .filter((entry): entry is WorkspaceFile => Boolean(entry));
       if (requestId !== workspaceFilesRequestRef.current) return;
-      setWorkspaceFiles(Array.isArray(files) ? files : []);
+      setWorkspaceFiles(
+        mergeWorkspaceBrowserFiles(localFiles, artifactFiles, workspacePath),
+      );
       setWorkspaceFilesError(null);
     } catch (error) {
       if (requestId !== workspaceFilesRequestRef.current) return;
@@ -1128,7 +1476,14 @@ export function ProjectContextPanel({
         setIsLoadingFiles(false);
       }
     }
-  }, [currentFolderPath]);
+  }, [
+    currentFolderPath,
+    sessionTasks,
+    task,
+    workspace?.id,
+    workspace?.isTemp,
+    workspace?.path,
+  ]);
 
   const workspaceArtifactRefreshKey = useMemo(
     () =>
@@ -1290,6 +1645,7 @@ export function ProjectContextPanel({
         (file) =>
           canGoBack ||
           file.isDirectory ||
+          file.source === "artifacts" ||
           (!copiedSourceFileKeys.has(
             getArtifactPathIdentityKey(file.path, workspace?.path),
           ) &&
@@ -1347,9 +1703,23 @@ export function ProjectContextPanel({
       ),
     [sessionTasks, task],
   );
+  const conversationEvents = useMemo(
+    () =>
+      sessionConversationTasks.flatMap((sessionTask) =>
+        sessionTask.id === task?.id
+          ? events
+          : sessionTaskEvents[sessionTask.id] || [],
+      ),
+    [events, sessionConversationTasks, sessionTaskEvents, task?.id],
+  );
   const conversationRounds = useMemo(
-    () => buildSessionConversationRounds(events, task),
-    [events, task],
+    () =>
+      buildSessionConversationRounds(
+        conversationEvents,
+        task,
+        sessionConversationTasks,
+      ),
+    [conversationEvents, sessionConversationTasks, task],
   );
   const relatedSessionNodes = useMemo(
     () => sessionNodes.filter((node) => node.task.id !== task?.id),

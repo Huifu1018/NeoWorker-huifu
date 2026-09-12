@@ -168,6 +168,7 @@ export function normalizePresentationArtifactInput(input: InputRecord): any {
 
   return {
     filename: input?.filename,
+    sourcePath: input?.sourcePath,
     generationMode: input?.generationMode,
     presentationWorkflow: input?.presentationWorkflow,
     workflowArtifactRoot: input?.workflowArtifactRoot,

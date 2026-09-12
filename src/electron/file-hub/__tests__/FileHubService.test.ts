@@ -109,6 +109,39 @@ describe("FileHubService", () => {
     expect(files[0].source).toBe("artifacts");
   });
 
+  it("passes workspace filters through to artifact listing", async () => {
+    const getArtifacts = vi.fn(() => [
+      {
+        id: "a2",
+        path: "/output/workspace-report.pdf",
+        mimeType: "application/pdf",
+        size: 1200,
+        createdAt: 123,
+        taskId: "t2",
+      },
+    ]);
+    const service = new FileHubService(makeDeps({ getArtifacts }));
+
+    const files = await service.listFiles({
+      source: "artifacts",
+      workspaceId: "workspace-1",
+      limit: 10,
+    });
+
+    expect(getArtifacts).toHaveBeenCalledWith({
+      taskId: undefined,
+      workspaceId: "workspace-1",
+      limit: 10,
+    });
+    expect(files[0]).toMatchObject({
+      name: "workspace-report.pdf",
+      source: "artifacts",
+      mimeType: "application/pdf",
+      modifiedAt: 123,
+      metadata: { taskId: "t2" },
+    });
+  });
+
   // ── Search ────────────────────────────────────────────────────
 
   it("searches files by name", async () => {

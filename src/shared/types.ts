@@ -1944,7 +1944,13 @@ export type ExecutionModeSource = "user" | "strategy" | "auto_promote";
 export type ExternalRuntimePermissionMode =
   "approve-reads" | "approve-all" | "deny-all";
 export type ExternalRuntimeAgent = "codex" | "claude" | "hermes";
-/** Task-level preference for choosing NeoWorker's agent loop. */
+/**
+ * Legacy task-level runtime metadata.
+ *
+ * New tasks are always created with the embedded Hermes ACP Harness. This
+ * field remains readable so historical tasks and older integrations can be
+ * resumed without rewriting their persisted configuration.
+ */
 export type TaskRuntimePreference = "auto" | "hermes" | "native";
 
 export interface ExternalRuntimeConfig {
@@ -2293,10 +2299,8 @@ export interface AgentConfig {
   /** Optional external runtime for delegated coding-agent tasks. */
   externalRuntime?: ExternalRuntimeConfig;
   /**
-   * Preferred agent loop for this task.
-   * - auto: route complex work to Hermes and keep simple work native.
-   * - hermes: require the Hermes ACP Harness.
-   * - native: require NeoWorker's native loop.
+   * Legacy runtime metadata. New tasks use the embedded Hermes ACP Harness;
+   * this field is retained for old task rows and compatibility integrations.
    */
   runtimePreference?: TaskRuntimePreference;
   /**
@@ -3259,7 +3263,7 @@ export interface TaskFollowUpInput {
   executionMode?: ExecutionMode;
   /** Domain selected in the composer for this follow-up turn. */
   taskDomain?: TaskDomain;
-  /** Agent-loop preference selected for this follow-up turn. */
+  /** Legacy runtime metadata accepted from older integrations. */
   runtimePreference?: TaskRuntimePreference;
   /** Skill explicitly selected for the next turn of the current task. */
   requestedSkillId?: string;

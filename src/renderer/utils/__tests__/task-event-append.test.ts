@@ -16,9 +16,11 @@ function makeEvent(
     id:
       overrides.id ??
       `${overrides.taskId}:${overrides.type}:${overrides.timestamp}`,
+    ...(overrides.eventId ? { eventId: overrides.eventId } : {}),
     taskId: overrides.taskId,
     type: overrides.type,
     timestamp: overrides.timestamp,
+    ...(typeof overrides.seq === "number" ? { seq: overrides.seq } : {}),
     payload: overrides.payload ?? {},
     schemaVersion: overrides.schemaVersion ?? 2,
     ...(overrides.stepId ? { stepId: overrides.stepId } : {}),
@@ -190,6 +192,31 @@ describe("appendRendererTaskEvents", () => {
     ).toBeDefined();
   });
 
+  it("replaces existing events by durable eventId even when renderer id changes", () => {
+    const original = makeEvent({
+      id: "renderer-1",
+      eventId: "durable-event-1",
+      taskId: "t1",
+      type: "assistant_message",
+      timestamp: 10,
+      payload: { message: "old" },
+    });
+    const updated = makeEvent({
+      id: "renderer-2",
+      eventId: "durable-event-1",
+      taskId: "t1",
+      type: "assistant_message",
+      timestamp: 10,
+      payload: { message: "new" },
+    });
+
+    const result = appendRendererTaskEvents([original], [updated]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("renderer-2");
+    expect((result[0].payload as Record<string, unknown>).message).toBe("new");
+  });
+
   it("appends event with new ID that does not match any existing event", () => {
     const prev = [
       makeEvent({
@@ -243,6 +270,62 @@ describe("appendRendererTaskEvents", () => {
     expect(result[1].type).toBe("progress_update");
     expect(result[1].timestamp).toBe(2);
     expect(result[2].type).toBe("task_completed");
+  });
+
+  it("inserts late-arriving events into chronological order", () => {
+    const prev = [
+      makeEvent({ taskId: "t1", type: "user_message", timestamp: 100 }),
+      makeEvent({ taskId: "t1", type: "task_completed", timestamp: 300 }),
+    ];
+    const artifact = makeEvent({
+      taskId: "t1",
+      type: "artifact_created",
+      timestamp: 200,
+      payload: { path: "/tmp/report.pdf" },
+    });
+
+    const result = appendRendererTaskEvents(prev, [artifact]);
+
+    expect(result.map((event) => event.type)).toEqual([
+      "user_message",
+      "artifact_created",
+      "task_completed",
+    ]);
+  });
+
+  it("keeps sequence order when a transient replacement timestamp changes", () => {
+    const progress = makeEvent({
+      taskId: "t1",
+      type: "progress_update",
+      seq: 1,
+      timestamp: 5,
+      stepId: "s1",
+      payload: { stage: "working", message: "old" },
+    });
+    const completion = makeEvent({
+      taskId: "t1",
+      type: "task_completed",
+      seq: 2,
+      timestamp: 10,
+    });
+    const replacement = makeEvent({
+      taskId: "t1",
+      type: "progress_update",
+      seq: 1,
+      timestamp: 12,
+      stepId: "s1",
+      payload: { stage: "working", message: "new" },
+    });
+
+    const result = appendRendererTaskEvents([progress, completion], [
+      replacement,
+    ]);
+
+    expect(result.map((event) => event.type)).toEqual([
+      "progress_update",
+      "task_completed",
+    ]);
+    expect((result[0].payload as Record<string, unknown>).message).toBe("new");
   });
 });
 
