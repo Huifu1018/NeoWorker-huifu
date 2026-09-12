@@ -71,6 +71,22 @@ describe("buildActionBlockSummary", () => {
     expect(summary.summary).toBe("Created 1 file, edited 2 files");
   });
 
+  it("does not count internal office checkpoints as user-created files", () => {
+    const summary = buildActionBlockSummary([
+      event("checkpoint", "tool_call", 1000, {
+        tool: "write_file",
+        input: { path: "s1_r01_05.json" },
+      }),
+      event("output", "tool_call", 1100, {
+        tool: "write_file",
+        input: { path: "translated.xlsx" },
+      }),
+    ]);
+
+    expect(summary.summary).toBe("Created 1 file");
+    expect(summary.toolCallCount).toBe(2);
+  });
+
   it("uses approval icon before command activity", () => {
     const summary = buildActionBlockSummary([
       event("approval-1", "approval_granted", 1000),

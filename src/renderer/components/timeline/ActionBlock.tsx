@@ -32,6 +32,7 @@ import {
   isRecoverableWebSourceFailure,
   isWebSourceTool,
 } from "../../../shared/web-source-failure";
+import { isInternalWorkspaceProcessPath } from "../../utils/task-artifact-visibility";
 
 export type ActionBlockIconKind =
   | "explore"
@@ -95,6 +96,23 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function getToolFilePath(payload: Record<string, unknown>): string | null {
+  const input = asObject(payload.input);
+  const result = asObject(payload.result);
+  const candidate = [
+    input.path,
+    input.filename,
+    input.filePath,
+    input.file_path,
+    input.destPath,
+    input.destination,
+    result.path,
+    result.filename,
+    payload.path,
+  ].find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof candidate === "string" ? candidate : null;
 }
 
 function collectStepActionText(event: TaskEvent): string {
@@ -322,6 +340,8 @@ export function buildActionBlockSummary(
   let successfulWebSourceCount = 0;
   let successfulWebRetrievalCount = 0;
   let successfulToolResultCount = 0;
+  let createdFileToolCount = 0;
+  let editedFileToolCount = 0;
 
   const blockStart = events[0]?.timestamp ?? 0;
   let blockEnd = events[events.length - 1]?.timestamp ?? 0;
@@ -358,6 +378,19 @@ export function buildActionBlockSummary(
         )
       : events;
 
+  const internalProcessToolCorrelationIds = new Set<string>();
+  for (const event of eventsInRange) {
+    if (getEffectiveTaskEventType(event) !== "tool_call") continue;
+    const payload = asObject(event.payload);
+    const tool = typeof payload.tool === "string" ? payload.tool : "";
+    if (tool !== "write_file" && tool !== "edit_file") continue;
+    const filePath = getToolFilePath(payload);
+    if (!filePath || !isInternalWorkspaceProcessPath(filePath)) continue;
+    internalProcessToolCorrelationIds.add(
+      eventCorrelationKey(event, payload, asObject(payload.step)),
+    );
+  }
+
   for (const event of eventsInRange) {
     const effectiveType = getEffectiveTaskEventType(event);
     const payload = asObject(event.payload);
@@ -373,6 +406,15 @@ export function buildActionBlockSummary(
       (typeof step.id === "string" && step.id.trim().length > 0);
     if (effectiveType === "tool_call" && tool) {
       toolCounts.set(tool, (toolCounts.get(tool) || 0) + 1);
+      const filePath = getToolFilePath(payload);
+      const isInternalProcessFile =
+        internalProcessToolCorrelationIds.has(correlationKey) ||
+        (Boolean(filePath) && isInternalWorkspaceProcessPath(filePath));
+      if (tool === "write_file" && !isInternalProcessFile) {
+        createdFileToolCount += 1;
+      } else if (tool === "edit_file" && !isInternalProcessFile) {
+        editedFileToolCount += 1;
+      }
     }
 
     const isStepEvent =
@@ -618,8 +660,8 @@ export function buildActionBlockSummary(
     (toolCounts.get("grep") || 0) +
     (toolCounts.get("search_files") || 0) +
     (toolCounts.get("context_grep") || 0);
-  const createdFiles = toolCounts.get("write_file") || 0;
-  const editedFiles = toolCounts.get("edit_file") || 0;
+  const createdFiles = createdFileToolCount;
+  const editedFiles = editedFileToolCount;
   const writes = createdFiles + editedFiles;
   const commands =
     (toolCounts.get("run_command") || 0) +
