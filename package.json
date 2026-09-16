@@ -113,7 +113,7 @@
     "docx": "^9.5.2",
     "docx-preview": "0.4.0",
     "electron-updater": "^6.3.9",
-    "eventsource": "^4.1.0",
+    "eventsource": "^5.1.1",
     "exceljs": "npm:devextreme-exceljs-fork@4.4.13",
     "grammy": "^1.39.3",
     "highlight.js": "^11.11.1",
