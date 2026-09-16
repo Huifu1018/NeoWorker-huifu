@@ -8,6 +8,11 @@ import type {
   TaskTraceTab,
 } from "../../shared/types";
 import { normalizeMarkdownForCollab } from "./markdown-inline-lists";
+import {
+  sanitizeHermesText,
+  sanitizeRuntimeDisplayValue,
+  sanitizeTaskEventForDisplay,
+} from "./runtime-privacy";
 
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -16,6 +21,16 @@ function asObject(value: unknown): Record<string, unknown> {
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function displayEvents(rawEvents: TaskEvent[]): TaskEvent[] {
+  return rawEvents
+    .map((event) => sanitizeTaskEventForDisplay(event))
+    .filter((event): event is TaskEvent => Boolean(event));
+}
+
+function sanitizeTraceText(value: unknown): string {
+  return sanitizeHermesText(normalizeText(value));
 }
 
 function truncate(value: string, length = 240): string {
@@ -100,13 +115,13 @@ function extractEventMessage(payload: Record<string, unknown>): string {
     payload.error,
   ];
   for (const candidate of directCandidates) {
-    const text = normalizeText(candidate);
+    const text = sanitizeTraceText(candidate);
     if (text) return text;
   }
 
   const result = asObject(payload.result);
   for (const candidate of [result.message, result.summary, result.error]) {
-    const text = normalizeText(candidate);
+    const text = sanitizeTraceText(candidate);
     if (text) return text;
   }
 
@@ -176,8 +191,44 @@ function getSemanticEventActionKind(
   return event.kind === "summary" ? event.actionKind : undefined;
 }
 
+function evidenceText(item: UiTimelineEvent["evidence"][number]): string {
+  if (item.type === "file") return item.path;
+  if (item.type === "command") return item.label + " " + item.command;
+  if (item.type === "query") return item.label + " " + item.query;
+  if (item.type === "artifact") return item.label + " " + item.path;
+  if (item.type === "approval") return item.label + " " + (item.reason || "");
+  if (item.type === "url") return item.label + " " + item.url;
+  return item.label + " " + item.message + " " + (item.source || "");
+}
+
+function semanticEventSearchText(event: UiTimelineEvent): string {
+  return [event.summary, event.actor, ...event.evidence.map(evidenceText)]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatSemanticEvidence(event: UiTimelineEvent): string | undefined {
+  if (event.evidence.length === 0) return undefined;
+  return event.evidence
+    .map((item) => {
+      if (item.type === "file")
+        return "File: " + sanitizeTraceText(item.path);
+      if (item.type === "command")
+        return "Command: " + sanitizeTraceText(item.command);
+      if (item.type === "query")
+        return "Query: " + sanitizeTraceText(item.query);
+      if (item.type === "artifact")
+        return "Artifact: " + sanitizeTraceText(item.path);
+      if (item.type === "approval")
+        return "Approval: " + sanitizeTraceText(item.label);
+      if (item.type === "url") return "URL: " + sanitizeTraceText(item.url);
+      return "Runtime log: " + sanitizeTraceText(item.message);
+    })
+    .join("\n");
+}
+
 export function normalizeTaskTraceMarkdownDisplay(text: string): string {
-  let result = normalizeMarkdownForCollab(text);
+  let result = sanitizeHermesText(normalizeMarkdownForCollab(text));
   result = result.replace(/`(\*\*\/([^\s`]+))`/g, "`/$2`");
   result = result.replace(/\s\*\*(?=(?:$|[\s.,;:!?]))/g, " all files");
   return result;
@@ -236,20 +287,34 @@ export function buildTaskTraceTranscriptRows(
   semanticTimeline: UiTimelineEvent[],
   rawEvents: TaskEvent[],
 ): TaskTraceRow[] {
-  if (semanticTimeline.length === 0 && rawEvents.length > 0) {
-    return buildTaskTraceDebugRows(rawEvents).map((row) => ({
+  const visibleRawEvents = displayEvents(rawEvents);
+  if (semanticTimeline.length === 0 && visibleRawEvents.length > 0) {
+    return buildTaskTraceDebugRows(visibleRawEvents).map((row) => ({
       ...row,
       id: row.id.replace(/^debug:/, "transcript:fallback:"),
       tab: "transcript",
     }));
   }
 
-  const allEventsById = new Map(rawEvents.map((event) => [event.id, event]));
+  const allEventsById = new Map(
+    visibleRawEvents.map((event) => [event.id, event]),
+  );
 
-  return semanticTimeline.map((event) => {
+  return semanticTimeline.flatMap((event) => {
     const matchedRawEvents = event.rawEventIds
       .map((id) => allEventsById.get(id))
       .filter((item): item is TaskEvent => Boolean(item));
+    const sanitizedSummary = sanitizeTraceText(event.summary);
+    const semanticSearchText = semanticEventSearchText(event);
+    const semanticLooksLikeHermes =
+      /\bhermes\b|\b(?:acp|acpx)\b/i.test(semanticSearchText) &&
+      /\b(?:runtime|harness|provider|checkpoint|session|acp|acpx|transport|unavailable|retry|fallback)\b/i.test(
+        semanticSearchText,
+      );
+    // A semantic row backed solely by hidden runtime events should not leave a
+    // phantom card in the trace. Keep rows with at least one visible raw event
+    // so ordinary task results and user-authored content remain intact.
+    if (matchedRawEvents.length === 0 && semanticLooksLikeHermes) return [];
     const bodyCandidate = matchedRawEvents
       .map((rawEvent) => extractEventMessage(asObject(rawEvent.payload)))
       .find((text) => text && text !== event.summary);
@@ -258,7 +323,7 @@ export function buildTaskTraceTranscriptRows(
     const actionKind = getSemanticEventActionKind(event);
     const actor = inferTranscriptRowActor(event, matchedRawEvents);
     const badges: TaskTraceBadge[] = [
-      formatBadge(humanizeToken(event.phase)),
+      formatBadge(sanitizeTraceText(humanizeToken(event.phase))),
       formatBadge(humanizeToken(status), toStatusTone(status)),
       ...(typeof durationMs === "number"
         ? [formatBadge(`${Math.max(1, Math.round(durationMs / 1000))}s`)]
@@ -276,7 +341,7 @@ export function buildTaskTraceTranscriptRows(
       tab: "transcript",
       actor,
       label: toRowLabel(actor),
-      title: event.summary,
+      title: sanitizedSummary || "Task activity",
       ...(bodyCandidate ? { body: truncate(bodyCandidate, 320) } : {}),
       timestamp:
         Date.parse(event.startedAt) ||
@@ -287,8 +352,8 @@ export function buildTaskTraceTranscriptRows(
       badges,
       rawEventIds: event.rawEventIds,
       inspector: {
-        title: event.summary,
-        subtitle: `${humanizeToken(event.kind)} · ${humanizeToken(event.phase)}`,
+        title: sanitizedSummary || "Task activity",
+        subtitle: `${humanizeToken(event.kind)} · ${sanitizeTraceText(humanizeToken(event.phase))}`,
         ...(bodyCandidate ? { content: bodyCandidate } : {}),
         rawEventIds: event.rawEventIds,
         fields: buildInspectorFields([
@@ -299,25 +364,7 @@ export function buildTaskTraceTranscriptRows(
             "Duration",
             typeof durationMs === "number" ? `${durationMs}ms` : undefined,
           ],
-          [
-            "Evidence",
-            event.evidence.length > 0
-              ? event.evidence
-                  .map((item) => {
-                    if (item.type === "file") return `File: ${item.path}`;
-                    if (item.type === "command")
-                      return `Command: ${item.command}`;
-                    if (item.type === "query") return `Query: ${item.query}`;
-                    if (item.type === "artifact")
-                      return `Artifact: ${item.path}`;
-                    if (item.type === "approval")
-                      return `Approval: ${item.label}`;
-                    if (item.type === "url") return `URL: ${item.url}`;
-                    return `Runtime log: ${item.message}`;
-                  })
-                  .join("\n")
-              : undefined,
-          ],
+          ["Evidence", formatSemanticEvidence(event)],
         ]),
         json: matchedRawEvents.map((item) => ({
           id: item.id,
@@ -329,7 +376,7 @@ export function buildTaskTraceTranscriptRows(
           stepId: item.stepId,
           groupId: item.groupId,
           actor: item.actor,
-          payload: item.payload,
+          payload: sanitizeRuntimeDisplayValue(item.payload),
         })),
       },
     };
@@ -346,7 +393,9 @@ function buildDebugRowTitle(
     effectiveType === "assistant_message"
   ) {
     const message = extractEventMessage(payload);
-    return message ? truncate(message, 140) : humanizeToken(effectiveType);
+    return message
+      ? truncate(sanitizeHermesText(message), 140)
+      : humanizeToken(effectiveType);
   }
 
   if (
@@ -357,15 +406,20 @@ function buildDebugRowTitle(
     effectiveType === "tool_blocked"
   ) {
     const toolName =
-      normalizeText(payload.tool) || normalizeText(payload.toolName) || "tool";
-    return humanizeToken(toolName);
+      sanitizeTraceText(payload.tool) ||
+      sanitizeTraceText(payload.toolName) ||
+      "tool";
+    return sanitizeTraceText(humanizeToken(toolName));
   }
 
   if (effectiveType === "llm_usage") {
-    const provider = normalizeText(payload.providerType) || "model";
+    const provider = sanitizeTraceText(payload.providerType) || "model";
     const model =
       normalizeText(payload.modelId) || normalizeText(payload.modelKey);
-    return truncate(`${provider}${model ? ` / ${model}` : ""}`, 140);
+    return truncate(
+      `${provider}${model ? ` / ${sanitizeTraceText(model)}` : ""}`,
+      140,
+    );
   }
 
   return humanizeToken(effectiveType);
@@ -377,7 +431,7 @@ function buildDebugRowBody(
   const message = extractEventMessage(payload);
   if (message) return truncate(message, 260);
   try {
-    const json = JSON.stringify(payload);
+    const json = JSON.stringify(sanitizeRuntimeDisplayValue(payload));
     return json.length > 0 ? truncate(json, 260) : undefined;
   } catch {
     return undefined;
@@ -387,7 +441,7 @@ function buildDebugRowBody(
 export function buildTaskTraceDebugRows(
   rawEvents: TaskEvent[],
 ): TaskTraceRow[] {
-  return rawEvents.map((event) => {
+  return displayEvents(rawEvents).map((event) => {
     const payload = asObject(event.payload);
     const effectiveType = getEffectiveEventType(event);
     const actor = inferRowActorFromEvent(event);
@@ -467,7 +521,7 @@ export function buildTaskTraceDebugRows(
           stepId: event.stepId,
           groupId: event.groupId,
           actor: event.actor,
-          payload: event.payload,
+          payload: sanitizeRuntimeDisplayValue(event.payload),
         },
       },
     };

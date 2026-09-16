@@ -44,6 +44,7 @@ export function TaskFollowUpQueue({ taskId, active }: TaskFollowUpQueueProps) {
   const mountedRef = useRef(true);
   const rootRef = useRef<HTMLElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const taskIdRef = useRef<string | null>(taskId);
   const cancelEditRef = useRef(false);
   const suspendRefreshRef = useRef(false);
   const refreshInFlightRef = useRef(false);
@@ -56,14 +57,21 @@ export function TaskFollowUpQueue({ taskId, active }: TaskFollowUpQueueProps) {
 
   const refresh = useCallback(async () => {
     if (suspendRefreshRef.current || refreshInFlightRef.current) return;
+    const requestedTaskId = taskId;
     if (!taskId) {
       setItems([]);
       return;
     }
     refreshInFlightRef.current = true;
     try {
-      const next = await window.electronAPI.listQueuedFollowUps(taskId);
-      if (mountedRef.current && !suspendRefreshRef.current) setItems(next);
+      const next = await window.electronAPI.listQueuedFollowUps(requestedTaskId);
+      if (
+        mountedRef.current &&
+        !suspendRefreshRef.current &&
+        taskIdRef.current === requestedTaskId
+      ) {
+        setItems(next.filter((item) => item.taskId === requestedTaskId));
+      }
     } catch (error) {
       console.error("Failed to load queued follow-ups:", error);
     } finally {
@@ -85,6 +93,8 @@ export function TaskFollowUpQueue({ taskId, active }: TaskFollowUpQueueProps) {
   }, [active, refresh]);
 
   useEffect(() => {
+    taskIdRef.current = taskId;
+    setItems([]);
     setEditingId(null);
     closeMenu();
   }, [closeMenu, taskId]);

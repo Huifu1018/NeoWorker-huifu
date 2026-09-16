@@ -37,6 +37,7 @@ import {
   shouldRenderOpenArtifactCardAtEvent,
   shouldSuppressInitialPromptUserEvent,
   shouldShowBootstrapProgressRow,
+  isActionBlockInCurrentTurn,
   shouldMarkActionBlockActiveForCurrentTurn,
   shouldBypassLiveTaskEventProjection,
   shouldIncludeExecutionRecordEvents,
@@ -1193,6 +1194,296 @@ describe("isTaskActivelyWorking", () => {
     ]);
   });
 
+  it("keeps stale follow-up outputs in their original turn and publishes the current modified file", () => {
+    const pdfUser = makeEvent("pdf-user", 100, "user_message", {
+      message: "翻译成中文，保留图片，输出PDF",
+    });
+    const pdfCreated = makeEvent("pdf-created", 150, "file_created", {
+      path: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+    });
+    const pdfAssistant = makeEvent("pdf-assistant", 180, "assistant_message", {
+      message: "已完成。交付文件：NeoWorker_macOS_DMG安装指南_中文.pdf",
+    });
+    const pdfCompleted = makeEvent("pdf-completed", 200, "task_completed", {
+      resultSummary: "已完成。交付文件：NeoWorker_macOS_DMG安装指南_中文.pdf",
+      outputSummary: {
+        created: ["NeoWorker_macOS_DMG安装指南_中文.pdf"],
+        primaryOutputPath: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+        outputCount: 1,
+        folders: ["."],
+      },
+    });
+    const flightUser = makeEvent("flight-user", 300, "user_message", {
+      message: "给我明天北京到广州的详细航班信息",
+    });
+    const flightAssistant = makeEvent(
+      "flight-assistant",
+      350,
+      "assistant_message",
+      { message: "明天北京到广州有多个直飞航班。" },
+    );
+    const flightCompleted = makeEvent(
+      "flight-completed",
+      400,
+      "task_completed",
+      {
+        resultSummary: "明天北京到广州有多个直飞航班。",
+        outputSummary: {
+          created: [
+            "NeoWorker_macOS_DMG安装指南_中文.pdf",
+            ".neoworker/tmp/nwguide/nwguide.tex",
+          ],
+          primaryOutputPath: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+          outputCount: 2,
+          folders: [".", ".neoworker/tmp/nwguide"],
+        },
+      },
+    );
+    const excelUser = makeEvent("excel-user", 500, "user_message", {
+      message: "翻译成英文和韩文，分在两个sheet，输出excel文档",
+    });
+    const excelAssistant = makeEvent(
+      "excel-assistant",
+      550,
+      "assistant_message",
+      {
+        message: "完成。交付文件：联合项目进展-2023年9月-王超_EN_KO.xlsx",
+      },
+    );
+    const excelCompleted = makeEvent(
+      "excel-completed",
+      600,
+      "task_completed",
+      {
+        resultSummary: "完成。交付文件：联合项目进展-2023年9月-王超_EN_KO.xlsx",
+        outputSummary: {
+          created: [
+            "NeoWorker_macOS_DMG安装指南_中文.pdf",
+            ".neoworker/tmp/nwguide/nwguide.tex",
+          ],
+          modifiedFallback: ["联合项目进展-2023年9月-王超_EN_KO.xlsx"],
+          primaryOutputPath: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+          outputCount: 2,
+          folders: [".", ".neoworker/tmp/nwguide"],
+        },
+      },
+    );
+    const stream = [
+      pdfUser,
+      pdfCreated,
+      pdfAssistant,
+      pdfCompleted,
+      flightUser,
+      flightAssistant,
+      flightCompleted,
+      excelUser,
+      excelAssistant,
+      excelCompleted,
+    ];
+    const staleTaskSummary = {
+      created: [
+        "NeoWorker_macOS_DMG安装指南_中文.pdf",
+        ".neoworker/tmp/nwguide/nwguide.tex",
+      ],
+      modifiedFallback: ["联合项目进展-2023年9月-王超_EN_KO.xlsx"],
+      primaryOutputPath: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+      outputCount: 2,
+      folders: [".", ".neoworker/tmp/nwguide"],
+    };
+
+    expect(
+      collectEndOfTaskArtifactCardStacks(stream, 8, staleTaskSummary),
+    ).toEqual([
+      {
+        anchorEventIndex: 3,
+        artifacts: [
+          {
+            path: "NeoWorker_macOS_DMG安装指南_中文.pdf",
+            kind: "document",
+            eventId: "pdf-completed",
+            lastReferenceIndex: 3,
+            lastReferenceTimestamp: 200,
+          },
+        ],
+      },
+      {
+        anchorEventIndex: 9,
+        artifacts: [
+          {
+            path: "联合项目进展-2023年9月-王超_EN_KO.xlsx",
+            kind: "spreadsheet",
+            eventId: "excel-completed",
+            lastReferenceIndex: 9,
+            lastReferenceTimestamp: 600,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("does not merge recovered artifacts from different user turns", () => {
+    const firstUser = makeEvent("first-user", 100, "user_message", {
+      message: "生成一个股票实时分析系统网页",
+    });
+    const firstHtml = makeEvent("first-html", 200, "file_created", {
+      path: "股票实时分析系统.html",
+      mimeType: "text/html",
+    });
+    const secondUser = makeEvent("second-user", 300, "user_message", {
+      message: "生成一个饮食管理工作台",
+    });
+    const secondHtml = makeEvent("second-html", 400, "file_created", {
+      path: "饮食管理工作台.html",
+      mimeType: "text/html",
+    });
+    const completed = makeEvent("completed", 500, "task_completed", {
+      resultSummary: "饮食管理工作台已完成。",
+    });
+    const assistant = makeEvent("assistant", 600, "assistant_message", {
+      message:
+        "饮食管理工作台已完成。交付文件位于工作区根目录：`饮食管理工作台.html`。",
+    });
+    const persistedSummary = {
+      created: ["饮食管理工作台.html", "股票实时分析系统.html"],
+      primaryOutputPath: "饮食管理工作台.html",
+      outputCount: 2,
+      folders: ["."],
+    };
+    const stream = [
+      firstUser,
+      firstHtml,
+      secondUser,
+      secondHtml,
+      completed,
+      assistant,
+    ];
+
+    expect(
+      collectEndOfTaskArtifactCardStacks(stream, 8, persistedSummary),
+    ).toEqual([
+      {
+        anchorEventIndex: 5,
+        artifacts: [
+          {
+            path: "饮食管理工作台.html",
+            kind: "html",
+            eventId: "completed",
+            lastReferenceIndex: 4,
+            lastReferenceTimestamp: 500,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("does not let a stale persisted summary clear current-turn artifacts", () => {
+    const firstUser = makeEvent("first-user", 100, "user_message", {
+      message: "生成一个股票实时分析系统网页",
+    });
+    const firstHtml = makeEvent("first-html", 200, "file_created", {
+      path: "股票实时分析系统.html",
+      mimeType: "text/html",
+    });
+    const secondUser = makeEvent("second-user", 300, "user_message", {
+      message: "生成一个饮食管理工作台",
+    });
+    const secondHtml = makeEvent("second-html", 400, "file_created", {
+      path: "饮食管理工作台.html",
+      mimeType: "text/html",
+    });
+    const completed = makeEvent("completed", 500, "task_completed", {
+      resultSummary: "饮食管理工作台已完成。",
+    });
+    const assistant = makeEvent("assistant", 600, "assistant_message", {
+      message: "饮食管理工作台已完成。",
+    });
+    const staleSummary = {
+      created: ["股票实时分析系统.html"],
+      primaryOutputPath: "股票实时分析系统.html",
+      outputCount: 1,
+      folders: ["."],
+    };
+    const stream = [
+      firstUser,
+      firstHtml,
+      secondUser,
+      secondHtml,
+      completed,
+      assistant,
+    ];
+
+    expect(collectLatestEndOfTaskArtifactCards(stream, 8, staleSummary)).toEqual(
+      [
+        {
+          path: "饮食管理工作台.html",
+          kind: "html",
+          eventId: "completed",
+          lastReferenceIndex: 4,
+          lastReferenceTimestamp: 500,
+        },
+      ],
+    );
+  });
+
+  it("drops cumulative outputs from earlier queries when only the current turn is loaded", () => {
+    const user = makeEvent("current-user", 100, "user_message", {
+      message: "翻译以下内容，输出一个PDF文档",
+    });
+    const artifact = makeEvent("current-artifact", 200, "artifact_created", {
+      path: "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+      mimeType: "application/pdf",
+    });
+    const assistant = makeEvent("current-assistant", 300, "assistant_message", {
+      message:
+        "翻译完成。交付物：KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+    });
+    const completed = makeEvent("current-completed", 400, "task_completed", {
+      resultSummary:
+        "翻译完成。交付物：KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+      outputSummary: {
+        created: [
+          "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+          "AI&HPC产品线例会纪要深度分析报告-20260510-0912.pdf",
+          "AI&HPC产品线例会纪要综合分析报告-20260510-0912.pdf",
+        ],
+        primaryOutputPath: "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+        outputCount: 3,
+        folders: ["."],
+      },
+    });
+    const cumulativeTaskSummary = {
+      created: [
+        "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+        "AI&HPC产品线例会纪要深度分析报告-20260510-0912.pdf",
+        "AI&HPC产品线例会纪要综合分析报告-20260510-0912.pdf",
+      ],
+      primaryOutputPath: "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+      outputCount: 3,
+      folders: ["."],
+    };
+
+    expect(
+      collectEndOfTaskArtifactCardStacks(
+        [user, artifact, assistant, completed],
+        8,
+        cumulativeTaskSummary,
+      ),
+    ).toEqual([
+      {
+        anchorEventIndex: 3,
+        artifacts: [
+          {
+            path: "KAYTUS-MotusAI本地Token工厂-中文版.pdf",
+            kind: "document",
+            eventId: "current-completed",
+            lastReferenceIndex: 3,
+            lastReferenceTimestamp: 400,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("keeps completed-turn delivery cards visible while a later turn is working", () => {
     const mainContentSource = readFileSync(mainContentPath, "utf8");
 
@@ -1247,6 +1538,38 @@ describe("isTaskActivelyWorking", () => {
         latestUserMessageEventIndex: 7,
       }),
     ).toBe(true);
+  });
+
+  it("settles the stopped turn before the next turn emits its first action", () => {
+    const stoppedTurnAction = makeEvent("old-action", 1_000, "tool_error", {
+      error: "Command exited with code 1",
+    });
+    stoppedTurnAction.seq = 20;
+    const nextUserMessage = makeEvent("next-user", 2_000, "user_message", {
+      message: "继续",
+    });
+    nextUserMessage.seq = 30;
+
+    expect(
+      isActionBlockInCurrentTurn({
+        isLatestActionBlock: true,
+        actionBlockEventIndices: [4],
+        latestUserMessageEventIndex: 3,
+        actionBlockEvents: [stoppedTurnAction],
+        latestUserMessageEvent: nextUserMessage,
+      }),
+    ).toBe(false);
+    expect(
+      shouldMarkActionBlockActiveForCurrentTurn({
+        isLatestActionBlock: true,
+        isTaskWorking: true,
+        isReplayMode: false,
+        actionBlockEventIndices: [4],
+        latestUserMessageEventIndex: 3,
+        actionBlockEvents: [stoppedTurnAction],
+        latestUserMessageEvent: nextUserMessage,
+      }),
+    ).toBe(false);
   });
 
   it("treats relative and absolute references to the same office file as one card", () => {
@@ -1347,6 +1670,149 @@ describe("isTaskActivelyWorking", () => {
             eventId: "completed",
             lastReferenceIndex: 0,
             lastReferenceTimestamp: 100,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("anchors final delivery cards to the visible assistant reply when it follows completion", () => {
+    const user = makeEvent("user", 50, "user_message", {
+      message: "把我提取信息，形成一个PDF文档",
+    });
+    const completed = makeEvent("completed", 100, "task_completed", {
+      outputSummary: {
+        created: ["EPAI_V2.0_ClawManager_发布会资料整理.pdf"],
+        primaryOutputPath: "EPAI_V2.0_ClawManager_发布会资料整理.pdf",
+        outputCount: 1,
+      },
+    });
+    const assistant = makeEvent("assistant", 150, "assistant_message", {
+      message:
+        "已完成。我从发布会 PPTX 中提取了全部信息，并生成了一个正式、结构化的 PDF 文档。",
+    });
+    const [stack] = collectEndOfTaskArtifactCardStacks([
+      user,
+      completed,
+      assistant,
+    ]);
+
+    expect(stack).toEqual({
+      anchorEventIndex: 2,
+      artifacts: [
+        {
+          path: "EPAI_V2.0_ClawManager_发布会资料整理.pdf",
+          kind: "document",
+          eventId: "completed",
+          lastReferenceIndex: 1,
+          lastReferenceTimestamp: 100,
+        },
+      ],
+    });
+    expect(
+      stack
+        ? getEndOfTaskArtifactStackAnchorEventId(stack, [
+            user,
+            completed,
+            assistant,
+      ])
+        : null,
+    ).toBe("assistant");
+  });
+
+  it("anchors an HTML card after the visible completion summary", () => {
+    const user = makeEvent("user", 100, "user_message", {
+      message: "把航班信息做成html",
+    });
+    const assistant = makeEvent("assistant", 200, "assistant_message", {
+      message: "已完成，航班信息已做成一份独立可用的 HTML 页面。",
+    });
+    const completed = makeEvent("completed", 300, "task_completed", {
+      resultSummary: "已完成，航班信息已做成一份独立可用的 HTML 页面。",
+      outputSummary: {
+        created: ["广州到北京航班2026-09-15.html"],
+        primaryOutputPath: "广州到北京航班2026-09-15.html",
+        outputCount: 1,
+        folders: ["."],
+      },
+    });
+
+    expect(
+      collectEndOfTaskArtifactCardStacks([user, assistant, completed]),
+    ).toEqual([
+      {
+        anchorEventIndex: 2,
+        artifacts: [
+          {
+            path: "广州到北京航班2026-09-15.html",
+            kind: "html",
+            eventId: "completed",
+            lastReferenceIndex: 2,
+            lastReferenceTimestamp: 300,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it.each(["pptx", "pdf", "xlsx", "docx"])(
+    "anchors %s after the completion even when its summary differs from the assistant message",
+    (extension) => {
+      const user = makeEvent("user", 100, "user_message", { message: "Translate to Korean" });
+      const assistant = makeEvent("assistant", 200, "assistant_message", { message: "Translation ready" });
+      const completed = makeEvent("completed", 300, "task_completed", {
+        resultSummary: "Translation ready. Validation passed.",
+        outputSummary: { created: [`translated.${extension}`], outputCount: 1, folders: ["."] },
+      });
+      const nextUser = makeEvent("next-user", 400, "user_message", { message: "Next question" });
+      const nextAssistant = makeEvent("next-assistant", 500, "assistant_message", { message: "Next answer" });
+      const stream = [user, assistant, completed, nextUser, nextAssistant];
+      expect(collectEndOfTaskArtifactCardStacks(stream)[0]?.anchorEventIndex).toBe(2);
+    },
+  );
+
+  it("keeps artifact cards when the file event is recorded after completion", () => {
+    const user = makeEvent("user", 50, "user_message", {
+      message: "将查询信息基于 PPT 模板进行撰写",
+    });
+    const completed = makeEvent("completed", 100, "task_completed", {
+      resultSummary: "已完成，正式 PPT 已生成。",
+      outputSummary: {
+        created: [],
+        outputCount: 0,
+        folders: [],
+      },
+    });
+    const assistant = makeEvent("assistant", 150, "assistant_message", {
+      message:
+        "已完成。文件：上海-广州航班查询_2026-09-14.pptx（7 页，宽屏 16:9）。",
+    });
+    const artifact = makeEvent("artifact", 200, "artifact_created", {
+      path: "上海-广州航班查询_2026-09-14.pptx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    });
+    const stream = [user, completed, assistant, artifact];
+
+    expect(collectLatestEndOfTaskArtifactCards(stream)).toEqual([
+      {
+        path: "上海-广州航班查询_2026-09-14.pptx",
+        kind: "presentation",
+        eventId: "artifact",
+        lastReferenceIndex: 3,
+        lastReferenceTimestamp: 200,
+      },
+    ]);
+    expect(collectEndOfTaskArtifactCardStacks(stream)).toEqual([
+      {
+        anchorEventIndex: 2,
+        artifacts: [
+          {
+            path: "上海-广州航班查询_2026-09-14.pptx",
+            kind: "presentation",
+            eventId: "artifact",
+            lastReferenceIndex: 3,
+            lastReferenceTimestamp: 200,
           },
         ],
       },
@@ -1866,6 +2332,14 @@ describe("isTaskActivelyWorking", () => {
     ).toBe("live");
     expect(
       getDefaultTranscriptMode({
+        isTaskWorking: true,
+        isReplayMode: false,
+        verboseSteps: true,
+        isChatTask: false,
+      }),
+    ).toBe("live");
+    expect(
+      getDefaultTranscriptMode({
         isTaskWorking: false,
         isReplayMode: false,
         verboseSteps: false,
@@ -1889,7 +2363,7 @@ describe("isTaskActivelyWorking", () => {
         isChatTask: false,
         taskStatus: "completed",
       }),
-    ).toBe("inspect");
+    ).toBe("delivery");
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: false,
@@ -1910,14 +2384,14 @@ describe("isTaskActivelyWorking", () => {
     ).toBe("inspect");
   });
 
-  it("bypasses the filtered live projection when execution records are enabled", () => {
+  it("bypasses the filtered live projection only for explicit inspect mode", () => {
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
         transcriptModeOverride: null,
         verboseSteps: true,
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
@@ -1927,6 +2401,13 @@ describe("isTaskActivelyWorking", () => {
     ).toBe(false);
     expect(
       shouldBypassLiveTaskEventProjection({
+        projectionMode: "live",
+        transcriptModeOverride: "inspect",
+        verboseSteps: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBypassLiveTaskEventProjection({
         projectionMode: "inspect",
         transcriptModeOverride: null,
         verboseSteps: true,
@@ -1934,7 +2415,7 @@ describe("isTaskActivelyWorking", () => {
     ).toBe(false);
   });
 
-  it("keeps execution records visible until the user explicitly chooses summary mode", () => {
+  it("keeps execution record preference persistent without overriding completed delivery view", () => {
     const mainContentSource = readFileSync(mainContentPath, "utf8");
 
     expect(mainContentSource).toContain(
@@ -2314,7 +2795,7 @@ describe("isTaskActivelyWorking", () => {
     ).toBe(true);
   });
 
-  it("keeps every conversation turn visible while live execution rows are bounded", () => {
+  it("keeps only the current conversation turn visible while live execution rows are bounded", () => {
     const conversationRows = [1, 2, 3].flatMap((turn) => {
       const user = makeEvent(`user-${turn}`, turn * 1_000, "user_message", {
         message: `问题 ${turn}`,
@@ -2356,20 +2837,91 @@ describe("isTaskActivelyWorking", () => {
       "live",
     );
 
-    expect(result.visibleFeedRows.map((row) => row.key)).toEqual(
-      expect.arrayContaining([
-        "user-1",
-        "assistant-1",
-        "user-2",
-        "assistant-2",
-        "user-3",
-        "assistant-3",
-      ]),
-    );
+    expect(result.visibleFeedRows.map((row) => row.key)).toEqual([
+      "user-3",
+      "assistant-3",
+      "progress-10",
+      "progress-11",
+      "progress-12",
+      "progress-13",
+    ]);
     expect(result.visibleFeedRows.length).toBeLessThanOrEqual(12);
     expect(result.hiddenLiveFeedRowCount).toBe(
       conversationRows.length + executionRows.length - result.visibleFeedRows.length,
     );
+  });
+
+  it("does not stack older short-session queries above the active live turn", () => {
+    const rows = [
+      {
+        kind: "timeline",
+        key: "user-old",
+        estimatedHeight: 100,
+        timelineIndex: 0,
+        visiblePerfEventId: "user-old",
+        revision: "user-old",
+        item: {
+          kind: "event",
+          event: makeEvent("user-old", 100, "user_message", {
+            message: "航班情况也帮我查一下",
+          }),
+        },
+      },
+      {
+        kind: "timeline",
+        key: "assistant-old",
+        estimatedHeight: 100,
+        timelineIndex: 1,
+        visiblePerfEventId: "assistant-old",
+        revision: "assistant-old",
+        item: {
+          kind: "event",
+          event: makeEvent("assistant-old", 200, "assistant_message", {
+            message: "旧回答",
+          }),
+        },
+      },
+      {
+        kind: "timeline",
+        key: "user-current",
+        estimatedHeight: 100,
+        timelineIndex: 2,
+        visiblePerfEventId: "user-current",
+        revision: "user-current",
+        item: {
+          kind: "event",
+          event: makeEvent("user-current", 300, "user_message", {
+            message: "/ppt-master 帮我优化一下PPT",
+          }),
+        },
+      },
+      {
+        kind: "timeline",
+        key: "action-block-current",
+        estimatedHeight: 180,
+        timelineIndex: 3,
+        visiblePerfEventId: "step-current",
+        revision: "action-block-current",
+        item: {
+          kind: "action_block",
+          blockId: "action-block-current",
+          events: [
+            makeEvent("step-current", 400, "timeline_step_updated", {
+              legacyType: "progress_update",
+              message: "Working",
+            }),
+          ],
+        },
+      },
+    ] as Any[];
+
+    const result = selectVisibleTaskFeedRows(rows, "live");
+
+    expect(result.visibleFeedRows.map((row) => row.key)).toEqual([
+      "user-current",
+      "action-block-current",
+    ]);
+    expect(result.hiddenLiveFeedRowCount).toBe(2);
   });
 
   it("keeps the full transcript visible in inspect mode", () => {

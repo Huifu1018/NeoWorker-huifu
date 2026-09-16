@@ -540,6 +540,13 @@ export class ToolCallDeduplicator {
   private semanticPatterns: Map<string, Array<{ input: Any; time: number }>> = new Map();
   // Track semantic signature totals for the full task run (not reset per step)
   private semanticTotalCounts: Map<string, number> = new Map();
+  // Structural validation failures need to survive alias/parameter churn.
+  // Otherwise a model can repeat the same invalid Office operation under a
+  // different alias or with cosmetic filename changes indefinitely.
+  private semanticStructuralFailures: Map<
+    string,
+    { error: string; lastFailureTime: number }
+  > = new Map();
   // Rate limiting: track calls per tool per minute
   private rateLimitCounters: Map<string, { count: number; windowStart: number }> = new Map();
 
@@ -570,6 +577,47 @@ export class ToolCallDeduplicator {
     // Normalize input by sorting keys for consistent hashing
     const normalizedInput = JSON.stringify(input, Object.keys(input || {}).sort());
     return `${toolName}:${normalizedInput}`;
+  }
+
+  private getRecordedStructuralInputFailure(result: string | undefined): string | null {
+    if (!result) return null;
+    try {
+      const parsed = JSON.parse(result) as Any;
+      const error = String(parsed?.error || parsed?.message || "").trim();
+      if (!error) return null;
+      if (parsed?.invalid_input === true) return error;
+      return /(?:parameter|field|argument).*(?:required|invalid|unsupported|unexpected)|(?:invalid|unsupported|unexpected).*(?:parameter|field|argument)|invalid presentation json|invalid presentation slide|office output format mismatch|expected an object|must be (?:an? )?(?:array|object|string)|cannot specify both|mutually exclusive|at least one (?:worksheet|slide|page|section) is required|multi-format office requests require|requires? (?:at least )?one shared contentsnapshot/i.test(
+        error,
+      )
+        ? error
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private structuralInputLooksCorrected(error: string, input: Any): boolean {
+    if (/at least one worksheet is required/i.test(error)) {
+      return Array.isArray(input?.sheets) && input.sheets.length > 0;
+    }
+    if (/at least one slide is required/i.test(error)) {
+      return Array.isArray(input?.slides) && input.slides.length > 0;
+    }
+    if (/at least one (?:page|section) is required/i.test(error)) {
+      const content = input?.content;
+      return (
+        (typeof content === "string" && content.trim().length > 0) ||
+        (Array.isArray(content) && content.length > 0)
+      );
+    }
+    if (/shared contentsnapshot/i.test(error)) {
+      const snapshot = input?.contentSnapshot ?? input?.content_snapshot;
+      return (
+        (typeof snapshot === "string" && snapshot.trim().length > 0) ||
+        (!!snapshot && typeof snapshot === "object")
+      );
+    }
+    return false;
   }
 
   /**
@@ -838,6 +886,44 @@ export class ToolCallDeduplicator {
     }
 
     const existing = this.recentCalls.get(callKey);
+    const previousStructuralInputFailure = this.getRecordedStructuralInputFailure(
+      existing?.lastResult,
+    );
+    if (
+      existing &&
+      now - existing.lastCallTime <= this.windowMs &&
+      previousStructuralInputFailure
+    ) {
+      return {
+        isDuplicate: true,
+        reason:
+          `The previous "${canonicalToolName}" call rejected these exact parameters: ` +
+          `${previousStructuralInputFailure}. Correct the input structure before retrying.`,
+      };
+    }
+
+    const semanticSignature = this.getSemanticSignature(
+      canonicalToolName,
+      input,
+    );
+    const semanticStructuralFailure = this.semanticStructuralFailures.get(
+      semanticSignature,
+    );
+    if (
+      semanticStructuralFailure &&
+      now - semanticStructuralFailure.lastFailureTime <= this.windowMs &&
+      !this.structuralInputLooksCorrected(
+        semanticStructuralFailure.error,
+        input,
+      )
+    ) {
+      return {
+        isDuplicate: true,
+        reason:
+          `A semantically equivalent "${canonicalToolName}" call already failed validation: ` +
+          `${semanticStructuralFailure.error}. Correct the required input structure or use the requested artifact tool instead of retrying this operation.`,
+      };
+    }
     if (
       existing &&
       now - existing.lastCallTime <= this.windowMs &&
@@ -893,6 +979,18 @@ export class ToolCallDeduplicator {
 
     // Record semantic pattern
     const signature = this.getSemanticSignature(canonicalToolName, input);
+    const structuralFailure = this.getRecordedStructuralInputFailure(result);
+    if (structuralFailure) {
+      this.semanticStructuralFailures.set(signature, {
+        error: structuralFailure,
+        lastFailureTime: now,
+      });
+    } else if (this.structuralInputLooksCorrected(
+      this.semanticStructuralFailures.get(signature)?.error || "",
+      input,
+    )) {
+      this.semanticStructuralFailures.delete(signature);
+    }
     const patterns = this.semanticPatterns.get(signature) || [];
     patterns.push({ input, time: now });
     this.semanticPatterns.set(signature, patterns);
@@ -913,6 +1011,7 @@ export class ToolCallDeduplicator {
   reset(): void {
     this.recentCalls.clear();
     this.semanticPatterns.clear();
+    this.semanticStructuralFailures.clear();
     // Don't reset rate limit counters - they should persist across steps
   }
 
@@ -981,6 +1080,17 @@ export class ToolCallDeduplicator {
       const toolName = key.split(":", 1)[0] || "";
       if (isMutationTool(toolName)) {
         this.semanticTotalCounts.delete(key);
+      }
+    }
+
+    for (const key of Array.from(this.semanticStructuralFailures.keys())) {
+      if (
+        key.startsWith("document_") ||
+        key.startsWith("spreadsheet_") ||
+        key.startsWith("presentation_") ||
+        key.startsWith("file_")
+      ) {
+        this.semanticStructuralFailures.delete(key);
       }
     }
   }
@@ -1085,6 +1195,7 @@ export class ToolFailureTracker {
     if (lower.includes("tavily")) return "tavily";
     if (lower.includes("brave")) return "brave";
     if (lower.includes("serpapi")) return "serpapi";
+    if (lower.includes("serper")) return "serper";
     if (lower.includes("google")) return "google";
     if (lower.includes("duckduckgo")) return "duckduckgo";
     return null;

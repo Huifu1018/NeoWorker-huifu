@@ -45,6 +45,7 @@ import {
   serializeTaskTraceRows,
 } from "../utils/task-trace-debugger";
 import { createRendererLogger } from "../utils/logger";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 import "./task-trace-debugger.css";
 
 interface TaskTraceDebuggerPanelProps {
@@ -474,8 +475,9 @@ function getOutcomeSummary(
   rows: TaskTraceRow[],
   language: SupportedLanguage,
 ): string {
-  const rawTaskSummary =
-    detail.task.semanticSummary || detail.task.resultSummary;
+  const rawTaskSummary = sanitizeHermesText(
+    detail.task.semanticSummary || detail.task.resultSummary || "",
+  );
   const cleanedTaskSummary = cleanTraceText(rawTaskSummary, 360).replace(
     /\|+/g,
     " · ",

@@ -25,6 +25,7 @@ import {
   isLlmRequestCancelledEvent,
   shouldShowTaskEventInSummaryMode,
 } from "./task-event-visibility";
+import { isHermesRuntimeEvent } from "./runtime-privacy";
 import { getEffectiveTaskEventType } from "./task-event-compat";
 import { normalizeEventsForTimelineUi } from "./timeline-projection";
 import {
@@ -407,6 +408,7 @@ function classifyTaskEventForRenderer(
   event: TaskEvent,
   params: { taskStatus?: TaskStatus; verboseSteps?: boolean },
 ): RendererEventVisibility {
+  if (isHermesRuntimeEvent(event)) return "debug-only";
   if (
     event.type === "command_output" ||
     event.type === "timeline_command_output"

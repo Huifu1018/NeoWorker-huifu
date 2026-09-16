@@ -107,6 +107,39 @@ describe("Office artifact input normalizers", () => {
     });
   });
 
+  it("unwraps a JSON-encoded slide array nested inside slides", () => {
+    const normalized = normalizePresentationArtifactInput({
+      filename: "analysis.pptx",
+      slides: [
+        JSON.stringify([
+          { title: "Overview", bullets: ["First point"] },
+          { title: "Comparison", content: ["A", "B"] },
+        ]),
+      ],
+    });
+
+    expect(normalized.slides).toHaveLength(2);
+    expect(normalized.slides[0]).toMatchObject({
+      title: "Overview",
+      content: ["First point"],
+    });
+    expect(normalized.slides[1]).toMatchObject({
+      title: "Comparison",
+      content: ["A", "B"],
+    });
+  });
+
+  it("accepts slides encoded as a JSON string and reports malformed strings clearly", () => {
+    const normalized = normalizePresentationArtifactInput({
+      slides: JSON.stringify([{ title: "Decoded" }]),
+    });
+    expect(normalized.slides[0].title).toBe("Decoded");
+
+    expect(() =>
+      normalizePresentationArtifactInput({ slides: ["not-json"] }),
+    ).toThrow(/Pass slide objects directly instead of JSON-encoded strings/);
+  });
+
   it("normalizes spreadsheet aliases into the canonical data matrix", () => {
     expect(
       normalizeSpreadsheetArtifactInput({

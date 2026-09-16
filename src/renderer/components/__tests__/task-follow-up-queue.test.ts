@@ -31,6 +31,10 @@ describe("Task follow-up queue", () => {
   it("supports refreshing, editing, removing, and reordering queued messages", () => {
     expect(queueSource).toContain("listQueuedFollowUps");
     expect(queueSource).toContain("refreshInFlightRef.current");
+    expect(queueSource).toContain("const requestedTaskId = taskId");
+    expect(queueSource).toContain("taskIdRef.current === requestedTaskId");
+    expect(queueSource).toContain("item.taskId === requestedTaskId");
+    expect(queueSource).toContain("setItems([])");
     expect(queueSource).toContain("active ? 1200 : 3000");
     expect(queueSource).toContain("updateQueuedFollowUp");
     expect(queueSource).toContain("removeQueuedFollowUp");
@@ -51,6 +55,15 @@ describe("Task follow-up queue", () => {
     expect(styles).toContain(".task-follow-up-queue-row.drop-before::before");
     expect(queueSource).toContain('"composer.queue.statusQueued"');
     expect(styles).toContain(".task-follow-up-queue-status");
+  });
+
+  it("binds the visible queue to the rendered task instead of a stale selection id", () => {
+    expect(mainContentSource).toContain(
+      "taskId={remoteSession || !task ? null : task.id}",
+    );
+    expect(mainContentSource).not.toContain(
+      "taskId={remoteSession ? null : selectedTaskId}",
+    );
   });
 
   it("keeps the queued-message action menu compact and left aligned", () => {

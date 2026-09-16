@@ -156,6 +156,8 @@ describe("composer draft safety", () => {
     expect(mainContentSource).toContain(
       "const snapshot = composerScrollCache.get(composerDraftCacheKey)",
     );
+    expect(mainContentSource).toContain("[autoScroll, composerDraftCacheKey]");
+    expect(mainContentSource).not.toContain("[autoScroll, composerScrollCacheKey]");
     expect(mainContentSource).toContain("new ResizeObserver(restore)");
   });
 
@@ -180,7 +182,9 @@ describe("composer draft safety", () => {
     expect(mainContentSource).toContain(
       "onDraftPresenceChange={setHasLiveComposerDraft}",
     );
-    expect(mainContentSource).toContain("const hasSendableComposerDraft =");
+    expect(mainContentSource).toContain("const hasSendableComposerDraft = hasComposerSendableDraft");
+    expect(mainContentSource).toContain("currentDraftValue: composerDraftValueRef.current");
+    expect(mainContentSource).toContain("currentAttachmentCount: pendingAttachmentsRef.current.length");
     expect(mainContentSource).toContain("disabled={isComposerSendBusy}");
     expect(promptComposerSource).toContain(
       'rootRef.current?.setAttribute(',
@@ -189,6 +193,8 @@ describe("composer draft safety", () => {
     expect(mainContentSource).not.toContain(
       "(!inputValue.trim() &&\n                      pendingAttachments.length === 0",
     );
+    expect(mainContentSource).toContain("importAttachmentsToWorkspace(submittedAttachments)");
+    expect(mainContentSource).toContain("const hasAttachments = submittedAttachments.length > 0");
     expect(unifiedComposerSource).toContain(
       "const liveDraftSnapshot = inputRef.current?.getSnapshot()",
     );

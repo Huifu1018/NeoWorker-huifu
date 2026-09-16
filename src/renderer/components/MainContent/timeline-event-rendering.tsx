@@ -76,6 +76,16 @@ import { translate } from "../../i18n";
 import { localizeProgressText } from "../../utils/localized-progress-text";
 import { localizeErrorText } from "../../utils/localized-error-text";
 import {
+  isHermesRuntimeEvent,
+  isHermesRuntimePayload,
+  sanitizeHermesText,
+  sanitizeRuntimeDisplayValue,
+} from "../../utils/runtime-privacy";
+import {
+  getUserVisibleProviderName,
+  isHiddenBackendProviderType,
+} from "../../utils/provider-privacy";
+import {
   VIDEO_FILE_EXT_RE,
   HTML_FILE_EXT_RE,
   SPREADSHEET_FILE_EXT_RE,
@@ -101,6 +111,7 @@ const TOOL_PAYLOAD_SUMMARY_KEYS = [
 ] as const;
 
 function compactToolPayloadText(value: string, maxLength = 240): string {
+  value = sanitizeHermesText(value);
   if (isLikelyMojibakeText(value)) {
     return translate(
       "timeline.toolPayload.legacyEncodingHidden",
@@ -142,22 +153,25 @@ function isFailedToolPayload(value: unknown): boolean {
 }
 
 function serializeToolPayload(value: unknown): string {
-  if (typeof value === "string") return compactToolPayloadText(value, 6000);
-  if (value === undefined) return "";
+  const safeValue = sanitizeRuntimeDisplayValue(value);
+  if (typeof safeValue === "string") return compactToolPayloadText(safeValue, 6000);
+  if (safeValue === undefined) return "";
   try {
     return JSON.stringify(
-      value,
+      safeValue,
       (_key, entry) =>
-        typeof entry === "string" && isLikelyMojibakeText(entry)
-          ? translate(
-              "timeline.toolPayload.legacyEncodingHidden",
-              "This historical page used an unsupported text encoding. Fetch it again to display readable content.",
-            )
+        typeof entry === "string"
+          ? isLikelyMojibakeText(entry)
+            ? translate(
+                "timeline.toolPayload.legacyEncodingHidden",
+                "This historical page used an unsupported text encoding. Fetch it again to display readable content.",
+              )
+            : sanitizeHermesText(entry)
           : entry,
       2,
     );
   } catch {
-    return String(value);
+    return sanitizeHermesText(String(safeValue));
   }
 }
 
@@ -168,9 +182,10 @@ function ToolPayloadDetails({
   value: unknown;
   showSummary: boolean;
 }) {
-  const summary = showSummary ? getToolPayloadSummary(value) : "";
-  const serialized = serializeToolPayload(value);
-  const failed = isFailedToolPayload(value);
+  const safeValue = sanitizeRuntimeDisplayValue(value);
+  const summary = showSummary ? getToolPayloadSummary(safeValue) : "";
+  const serialized = serializeToolPayload(safeValue);
+  const failed = isFailedToolPayload(safeValue);
 
   if (!summary && !serialized) return null;
 
@@ -198,6 +213,8 @@ function ToolPayloadDetails({
 
 export function shouldAutoExpandActiveTimelineEvent(event: TaskEvent): boolean {
   const effectiveType = getEffectiveTaskEventType(event);
+  if (event.payload?.recoveredIntermediateFailure === true) return false;
+  if (event.payload?.intermediateFailurePending === true) return false;
   // Approval requests already have a dedicated dialog. Keeping the timeline
   // row forced open duplicates that UI and exposes raw permission metadata.
   // Leave the compact row visible and let people expand it deliberately.
@@ -696,7 +713,9 @@ export function formatStepFailedTitleForDisplay(payload: Any): string {
     return "Step failed";
   }
 
-  return `Step failed: ${condenseStepText(description || reason || "Unknown step")}`;
+  return `Step failed: ${sanitizeHermesText(
+    condenseStepText(description || reason || "Unknown step"),
+  )}`;
 }
 
 export function formatStepContractEscalatedMessage(reason: string): string {
@@ -973,8 +992,15 @@ export function renderEventTitle(
         persona: undefined,
         emojiUsage: "minimal" as const,
         quirks: DEFAULT_QUIRKS,
-      };
+  };
   const effectiveType = getEffectiveTaskEventType(event);
+
+  // Runtime telemetry is filtered before it reaches normal timeline rows, but
+  // keep this renderer safe for direct/replay callers as well. Never turn an
+  // implementation marker into a branded title.
+  if (isHermesRuntimeEvent(event)) {
+    return localizeProgressText("Working on the task");
+  }
 
   const getStepStartedDetail = (): string => {
     const rawStepDescription =
@@ -982,7 +1008,7 @@ export function renderEventTitle(
         ? event.payload.step.description
         : "";
     if (rawStepDescription.trim().length > 0) {
-      return rawStepDescription;
+      return sanitizeHermesText(rawStepDescription);
     }
 
     const rawGroupLabel =
@@ -990,20 +1016,20 @@ export function renderEventTitle(
         ? event.payload.groupLabel
         : "";
     if (rawGroupLabel.trim().length > 0) {
-      return rawGroupLabel;
+      return sanitizeHermesText(rawGroupLabel);
     }
 
     const rawMessage =
       typeof event.payload?.message === "string" ? event.payload.message : "";
     const normalizedMessage = rawMessage.replace(/^Starting\s+/i, "").trim();
     if (normalizedMessage.length > 0) {
-      return normalizedMessage;
+      return sanitizeHermesText(normalizedMessage);
     }
 
     const rawStage =
       typeof event.payload?.stage === "string" ? event.payload.stage : "";
     if (rawStage.trim().length > 0) {
-      return rawStage.trim();
+      return sanitizeHermesText(rawStage.trim());
     }
 
     return "Getting started...";
@@ -1108,22 +1134,55 @@ export function renderEventTitle(
   }
 
   if (event.type === "timeline_error") {
-    const message = getTimelineErrorText(event);
+    const message = sanitizeHermesText(getTimelineErrorText(event));
+    const repeatedFailureCount = Number(
+      event.payload?.repeatedFailureCount || 1,
+    );
+    const repeatedFailureLabel =
+      repeatedFailureCount > 1
+        ? ` (${translate(
+            "timeline.repeatedFailureCount",
+            "repeated {count} times",
+            { count: repeatedFailureCount },
+          )})`
+        : "";
+    if (event.payload?.recoveredIntermediateFailure === true) {
+      return (
+        translate("timeline.recoveredAttempt", "Recovered attempt: {message}", {
+          message: localizeErrorText(formatTimelineErrorTitleForDisplay(message)),
+        }) + repeatedFailureLabel
+      );
+    }
+    if (event.payload?.intermediateFailurePending === true) {
+      return (
+        translate(
+          "timeline.recoveryInProgress",
+          "Trying another approach: {message}",
+          {
+            message: localizeErrorText(
+              formatTimelineErrorTitleForDisplay(message),
+            ),
+          },
+        ) + repeatedFailureLabel
+      );
+    }
     if (isLongOsascriptCommandText(message))
       return localizeProgressText("Command failed: osascript");
-    return message
+    const errorTitle = message
       ? localizeErrorText(formatTimelineErrorTitleForDisplay(message))
       : getMessage("error", msgCtx);
+    return errorTitle + repeatedFailureLabel;
   }
 
   if (
     (event.type === "timeline_step_updated" || event.type === "progress_update") &&
     effectiveType === "progress_update"
   ) {
-    const rawMsg =
+    const rawMsg = sanitizeHermesText(
       typeof event.payload?.message === "string"
         ? event.payload.message
-        : "Progress update";
+        : "Progress update",
+    );
     if (event.payload?.phase === "runtime") {
       const runtimeAgent =
         typeof event.payload?.runtimeAgent === "string"
@@ -1133,14 +1192,23 @@ export function renderEventTitle(
         typeof event.payload?.runtimeState === "string"
           ? event.payload.runtimeState
           : "active";
+      if (isHermesRuntimePayload(event.payload)) {
+        return localizeProgressText(
+          runtimeState === "failed"
+            ? "Task execution is unavailable"
+            : "Working on the task",
+        );
+      }
       const runtimeLabel =
-        runtimeAgent === "hermes"
-          ? "Hermes Harness"
+        isHiddenBackendProviderType(runtimeAgent)
+          ? "execution service"
           : runtimeAgent === "native"
             ? "NeoWorker native loop"
-          : runtimeAgent === "claude"
-            ? "Claude Code ACP"
-            : "ACP runtime";
+            : runtimeAgent === "claude"
+              ? "Claude Code ACP"
+              : runtimeAgent === "acpx"
+                ? "ACP runtime"
+                : getUserVisibleProviderName(runtimeAgent, runtimeAgent);
       const stateLabel =
         runtimeState === "fallback"
           ? "fallback to NeoWorker native loop"
@@ -1266,6 +1334,14 @@ export function renderEventTitle(
         typeof event.payload?.activeProvider === "string"
           ? event.payload.activeProvider
           : primaryProvider;
+      const visiblePrimaryProvider = getUserVisibleProviderName(
+        primaryProvider,
+        primaryProvider,
+      );
+      const visibleActiveProvider = getUserVisibleProviderName(
+        activeProvider,
+        activeProvider,
+      );
       if (
         event.payload?.fallbackOccurred === true &&
         activeProvider !== primaryProvider
@@ -1273,18 +1349,23 @@ export function renderEventTitle(
         return translate(
           "timeline.providerSwitched",
           "{provider} request did not finish; switched to {fallback}",
-          { provider: primaryProvider, fallback: activeProvider },
+          {
+            provider: visiblePrimaryProvider,
+            fallback: visibleActiveProvider,
+          },
         );
       }
       return translate(
         "timeline.providerUnavailableRetrying",
         "{provider} request did not finish; retrying the current route",
-        { provider: primaryProvider },
+        { provider: visiblePrimaryProvider },
       );
     }
     case "task_queued": {
       const rawMessage =
-        typeof event.payload?.message === "string" ? event.payload.message : "";
+        typeof event.payload?.message === "string"
+          ? sanitizeHermesText(event.payload.message)
+          : "";
       const retryMatch = /Retrying\s+(\d+)\/(\d+)\s+in\s+(\d+)s/i.exec(
         rawMessage,
       );
@@ -1304,7 +1385,9 @@ export function renderEventTitle(
     }
     case "task_dequeued": {
       const rawMessage =
-        typeof event.payload?.message === "string" ? event.payload.message : "";
+        typeof event.payload?.message === "string"
+          ? sanitizeHermesText(event.payload.message)
+          : "";
       const retryMatch = /retry\s+(\d+)\/(\d+)/i.exec(rawMessage);
       return retryMatch
         ? translate(
@@ -1580,7 +1663,7 @@ export function renderEventTitle(
     case "log": {
       const logMsg = event.payload?.message;
       return typeof logMsg === "string"
-        ? localizeProgressText(humanizeTimelineMessage(logMsg))
+        ? localizeProgressText(humanizeTimelineMessage(sanitizeHermesText(logMsg)))
         : localizeProgressText("Log");
     }
     case "verification_started":
@@ -1656,6 +1739,19 @@ export function renderEventDetails(
       : (options?.childTasks?.find((t) => t.id === event.taskId) ??
         options?.task);
   const effectiveType = getEffectiveTaskEventType(event);
+  if (isHermesRuntimeEvent(event)) {
+    const runtimeState =
+      typeof event.payload?.runtimeState === "string"
+        ? event.payload.runtimeState
+        : "active";
+    return (
+      <div className="event-details">
+        {runtimeState === "failed"
+          ? "Task execution is unavailable."
+          : "Working on the task."}
+      </div>
+    );
+  }
   const stepCompletionPreviewPath = getStepCompletionPreviewPath(event);
   const shouldRenderOpenArtifactCard = (artifactPath: string) => {
     const previewKind = getInlinePreviewKindForGeneratedFile({
@@ -1847,7 +1943,42 @@ export function renderEventDetails(
   }
 
   if (event.type === "timeline_error") {
-    const message = getTimelineErrorText(event);
+    const message = sanitizeHermesText(getTimelineErrorText(event));
+    const repeatedFailureCount = Number(
+      event.payload?.repeatedFailureCount || 1,
+    );
+    const repeatedFailureLabel =
+      repeatedFailureCount > 1
+        ? ` (${translate(
+            "timeline.repeatedFailureCount",
+            "repeated {count} times",
+            { count: repeatedFailureCount },
+          )})`
+        : "";
+    if (event.payload?.recoveredIntermediateFailure === true) {
+      return (
+        <div className="event-details event-details-recovered">
+          {translate(
+            "timeline.recoveredAttemptDetail",
+            "A later step succeeded, so this intermediate error did not affect the final output: {message}",
+            { message: localizeErrorText(message || "Timeline error") },
+          )}
+          {repeatedFailureLabel}
+        </div>
+      );
+    }
+    if (event.payload?.intermediateFailurePending === true) {
+      return (
+        <div className="event-details event-details-recovered">
+          {translate(
+            "timeline.recoveryInProgressDetail",
+            "The task is still running and NeoWorker is trying another approach: {message}",
+            { message: localizeErrorText(message || "Timeline error") },
+          )}
+          {repeatedFailureLabel}
+        </div>
+      );
+    }
     if (isLongOsascriptCommandText(message)) {
       return (
         <div className="event-details event-details-command-error">
@@ -1858,6 +1989,7 @@ export function renderEventDetails(
     return (
       <div className="event-details event-details-failure">
         {localizeErrorText(message || "Timeline error")}
+        {repeatedFailureLabel}
       </div>
     );
   }
@@ -1877,10 +2009,33 @@ export function renderEventDetails(
     effectiveType === "progress_update" &&
     event.payload?.phase === "runtime"
   ) {
+    if (isHermesRuntimePayload(event.payload) || isHermesRuntimeEvent(event)) {
+      const runtimeState =
+        typeof event.payload?.runtimeState === "string"
+          ? event.payload.runtimeState
+          : "active";
+      return (
+        <div className="event-details">
+          {runtimeState === "failed"
+            ? "Task execution is unavailable."
+            : "Working on the task."}
+        </div>
+      );
+    }
     const runtimeAgent =
       typeof event.payload?.runtimeAgent === "string"
         ? event.payload.runtimeAgent
         : "acpx";
+    const runtimeLabel =
+      isHiddenBackendProviderType(runtimeAgent)
+        ? "execution service"
+        : runtimeAgent === "native"
+          ? "NeoWorker native loop"
+          : runtimeAgent === "claude"
+            ? "Claude Code ACP"
+            : runtimeAgent === "acpx"
+              ? "ACP runtime"
+              : getUserVisibleProviderName(runtimeAgent, runtimeAgent);
     const runtimeState =
       typeof event.payload?.runtimeState === "string"
         ? event.payload.runtimeState
@@ -1892,11 +2047,13 @@ export function renderEventDetails(
     return (
       <div className="event-details">
         <div>
-          Runtime: {runtimeAgent} · state: {runtimeState}
+          Runtime: {runtimeLabel} · state: {runtimeState}
         </div>
-        {message ? <div>{message}</div> : null}
+        {message ? <div>{sanitizeHermesText(message)}</div> : null}
         {typeof event.payload?.errorCode === "string" ? (
-          <div>Error code: {event.payload.errorCode}</div>
+          <div>
+            Error code: {sanitizeHermesText(event.payload.errorCode)}
+          </div>
         ) : null}
       </div>
     );
@@ -1904,10 +2061,22 @@ export function renderEventDetails(
 
   switch (effectiveType) {
     case "task_completed": {
-      const outputSummary = resolveTaskOutputSummaryFromCompletionEvent(
+      let outputSummary = resolveTaskOutputSummaryFromCompletionEvent(
         event,
         eventStream,
       );
+      if (!hasTaskOutputs(outputSummary)) {
+        const eventArtifactPaths = getTaskEventArtifactPaths(event, eventStream);
+        if (eventArtifactPaths.length > 0) {
+          const primaryOutputPath = eventArtifactPaths[0];
+          outputSummary = {
+            created: eventArtifactPaths,
+            primaryOutputPath,
+            outputCount: eventArtifactPaths.length,
+            folders: [],
+          };
+        }
+      }
       const isNeedsUserAction =
         event.payload?.terminalStatus === "needs_user_action";
       if (!hasTaskOutputs(outputSummary) && !isNeedsUserAction) return null;
@@ -2338,9 +2507,12 @@ export function renderEventDetails(
         event.payload?.step?.error ||
         event.payload?.error ||
         "Step failed.";
-      const displayReason = formatProviderErrorForDisplay(String(rawReason), {
-        task: taskForEvent,
-      });
+      const displayReason = formatProviderErrorForDisplay(
+        sanitizeHermesText(String(rawReason)),
+        {
+          task: taskForEvent,
+        },
+      );
       if (isLongOsascriptCommandText(displayReason)) {
         return (
           <div className="event-details event-details-command-error">
@@ -2371,7 +2543,7 @@ export function renderEventDetails(
           {typeof event.payload?.message === "string" &&
             event.payload.message.trim().length > 0 && (
               <div style={{ marginBottom: checklist.length > 0 ? 6 : 0 }}>
-                {event.payload.message}
+                {sanitizeHermesText(event.payload.message)}
               </div>
             )}
           {checklist.length > 0 && (
@@ -3093,7 +3265,9 @@ export function renderEventDetails(
         <div className="event-details event-details-failure">
           {localizeErrorText(
             formatProviderErrorForDisplay(
-              String(event.payload.error || event.payload.message || ""),
+              sanitizeHermesText(
+                String(event.payload.error || event.payload.message || ""),
+              ),
               { task: taskForEvent },
             ),
           )}

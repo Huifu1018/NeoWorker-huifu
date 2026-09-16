@@ -1,8 +1,7 @@
 import type { TaskEvent } from "../../shared/types";
 import { getEffectiveTaskEventType } from "./task-event-compat";
-import {
-  mergeTaskEventsByIdentity,
-} from "./task-event-stream";
+import { isHermesRuntimeEvent } from "./runtime-privacy";
+import { mergeTaskEventsByIdentity } from "./task-event-stream";
 
 const RENDERER_NOISE_EVENT_TYPES = new Set([
   "log",
@@ -35,6 +34,17 @@ const LARGE_LEGACY_TYPES = new Set([
 ]);
 const MAX_LARGE_EVENT_STRING_CHARS = 32 * 1024;
 const MAX_COMMAND_OUTPUT_CHARS = 16 * 1024;
+const PRESERVED_CONVERSATION_EVENT_TYPES = new Set([
+  "user_message",
+  "follow_up_started",
+  "assistant_message",
+  "task_completed",
+  "follow_up_completed",
+  "task_failed",
+  "follow_up_failed",
+  "task_cancelled",
+  "task_interrupted",
+]);
 
 function asObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -104,6 +114,23 @@ function getPlanProgressStateEventIndexes(events: TaskEvent[]): {
 
   lifecycleIndexes.sort((left, right) => left - right);
   return { planIndexes, lifecycleIndexes };
+}
+
+function getConversationContextEventIndexes(events: TaskEvent[]): number[] {
+  const indexes: number[] = [];
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (!PRESERVED_CONVERSATION_EVENT_TYPES.has(effectiveType)) continue;
+    if (
+      effectiveType === "assistant_message" &&
+      event.payload?.internal === true
+    ) {
+      continue;
+    }
+    indexes.push(index);
+  }
+  return indexes;
 }
 
 function addIndexesWithinCap(
@@ -206,7 +233,10 @@ function trimRendererEventPayload(event: TaskEvent): TaskEvent {
 }
 
 export function isRendererNoiseEvent(event: TaskEvent): boolean {
-  return RENDERER_NOISE_EVENT_TYPES.has(getEffectiveTaskEventType(event));
+  return (
+    RENDERER_NOISE_EVENT_TYPES.has(getEffectiveTaskEventType(event)) ||
+    isHermesRuntimeEvent(event)
+  );
 }
 
 export function capTaskEvents(
@@ -240,7 +270,16 @@ export function capTaskEvents(
     if (payloadBytes > maxPayloadBytes) {
       const { planIndexes, lifecycleIndexes } =
         getPlanProgressStateEventIndexes(eventsForByteCap);
+      const conversationIndexes =
+        getConversationContextEventIndexes(eventsForByteCap);
       const keepIndexes = new Set<number>();
+      // Conversation boundaries are durable UI state. Losing them merges
+      // several queries and replies into one apparent turn after a long run.
+      addIndexesWithinCap(
+        keepIndexes,
+        descendingIndexes(conversationIndexes),
+        maxEvents,
+      );
       // Plan state is tiny but indispensable: dropping it makes composer progress
       // disappear or fall back to stale cached statuses during tool-heavy runs.
       addIndexesWithinCap(keepIndexes, planIndexes, maxEvents);
@@ -285,7 +324,13 @@ export function capTaskEvents(
   const noise = indexed.filter(({ event }) => isRendererNoiseEvent(event));
   const { planIndexes, lifecycleIndexes } =
     getPlanProgressStateEventIndexes(trimmed);
+  const conversationIndexes = getConversationContextEventIndexes(trimmed);
   const keepIndexes = new Set<number>();
+  addIndexesWithinCap(
+    keepIndexes,
+    descendingIndexes(conversationIndexes),
+    maxEvents,
+  );
   addIndexesWithinCap(keepIndexes, planIndexes, maxEvents);
   addIndexesWithinCap(
     keepIndexes,

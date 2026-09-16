@@ -6,6 +6,27 @@ import { isRecoverableWebSourceFailure } from "../../../shared/web-source-failur
 
 const DEFAULT_TEXT_ENCODING = "utf-8";
 const CHINESE_LEGACY_TEXT_ENCODING = "gb18030";
+const SOURCE_SWITCH_REMINDER =
+  "This web source is unavailable. Do not retry this URL or hostname with web_fetch or http_request in this task. Use a search result from a different hostname, or continue with already retrieved search snippets when they are sufficient.";
+
+type WebFetch = typeof globalThis.fetch;
+
+function getElectronNetFetch(): WebFetch | null {
+  if (!process.versions.electron) return null;
+
+  try {
+    // Electron's Chromium network stack follows the user's macOS proxy and
+    // certificate settings. Node's undici fetch does not, which can make a
+    // page found by web_search time out when web_fetch reads the same URL.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // oxlint-disable-next-line typescript-eslint(no-require-imports)
+    const electron = require("electron") as Any;
+    const netFetch = electron?.net?.fetch;
+    return typeof netFetch === "function" ? netFetch.bind(electron.net) : null;
+  } catch {
+    return null;
+  }
+}
 
 function normalizeTextEncoding(
   rawEncoding?: string | null,
@@ -102,6 +123,8 @@ export function decodeHttpResponseBody(
  * Also includes curl-like http_request tool for raw HTTP requests.
  */
 export class WebFetchTools {
+  private readonly unavailableSourceHosts = new Map<string, string>();
+
   constructor(
     private workspace: Workspace,
     private daemon: AgentDaemon,
@@ -113,6 +136,53 @@ export class WebFetchTools {
    */
   setWorkspace(workspace: Workspace): void {
     this.workspace = workspace;
+  }
+
+  private getSourceHost(url: string): string {
+    try {
+      return new URL(url).hostname.trim().toLowerCase();
+    } catch {
+      return "";
+    }
+  }
+
+  private buildRecoverableSourceMetadata(url: string): {
+    nonBlocking: true;
+    recoverableFallback: true;
+    failureKind: "source_unavailable";
+    immediateReminder: string;
+  } {
+    const host = this.getSourceHost(url);
+    return {
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "source_unavailable",
+      immediateReminder: host
+        ? `${SOURCE_SWITCH_REMINDER} Unavailable hostname: ${host}.`
+        : SOURCE_SWITCH_REMINDER,
+    };
+  }
+
+  private shouldOpenSourceCircuit(reason: string): boolean {
+    return /\bhttp\s+(?:401|403|407|418|423|429|432|451)\b|err_connection_closed|connection (?:was )?closed|forbidden|access denied|robots|whaleguard/i.test(
+      reason,
+    );
+  }
+
+  private markSourceUnavailable(url: string, reason: string): void {
+    const host = this.getSourceHost(url);
+    if (host && this.shouldOpenSourceCircuit(reason)) {
+      this.unavailableSourceHosts.set(host, reason);
+    }
+  }
+
+  private getUnavailableSourceError(url: string): string | null {
+    const host = this.getSourceHost(url);
+    if (!host) return null;
+    const previousReason = this.unavailableSourceHosts.get(host);
+    return previousReason
+      ? `Source unavailable: ${host} was blocked earlier in this task (${previousReason}). Use a different hostname.`
+      : null;
   }
 
   private ensureDomainAllowed(url: string): void {
@@ -137,6 +207,7 @@ export class WebFetchTools {
   ): Promise<Response> {
     let currentUrl = url;
     let currentInit: RequestInit = { ...init };
+    const requestFetch = getElectronNetFetch() || globalThis.fetch;
 
     for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
       const parsedUrl = new URL(currentUrl);
@@ -152,7 +223,7 @@ export class WebFetchTools {
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
-          response = await fetch(currentUrl, {
+          response = await requestFetch(currentUrl, {
             ...currentInit,
             redirect: "manual",
           });
@@ -209,7 +280,8 @@ export class WebFetchTools {
     if (candidate?.name === "AbortError") return false;
     const cause = candidate?.cause as Any;
     const code = String(cause?.code || candidate?.code || "").toUpperCase();
-    const message = `${String(candidate?.message || "")} ${String(cause?.message || "")}`.toLowerCase();
+    const message =
+      `${String(candidate?.message || "")} ${String(cause?.message || "")}`.toLowerCase();
     return (
       [
         "ECONNRESET",
@@ -233,14 +305,18 @@ export class WebFetchTools {
     const candidate = error as Any;
     if (candidate?.name === "AbortError") return "Request timed out";
     const cause = candidate?.cause as Any;
-    const message = String(candidate?.message || "Network request failed").trim();
+    const message = String(
+      candidate?.message || "Network request failed",
+    ).trim();
     const causeCode = String(cause?.code || candidate?.code || "").trim();
     const causeMessage = String(cause?.message || "").trim();
     const detail = [causeCode, causeMessage]
       .filter(Boolean)
       .filter((part, index, all) => all.indexOf(part) === index)
       .join(": ");
-    return detail && !message.includes(detail) ? `${message}: ${detail}` : message;
+    return detail && !message.includes(detail)
+      ? `${message}: ${detail}`
+      : message;
   }
 
   private isRedirectResponse(status: number): boolean {
@@ -389,9 +465,27 @@ export class WebFetchTools {
     nonBlocking?: boolean;
     recoverableFallback?: boolean;
     failureKind?: "source_unavailable";
+    immediateReminder?: string;
   }> {
     const { url, selector, includeLinks = true, maxLength = 50000 } = input;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const unavailableSourceError = this.getUnavailableSourceError(url);
+    if (unavailableSourceError) {
+      const result = {
+        success: false,
+        url,
+        content: "",
+        contentLength: 0,
+        error: unavailableSourceError,
+        ...this.buildRecoverableSourceMetadata(url),
+      };
+      this.daemon.logEvent(this.taskId, "tool_result", {
+        tool: "web_fetch",
+        result,
+      });
+      return result;
+    }
 
     this.daemon.logEvent(this.taskId, "log", {
       message: `Fetching: ${url}`,
@@ -480,6 +574,12 @@ export class WebFetchTools {
     } catch (error: Any) {
       const errorMessage = this.formatFetchError(error);
       const recoverableFallback = isRecoverableWebSourceFailure(errorMessage);
+      if (recoverableFallback) {
+        this.markSourceUnavailable(url, errorMessage);
+      }
+      const recoverableMetadata = recoverableFallback
+        ? this.buildRecoverableSourceMetadata(url)
+        : {};
 
       this.daemon.logEvent(this.taskId, "tool_result", {
         tool: "web_fetch",
@@ -487,13 +587,7 @@ export class WebFetchTools {
           success: false,
           url,
           error: errorMessage,
-          ...(recoverableFallback
-            ? {
-                nonBlocking: true,
-                recoverableFallback: true,
-                failureKind: "source_unavailable",
-              }
-            : {}),
+          ...recoverableMetadata,
         },
       });
 
@@ -503,13 +597,7 @@ export class WebFetchTools {
         content: "",
         contentLength: 0,
         error: errorMessage,
-        ...(recoverableFallback
-          ? {
-              nonBlocking: true,
-              recoverableFallback: true,
-              failureKind: "source_unavailable" as const,
-            }
-          : {}),
+        ...recoverableMetadata,
       };
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
@@ -539,6 +627,7 @@ export class WebFetchTools {
     nonBlocking?: boolean;
     recoverableFallback?: boolean;
     failureKind?: "source_unavailable";
+    immediateReminder?: string;
   }> {
     const {
       url,
@@ -549,6 +638,26 @@ export class WebFetchTools {
       followRedirects = true,
       maxLength = 100000,
     } = input;
+
+    const unavailableSourceError = this.getUnavailableSourceError(url);
+    if (unavailableSourceError) {
+      const result = {
+        success: false,
+        url,
+        status: 0,
+        statusText: "Source unavailable",
+        headers: {},
+        body: "",
+        contentLength: 0,
+        error: unavailableSourceError,
+        ...this.buildRecoverableSourceMetadata(url),
+      };
+      this.daemon.logEvent(this.taskId, "tool_result", {
+        tool: "http_request",
+        result,
+      });
+      return result;
+    }
 
     this.daemon.logEvent(this.taskId, "log", {
       message: `HTTP ${method}: ${url}`,
@@ -629,6 +738,14 @@ export class WebFetchTools {
         isRecoverableWebSourceFailure(
           `HTTP ${response.status}: ${response.statusText}`,
         );
+      const sourceFailureReason =
+        `HTTP ${response.status}: ${response.statusText} ${responseBody.slice(0, 200)}`.trim();
+      if (recoverableFallback) {
+        this.markSourceUnavailable(normalizedUrl, sourceFailureReason);
+      }
+      const recoverableMetadata = recoverableFallback
+        ? this.buildRecoverableSourceMetadata(normalizedUrl)
+        : {};
 
       this.daemon.logEvent(this.taskId, "tool_result", {
         tool: "http_request",
@@ -639,13 +756,7 @@ export class WebFetchTools {
           status: response.status,
           contentLength: responseBody.length,
           truncated,
-          ...(recoverableFallback
-            ? {
-                nonBlocking: true,
-                recoverableFallback: true,
-                failureKind: "source_unavailable",
-              }
-            : {}),
+          ...recoverableMetadata,
         },
       });
 
@@ -657,17 +768,17 @@ export class WebFetchTools {
         headers: responseHeaders,
         body: responseBody,
         contentLength: responseBody.length,
-        ...(recoverableFallback
-          ? {
-              nonBlocking: true,
-              recoverableFallback: true,
-              failureKind: "source_unavailable" as const,
-            }
-          : {}),
+        ...recoverableMetadata,
       };
     } catch (error: Any) {
       const errorMessage = this.formatFetchError(error);
       const recoverableFallback = isRecoverableWebSourceFailure(errorMessage);
+      if (recoverableFallback) {
+        this.markSourceUnavailable(url, errorMessage);
+      }
+      const recoverableMetadata = recoverableFallback
+        ? this.buildRecoverableSourceMetadata(url)
+        : {};
 
       this.daemon.logEvent(this.taskId, "tool_result", {
         tool: "http_request",
@@ -677,9 +788,7 @@ export class WebFetchTools {
                 success: false,
                 url,
                 error: errorMessage,
-                nonBlocking: true,
-                recoverableFallback: true,
-                failureKind: "source_unavailable",
+                ...recoverableMetadata,
               },
             }
           : { error: errorMessage }),
@@ -694,13 +803,7 @@ export class WebFetchTools {
         body: "",
         contentLength: 0,
         error: errorMessage,
-        ...(recoverableFallback
-          ? {
-              nonBlocking: true,
-              recoverableFallback: true,
-              failureKind: "source_unavailable" as const,
-            }
-          : {}),
+        ...recoverableMetadata,
       };
     } finally {
       if (timeoutId) clearTimeout(timeoutId);

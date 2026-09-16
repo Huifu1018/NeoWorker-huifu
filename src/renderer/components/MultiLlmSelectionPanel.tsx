@@ -6,6 +6,11 @@ import type {
 } from "../../shared/types";
 import { MULTI_LLM_PROVIDER_DISPLAY } from "../../shared/types";
 import { translate, useLanguage } from "../i18n";
+import {
+  getUserVisibleProviderName,
+  isHiddenBackendProviderType,
+  sanitizeModelsForDisplay,
+} from "../utils/provider-privacy";
 
 interface LLMProviderInfo {
   type: string;
@@ -53,15 +58,16 @@ export function MultiLlmSelectionPanel({
           try {
             const models =
               await window.electronAPI.getProviderModels(providerType);
+            const visibleModels = sanitizeModelsForDisplay(models || [], providerType);
             setProviderModels((prev) => {
               const m = new Map(prev);
-              m.set(providerType, models);
+              m.set(providerType, visibleModels);
               return m;
             });
-            if (models.length > 0) {
+            if (visibleModels.length > 0) {
               setSelectedModels((prev) => {
                 const m = new Map(prev);
-                if (!m.has(providerType)) m.set(providerType, models[0].key);
+                if (!m.has(providerType)) m.set(providerType, visibleModels[0].key);
                 return m;
               });
             }
@@ -100,15 +106,19 @@ export function MultiLlmSelectionPanel({
       const modelKey = selectedModels.get(providerType);
       if (!modelKey) continue;
       const providerInfo = MULTI_LLM_PROVIDER_DISPLAY[providerType];
-      const providerName =
-        configuredProviders.find((p) => p.type === providerType)?.name ||
-        providerType;
+      const providerName = getUserVisibleProviderName(
+        providerType,
+        configuredProviders.find((p) => p.type === providerType)?.name,
+      );
+      const modelLabel = isHiddenBackendProviderType(providerType)
+        ? "Configured model"
+        : modelKey;
       participants.push({
         providerType: providerType as Any,
         modelKey,
         displayName: providerInfo
-          ? `${providerInfo.name} (${modelKey})`
-          : `${providerName} (${modelKey})`,
+          ? `${providerInfo.name} (${modelLabel})`
+          : `${providerName} (${modelLabel})`,
         isJudge: false,
       });
     }
@@ -168,10 +178,16 @@ export function MultiLlmSelectionPanel({
     const modelKey = selectedModels.get(providerType);
     if (!modelKey) continue;
     const providerInfo = MULTI_LLM_PROVIDER_DISPLAY[providerType];
-    const name = providerInfo?.name || providerType;
+    const name = getUserVisibleProviderName(
+      providerType,
+      providerInfo?.name || providerType,
+    );
+    const modelLabel = isHiddenBackendProviderType(providerType)
+      ? "Configured model"
+      : modelKey;
     judgeOptions.push({
       key: `${providerType}:${modelKey}`,
-      label: `${providerInfo?.icon || ""} ${name} (${modelKey})`,
+      label: `${providerInfo?.icon || ""} ${name} (${modelLabel})`,
     });
   }
 
@@ -196,7 +212,7 @@ export function MultiLlmSelectionPanel({
                   }
                 />
                 <span>
-                  {providerDisplay?.icon || ""} {provider.name}
+                  {providerDisplay?.icon || ""} {getUserVisibleProviderName(provider.type, provider.name)}
                 </span>
               </label>
               {isSelected && models.length > 0 && (

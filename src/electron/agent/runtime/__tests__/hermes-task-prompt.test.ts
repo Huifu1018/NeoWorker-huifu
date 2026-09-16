@@ -13,6 +13,8 @@ describe("Hermes task prompt", () => {
       workspacePath: "/tmp/neoworker-task",
       contextNotes: ["Plan note", "Plan note"],
       appliedSkillContext: "ACTIVE SKILL: documents",
+      deliverableContract:
+        "Create a valid .pdf artifact before the final response.",
     });
 
     expect(prompt).toContain("<neoworker_runtime_contract_v1>");
@@ -27,6 +29,8 @@ describe("Hermes task prompt", () => {
     expect(prompt).toContain("<neoworker_context_v1>");
     expect(prompt.match(/Plan note/g)).toHaveLength(1);
     expect(prompt).toContain("<neoworker_skills_v1>");
+    expect(prompt).toContain("<neoworker_deliverable_contract_v1>");
+    expect(prompt).toContain("Create a valid .pdf artifact");
   });
 
   it("bounds large task context while retaining the beginning and end", () => {
@@ -60,6 +64,7 @@ describe("Hermes task prompt", () => {
       taskPrompt: "Build the project.",
       workspacePath: "/tmp/workspace",
       appliedSkillContext: "ACTIVE SKILL: documents\nUse the document workflow.",
+      deliverableContract: "Create the requested .pdf file before completion.",
     });
 
     expect(prompt).toContain("<neoworker_recovery_v1>");
@@ -67,6 +72,8 @@ describe("Hermes task prompt", () => {
     expect(prompt).toContain("unknown");
     expect(prompt).toContain("<neoworker_skills_v1>");
     expect(prompt).toContain("Use the document workflow.");
+    expect(prompt).toContain("<neoworker_deliverable_contract_v1>");
+    expect(prompt).toContain("Create the requested .pdf file");
   });
 
   it("preserves the configured truncation marker", () => {

@@ -91,6 +91,19 @@ function createExecutorForFinalization(overrides: Partial<Any> = {}): Any {
 }
 
 describe("TaskExecutor terminal finalization state", () => {
+  it("scopes best-effort external-runtime outputs to the current follow-up", () => {
+    const executor = createExecutorForFinalization();
+
+    (TaskExecutor as Any).prototype.finalizeTaskBestEffort.call(
+      executor,
+      "Current follow-up completed.",
+      "hermes follow-up completed",
+      { outputEvidenceStartedAt: 1234 },
+    );
+
+    expect(executor.buildTaskOutputSummary).toHaveBeenCalledWith(1234, "Current follow-up completed.");
+  });
+
   it("deactivates a persisted presentation workflow for an explicit non-PPT follow-up", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

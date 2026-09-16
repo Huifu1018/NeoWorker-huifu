@@ -38,6 +38,7 @@ import {
   getLocalizedSubagentDisplay,
 } from "../utils/localized-agent-roles";
 import { getManagedAgentPromptForDisplay } from "../utils/mission-control-copy";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 
 function truncate(str: string, maxLen: number): string {
   if (str.length <= maxLen) return str;
@@ -596,10 +597,12 @@ export function CollaborativeSummaryPanel({
           .reverse()
           .find((e) => getEffectiveTaskEventType(e) === "assistant_message");
         const synthesisOutput =
-          synthesisTask.resultSummary?.trim() ||
-          (
-            lastAssistant?.payload as { message?: string } | undefined
-          )?.message?.trim();
+          sanitizeHermesText(synthesisTask.resultSummary?.trim() || "") ||
+          sanitizeHermesText(
+            (
+              lastAssistant?.payload as { message?: string } | undefined
+            )?.message?.trim() || "",
+          );
         if (!synthesisOutput) return null;
         return (
           <div className="collab-summary-synthesis-output">

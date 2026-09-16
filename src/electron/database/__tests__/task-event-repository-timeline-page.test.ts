@@ -452,6 +452,70 @@ describe("TaskEventRepository.findTimelinePage", () => {
     ]);
   });
 
+  it("keeps visible execution history when later runtime noise fills the page", () => {
+    insertEvent({
+      id: "user",
+      seq: 1,
+      timestamp: 1,
+      legacyType: "user_message",
+      payload: { message: "Translate the document" },
+    });
+    insertEvent({
+      id: "discover-completed",
+      seq: 2,
+      timestamp: 2,
+      legacyType: "step_completed",
+      status: "completed",
+      payload: { step: { description: "Read the source document" } },
+    });
+    insertEvent({
+      id: "build-started",
+      seq: 3,
+      timestamp: 3,
+      legacyType: "step_started",
+      status: "in_progress",
+      payload: { step: { description: "Preserve images and translate text" } },
+    });
+    for (let index = 0; index < 300; index += 1) {
+      insertEvent({
+        id: `runtime-noise-${index}`,
+        seq: 100 + index,
+        timestamp: 100 + index,
+        legacyType: "hermes_runtime_checkpoint",
+      });
+    }
+
+    const page = repo.findTimelinePage({ taskId: "task-1", limit: 20 });
+
+    expect(page.events.map((event) => event.id)).toEqual(
+      expect.arrayContaining(["user", "discover-completed", "build-started"]),
+    );
+    expect(page.events.at(-1)?.id).toBe("runtime-noise-299");
+    expect(page.hasMoreHistory).toBe(true);
+  });
+
+  it("keeps an older visible assistant reply in the first timeline page", () => {
+    insertEvent({
+      id: "assistant-reply",
+      seq: 1,
+      timestamp: 1,
+      legacyType: "assistant_message",
+      payload: { message: "The first result is ready." },
+    });
+    for (let index = 0; index < 200; index += 1) {
+      insertEvent({
+        id: `runtime-update-${index}`,
+        seq: 10 + index,
+        timestamp: 10 + index,
+        legacyType: "hermes_runtime_update",
+      });
+    }
+
+    const page = repo.findTimelinePage({ taskId: "task-1", limit: 10 });
+
+    expect(page.events.map((event) => event.id)).toContain("assistant-reply");
+  });
+
   it("does not pin the task plan into older cursor pages", () => {
     insertEvent({
       id: "plan",
@@ -836,6 +900,30 @@ class FakeTaskEventDb {
           return b.id.localeCompare(a.id);
         })
         .slice(0, 160);
+    }
+
+    if (sql.includes("visible_timeline_context")) {
+      const taskId = String(args[0] ?? "");
+      const typeMatch = sql.match(
+        /COALESCE\(legacy_type, type\) IN \(([^)]*)\)/,
+      );
+      const typeCount = (typeMatch?.[1]?.match(/\?/g) ?? []).length;
+      const types = new Set(args.slice(1, 1 + typeCount).map(String));
+      const limit = Number(args[1 + typeCount]) || 160;
+      return this.rows
+        .filter(
+          (row) =>
+            row.task_id === taskId && types.has(row.legacy_type || row.type),
+        )
+        .map((row) => ({ ...row, timeline_order: row.seq ?? row.timestamp }))
+        .sort((a, b) => {
+          const orderDelta = (b.timeline_order ?? 0) - (a.timeline_order ?? 0);
+          if (orderDelta !== 0) return orderDelta;
+          const timestampDelta = b.timestamp - a.timestamp;
+          if (timestampDelta !== 0) return timestampDelta;
+          return b.id.localeCompare(a.id);
+        })
+        .slice(0, limit);
     }
 
     if (

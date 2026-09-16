@@ -48,7 +48,9 @@ export function WorkspaceSelector({
           write: true,
           delete: true,
           network: false,
-          shell: permissionSettings?.defaultShellEnabled === true,
+          shell:
+            permissionSettings?.defaultShellEnabled === true ||
+            permissionSettings?.defaultPermissionAccess === "full",
         },
       });
 
@@ -178,8 +180,13 @@ export function WorkspaceSelector({
             {workspaces.map((workspace, index) => (
               <div
                 key={workspace.id}
-                className="cli-workspace-item"
+                aria-disabled={
+                  workspace.availability !== undefined &&
+                  workspace.availability !== "available"
+                }
+                className={`cli-workspace-item ${workspace.availability && workspace.availability !== "available" ? "unavailable" : ""}`}
                 onClick={() => onWorkspaceSelected(workspace)}
+                title={workspace.availabilityReason || workspace.path}
               >
                 <span className="cli-item-num">
                   {String(index + 1).padStart(2, "0")}
@@ -193,6 +200,15 @@ export function WorkspaceSelector({
                 <div className="cli-item-info">
                   <span className="cli-item-name">{workspace.name}/</span>
                   <span className="cli-item-path">{workspace.path}</span>
+                  {workspace.availability &&
+                    workspace.availability !== "available" && (
+                      <span className="cli-item-unavailable">
+                        {t(
+                          "composer.workspaceFolderUnavailable",
+                          "Folder missing or replaced - choose it again",
+                        )}
+                      </span>
+                    )}
                 </div>
               </div>
             ))}

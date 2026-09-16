@@ -173,9 +173,17 @@ import {
   deriveSharedTaskEventUiState,
   type SharedTaskEventUiState,
 } from "./utils/task-event-derived";
-import { isTaskActivelyWorking } from "./utils/task-working-state";
+import {
+  isTaskActivelyWorking,
+  shouldEndOptimisticFollowUp,
+  shouldEndOptimisticFollowUpFromTask,
+} from "./utils/task-working-state";
 import { getManagedAgentTaskTitleForDisplay } from "./utils/mission-control-copy";
 import { deriveReplayTaskSnapshot } from "./utils/task-replay-state";
+import {
+  filterProvidersForDisplay,
+  sanitizeModelsForDisplay,
+} from "./utils/provider-privacy";
 import {
   filterTaskEventsForSelectedSession,
   getTaskEventIdentity,
@@ -2609,12 +2617,9 @@ export function App() {
   useEffect(() => {
     if (!selectedTaskId || !selectedTask) return;
     const startedAt = optimisticFollowUpStartedAtByTaskId[selectedTaskId];
-    const completedAt = Math.max(selectedTask.completedAt ?? 0, selectedTask.updatedAt ?? 0);
     if (
       startedAt === undefined ||
-      !isTerminalTaskStatus(selectedTask.status) ||
-      typeof completedAt !== "number" ||
-      completedAt < startedAt
+      !shouldEndOptimisticFollowUpFromTask(selectedTask, startedAt)
     ) {
       return;
     }
@@ -3399,6 +3404,13 @@ export function App() {
         currentProviderConfigured &&
         Boolean(config.currentModel?.trim()) &&
         config.models.some((model) => model.key === config.currentModel);
+      const visibleProviders = filterProvidersForDisplay(config.providers, {
+        keepSelectedType: config.currentProvider,
+      });
+      const visibleModels = sanitizeModelsForDisplay(
+        config.models,
+        config.currentProvider,
+      );
       setDefaultModelSelection({
         providerType: config.currentProvider,
         modelKey: hasConfiguredModel ? config.currentModel : "",
@@ -3406,8 +3418,8 @@ export function App() {
           ? { reasoningEffort: config.currentReasoningEffort }
           : {}),
       });
-      setAvailableModels(hasConfiguredModel ? config.models : []);
-      setAvailableProviders(config.providers);
+      setAvailableModels(hasConfiguredModel ? visibleModels : []);
+      setAvailableProviders(visibleProviders);
     } catch (error) {
       console.error("Failed to load LLM config:", error);
     }
@@ -3449,7 +3461,8 @@ export function App() {
     void window.electronAPI
       .getProviderModels(providerType)
       .then((models) => {
-        if (!cancelled) setAvailableModels(models);
+        if (!cancelled)
+          setAvailableModels(sanitizeModelsForDisplay(models, providerType));
       })
       .catch((error) => {
         if (cancelled) return;
@@ -4116,6 +4129,18 @@ export function App() {
           return;
         const effectiveType = getEffectiveTaskEventType(rawEvent);
         const event = { ...rawEvent, type: effectiveType } as TaskEvent;
+        setOptimisticFollowUpStartedAtByTaskId((previous) => {
+          const startedAt = previous[event.taskId];
+          if (
+            startedAt === undefined ||
+            !shouldEndOptimisticFollowUp(event, startedAt)
+          ) {
+            return previous;
+          }
+          const next = { ...previous };
+          delete next[event.taskId];
+          return next;
+        });
         setEvents((prev) => appendRendererTaskEvents(prev, [event]));
         const newStatus = isLlmRequestCancelledEvent(event)
           ? undefined
@@ -4155,37 +4180,18 @@ export function App() {
           type: effectiveType,
         } as TaskEvent;
         noteRendererTaskEventReceived(event, rendererPerfLoggingEnabled);
-        const eventTimestampForOptimisticFollowUp =
-          typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
-            ? event.timestamp
-            : Date.now();
-        const eventEndsOptimisticFollowUp =
-          effectiveType === "task_completed" ||
-          effectiveType === "task_cancelled" ||
-          effectiveType === "task_paused" ||
-          effectiveType === "approval_requested" ||
-          effectiveType === "input_request_created" ||
-          effectiveType === "follow_up_completed" ||
-          effectiveType === "follow_up_failed" ||
-          effectiveType === "task_interrupted" ||
-          (effectiveType === "task_status" &&
-            ["completed", "failed", "cancelled", "paused", "blocked", "interrupted"].includes(
-              String(event.payload?.status),
-            ));
-        if (eventEndsOptimisticFollowUp) {
-          setOptimisticFollowUpStartedAtByTaskId((previous) => {
-            const startedAt = previous[event.taskId];
-            if (
-              startedAt === undefined ||
-              eventTimestampForOptimisticFollowUp < startedAt
-            ) {
-              return previous;
-            }
-            const next = { ...previous };
-            delete next[event.taskId];
-            return next;
-          });
-        }
+        setOptimisticFollowUpStartedAtByTaskId((previous) => {
+          const startedAt = previous[event.taskId];
+          if (
+            startedAt === undefined ||
+            !shouldEndOptimisticFollowUp(event, startedAt)
+          ) {
+            return previous;
+          }
+          const next = { ...previous };
+          delete next[event.taskId];
+          return next;
+        });
         const sideChatTaskId = sideChatRef.current?.task?.id;
         const sideChatParentTaskId = sideChatRef.current?.parentTaskId;
         const isSideChatTaskEvent = sideChatTaskId === event.taskId;
@@ -5891,6 +5897,23 @@ export function App() {
       workspace: Workspace,
       options?: { reassignSelectedTask?: boolean },
     ) => {
+      let validatedWorkspace = workspace;
+      try {
+        const resolved = await window.electronAPI.selectWorkspace(workspace.id);
+        if (!resolved) {
+          throw new Error(`Workspace not found: ${workspace.id}`);
+        }
+        validatedWorkspace = resolved;
+      } catch (error) {
+        console.error("Failed to select workspace:", error);
+        addToast({
+          type: "error",
+          title: t("app.toast.workspaceError.title", "Workspace Error"),
+          message: formatCreateTaskError(error),
+        });
+        return;
+      }
+
       if (
         options?.reassignSelectedTask !== false &&
         selectedTaskId &&
@@ -5900,13 +5923,13 @@ export function App() {
         try {
           const updatedTask = (await window.electronAPI.updateTaskWorkspace(
             selectedTaskId,
-            workspace.id,
+            validatedWorkspace.id,
           )) as Task | undefined;
           setTasks((prev) =>
             updateTaskPreservingIdentity(prev, selectedTaskId, (task) =>
               mergeTaskPreservingIdentity(
                 task,
-                updatedTask ?? { workspaceId: workspace.id },
+                updatedTask ?? { workspaceId: validatedWorkspace.id },
               ),
             ),
           );
@@ -5931,7 +5954,7 @@ export function App() {
         try {
           const links =
             await window.electronAPI.listProjectWorkspaces(currentProjectId);
-          if (!links.some((link) => link.workspaceId === workspace.id)) {
+          if (!links.some((link) => link.workspaceId === validatedWorkspace.id)) {
             setCurrentProjectId(null);
           }
         } catch (error) {
@@ -5939,7 +5962,7 @@ export function App() {
           setCurrentProjectId(null);
         }
       }
-      setCurrentWorkspace(workspace);
+      setCurrentWorkspace(validatedWorkspace);
     },
     [addToast, currentProjectId, remoteTaskView, selectedTaskId],
   );
@@ -5987,7 +6010,9 @@ export function App() {
           write: true,
           delete: true,
           network: true,
-          shell: permissionSettings?.defaultShellEnabled === true,
+          shell:
+            permissionSettings?.defaultShellEnabled === true ||
+            permissionSettings?.defaultPermissionAccess === "full",
         },
       });
 
@@ -6026,8 +6051,9 @@ export function App() {
   ): Promise<boolean> => {
     if (!prompt.trim()) return false;
 
-    const effectiveWorkspace = workspaceOverride ?? currentWorkspace;
-    if (!effectiveWorkspace) return false;
+    const initialWorkspace = workspaceOverride ?? currentWorkspace;
+    if (!initialWorkspace) return false;
+    let effectiveWorkspace: Workspace = initialWorkspace;
     let effectiveProjectId = FEATURE_VISIBILITY.projects
       ? workspaceOverride && workspaceOverride.id !== currentWorkspace?.id
         ? undefined
@@ -6296,6 +6322,23 @@ export function App() {
         : undefined;
 
     try {
+      if (shellAccess && !effectiveWorkspace.permissions.shell) {
+        const updatedWorkspace =
+          await window.electronAPI.updateWorkspacePermissions(
+            effectiveWorkspace.id,
+            { shell: true },
+          );
+        if (!updatedWorkspace?.permissions.shell) {
+          throw new Error(
+            "Full access was selected, but Shell could not be enabled for this workspace.",
+          );
+        }
+        effectiveWorkspace = updatedWorkspace;
+        if (currentWorkspace?.id === updatedWorkspace.id) {
+          setCurrentWorkspace(updatedWorkspace);
+        }
+      }
+
       if (window.electronAPI?.getLLMSettings) {
         const llmSettings = await window.electronAPI.getLLMSettings();
         const readiness = getFirstRunReadiness(llmSettings, {
@@ -6935,6 +6978,25 @@ export function App() {
           : {}),
       };
 
+      if (
+        options?.shellAccess === true &&
+        !remoteTaskView &&
+        currentWorkspace &&
+        !currentWorkspace.permissions.shell
+      ) {
+        const updatedWorkspace =
+          await window.electronAPI.updateWorkspacePermissions(
+            currentWorkspace.id,
+            { shell: true },
+          );
+        if (!updatedWorkspace?.permissions.shell) {
+          throw new Error(
+            "Full access was selected, but Shell could not be enabled for this workspace.",
+          );
+        }
+        setCurrentWorkspace(updatedWorkspace);
+      }
+
       if (shellPermissionDecision === "enable_shell" && currentWorkspace) {
         if (!currentWorkspace.permissions.shell) {
           try {
@@ -6953,7 +7015,7 @@ export function App() {
             );
           }
         }
-        nextOptions = { ...options, shellAccess: true };
+        nextOptions = { ...nextOptions, shellAccess: true };
         nextMessage =
           "Please continue with shell access enabled for this workspace.";
       } else if (shellPermissionDecision === "continue_without_shell") {

@@ -10,6 +10,7 @@ import {
   MontyProgramCache,
   runMontyCode,
   sha256Hex,
+  type MontyRunError,
   type MontyResourceLimits,
 } from "../../sandbox/monty-engine";
 import { FileTools } from "./file-tools";
@@ -61,6 +62,15 @@ const MAX_LIMITS: MontyResourceLimits = {
   gcInterval: 100_000,
   maxRecursionDepth: 2000,
 };
+
+function formatMontyFailure(error: MontyRunError): Record<string, unknown> {
+  return {
+    error: error.message || "Monty execution failed",
+    kind: error.kind,
+    ...(error.display ? { display: error.display } : {}),
+    ...(error.traceback ? { traceback: error.traceback } : {}),
+  };
+}
 
 function sanitizeTransformName(name: string): string {
   const trimmed = (name || "").trim();
@@ -268,7 +278,7 @@ export class MontyTools {
     });
 
     if (!res.ok) {
-      return { success: false, error: res.error };
+      return { success: false, ...formatMontyFailure(res.error) };
     }
 
     return { success: true, output: res.output };
@@ -355,7 +365,11 @@ export class MontyTools {
     });
 
     if (!res.ok) {
-      return { success: false, transform: id, error: res.error };
+      return {
+        success: false,
+        transform: id,
+        ...formatMontyFailure(res.error),
+      };
     }
 
     return { success: true, transform: id, output: res.output };
@@ -402,7 +416,11 @@ export class MontyTools {
     });
 
     if (!res.ok) {
-      return { success: false, transform: id, error: res.error };
+      return {
+        success: false,
+        transform: id,
+        ...formatMontyFailure(res.error),
+      };
     }
 
     const outputPath =

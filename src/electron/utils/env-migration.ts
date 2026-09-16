@@ -378,6 +378,12 @@ export async function migrateEnvToSettings(): Promise<MigrationResult> {
       searchChanged = true;
     }
 
+    if (env.SERPER_API_KEY && !searchSettings.serper?.apiKey) {
+      searchSettings.serper = { apiKey: env.SERPER_API_KEY };
+      migratedKeys.push("Serper API Key");
+      searchChanged = true;
+    }
+
     if (env.GOOGLE_API_KEY && !searchSettings.google?.apiKey) {
       searchSettings.google = {
         apiKey: env.GOOGLE_API_KEY,
@@ -658,6 +664,16 @@ export async function importProcessEnvToSettings(
         apiKey: serpApiKey,
       };
       migratedKeys.push("SerpAPI Key");
+      searchChanged = true;
+    }
+
+    const serperApiKey = normalizeEnvValue(process.env.SERPER_API_KEY);
+    if (shouldWriteValue(searchSettings?.serper?.apiKey, serperApiKey, mode)) {
+      searchSettings.serper = {
+        ...searchSettings.serper,
+        apiKey: serperApiKey,
+      };
+      migratedKeys.push("Serper API Key");
       searchChanged = true;
     }
 

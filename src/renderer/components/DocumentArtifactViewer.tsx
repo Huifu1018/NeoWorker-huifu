@@ -7,6 +7,8 @@ import {
   Bold,
   Copy,
   ExternalLink,
+  Eye,
+  Pencil,
   FolderOpen,
   Italic,
   List,
@@ -49,6 +51,7 @@ import {
 import { DocumentArtifactCard } from "./DocumentArtifactCard";
 import { DocumentZoomControls } from "./DocumentZoomControls";
 import { PDFDocumentSurface } from "./PDFDocumentSurface";
+import { DocxLayoutPreview } from "./DocxLayoutPreview";
 import "./artifact-viewers.css";
 
 type DocumentArtifactViewerMode = "sidebar" | "fullscreen";
@@ -339,6 +342,7 @@ export function DocumentArtifactViewer({
   const [pdfPageCount, setPdfPageCount] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [editorInitializedKey, setEditorInitializedKey] = useState("");
   const [fullscreenMessage, setFullscreenMessage] = useState("");
   const [fullscreenSending, setFullscreenSending] = useState(false);
@@ -379,12 +383,14 @@ export function DocumentArtifactViewer({
     setCopyMessage("");
     setPdfPageCount(0);
     setDirty(false);
+    setEditing(false);
     setEditorInitializedKey("");
 
     window.electronAPI
       .readFileForViewer(filePath, workspacePath, {
         includePdfBase64: true,
         includePdfAnalysis: false,
+        includeDocxBase64: true,
       })
       .then((result) => {
         if (cancelled) return;
@@ -451,7 +457,7 @@ export function DocumentArtifactViewer({
   const resolvedPdfPageCount =
     fileData?.pdfReviewSummary?.pageCount || pdfPageCount;
   const canEditDirectly = Boolean(
-    preview?.canEdit && fileData?.fileType === "docx",
+    editing && preview?.canEdit && fileData?.fileType === "docx",
   );
   const isMarkdownDocument = fileData?.fileType === "markdown";
 
@@ -681,6 +687,13 @@ export function DocumentArtifactViewer({
           {t("documentViewer.noPreview", "No document preview available.")}
         </div>
       );
+    if (preview.docxDataBase64 && !editing) {
+      return <DocxLayoutPreview
+        dataBase64={preview.docxDataBase64}
+        zoom={documentZoom.zoomPercent / 100}
+        onOpenExternal={handleOpenExternal}
+      />;
+    }
     if (preview.previewMode === "unavailable") {
       return (
         <div className="document-viewer-state">
@@ -716,7 +729,6 @@ export function DocumentArtifactViewer({
             suppressContentEditableWarning
             spellCheck
             onInput={() => setDirty(true)}
-            onBlur={() => setDirty(true)}
           />
         </div>
       );
@@ -863,6 +875,25 @@ export function DocumentArtifactViewer({
         <div
           className={`document-viewer-titlebar ${canEditDirectly ? "is-editor-toolbar" : ""}`}
         >
+          {preview?.canEdit && fileData?.fileType === "docx" && (
+            <button
+              type="button"
+              className="document-viewer-icon-tool"
+              disabled={dirty || saving}
+              onClick={() => {
+                setEditing(!editing);
+                setEditorInitializedKey("");
+              }}
+              title={editing
+                ? t("documentViewer.layoutPreview", "Document layout preview")
+                : t("documentViewer.simplifiedEdit", "Simplified editing")}
+              aria-label={editing
+                ? t("documentViewer.layoutPreview", "Document layout preview")
+                : t("documentViewer.simplifiedEdit", "Simplified editing")}
+            >
+              {editing ? <Eye size={15} /> : <Pencil size={15} />}
+            </button>
+          )}
           {canEditDirectly ? (
             <>
               <button
@@ -1050,6 +1081,15 @@ export function DocumentArtifactViewer({
         </div>
       )}
 
+      {preview && !isPdfDocument && ["DOCX", "DOCM", "DOTX", "DOTM"].includes(formatLabel) && (
+        <div className="document-viewer-layout-notice" role="note">
+          {editing
+            ? t("documentViewer.simplifiedEditNotice", "Simplified editing; this view does not represent the original layout.")
+            : preview.docxDataBase64
+              ? t("documentViewer.layoutCompatibility", "Compatibility preview; complex pagination and fonts may differ from Word.")
+              : t("documentViewer.textOnlyNotice", "Text preview only; original layout is unavailable.")}
+        </div>
+      )}
       <div
         ref={documentZoom.containerRef}
         className="document-viewer-content"

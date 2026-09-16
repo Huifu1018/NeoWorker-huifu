@@ -163,6 +163,20 @@ export function resolveTimelineIndicator(
 
   if (event.type === "timeline_error") {
     const payload = asObject(event.payload);
+    if (payload.intermediateFailurePending === true) {
+      return {
+        icon: AlertTriangle,
+        tone: "warning",
+        label: "Recovery in progress",
+      };
+    }
+    if (payload.recoveredIntermediateFailure === true) {
+      return {
+        icon: AlertTriangle,
+        tone: "warning",
+        label: "Recovered tool attempt",
+      };
+    }
     const legacyType =
       typeof event.legacyType === "string"
         ? event.legacyType

@@ -629,6 +629,69 @@ describe("TaskExecutor chat mode", () => {
     ).toBe(false);
   });
 
+  it("redirects task-time python-pptx installation to bundled Office tooling", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "翻译 PPT",
+      rawPrompt: "基于原文件翻译成日语",
+      userPrompt: "基于原文件翻译成日语",
+    };
+    executor.lastUserMessage = "基于原文件翻译成日语";
+
+    const redirect = executor.getBundledOfficeDependencyRedirect(
+      "run_command",
+      {
+        command:
+          'pip3 install --quiet python-pptx; python3 -c "import pptx"',
+      },
+    );
+
+    expect(redirect).toMatchObject({
+      success: false,
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "bundled_office_dependency_redirect",
+    });
+    expect(redirect.error).toContain("office_translation");
+  });
+
+  it("allows python-pptx installation when the user explicitly requests it", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "Python setup",
+      rawPrompt: "安装 python-pptx",
+      userPrompt: "安装 python-pptx",
+    };
+    executor.lastUserMessage = "安装 python-pptx";
+
+    expect(
+      executor.getBundledOfficeDependencyRedirect("run_command", {
+        command: "python3 -m pip install python-pptx",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not redirect native Python PPT inspection/editing to a blank-deck generator", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "翻译 PPT",
+      rawPrompt: "基于原文件翻译成日语",
+      userPrompt: "基于原文件翻译成日语",
+    };
+    executor.lastUserMessage = "基于原文件翻译成日语";
+
+    const redirect = executor.getBundledOfficeDependencyRedirect(
+      "run_command",
+      {
+        command:
+          'PYTHONPATH=".neoworker/tmp/pylibs" python3 .neoworker/tmp/unique.py "NV对标分析 - 0807.pptx"',
+      },
+    );
+
+    expect(redirect).toBeNull();
+    expect(executor.getBundledOfficeDependencyRedirect("run_command", { command: "python3 analyze.py" })).toBeNull();
+  });
+
   it("keeps explicitly granted shell tools available during browser verification", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

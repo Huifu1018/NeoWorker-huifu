@@ -13,6 +13,12 @@ export function normalizeLlmProviderType(providerType?: string | null): string |
 export function getLlmProviderDisplayName(providerType?: string | null): string {
   const normalized = normalizeLlmProviderType(providerType);
   if (!normalized || normalized === "unknown") return "Unknown";
+  // The embedded execution provider is an implementation detail. Keep its
+  // configuration key available to the main process while presenting a
+  // neutral label anywhere usage data is rendered.
+  if (normalized === "hermes" || normalized === "hermes-proxy") {
+    return "Configured provider";
+  }
   return (
     MULTI_LLM_PROVIDER_DISPLAY[normalized]?.name ||
     customProviderDisplayMap.get(normalized)?.name ||

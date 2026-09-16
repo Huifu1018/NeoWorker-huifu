@@ -4,6 +4,7 @@ import * as crypto from "crypto";
 import * as path from "path";
 import { createLogger } from "../utils/logger";
 import { getUserDataDir } from "../utils/user-data-dir";
+import { assertWorkspacePathAvailable } from "../utils/workspace-availability";
 import {
   extractWorkspaceUploadPaths,
   persistTaskAttachmentSync,
@@ -1979,10 +1980,17 @@ export class AgentDaemon extends EventEmitter {
    * The task will either start immediately or be queued based on concurrency limits
    */
   async startTask(task: Task, images?: ImageAttachment[]): Promise<void> {
-    const workspace = this.workspaceRepo.findById(task.workspaceId);
-    if (workspace) {
-      this.persistTaskAttachmentBindings(task, workspace, task.prompt, images);
+    const registeredWorkspace = this.workspaceRepo.findById(task.workspaceId);
+    if (!registeredWorkspace) {
+      throw new Error(`Workspace ${task.workspaceId} not found`);
     }
+    assertWorkspacePathAvailable(registeredWorkspace);
+    this.persistTaskAttachmentBindings(
+      task,
+      registeredWorkspace,
+      task.prompt,
+      images,
+    );
     // Store images transiently until the task starts executing
     if (images && images.length > 0) {
       this.pendingTaskImages.set(task.id, images);
@@ -2013,6 +2021,12 @@ export class AgentDaemon extends EventEmitter {
    */
   async startTaskImmediate(task: Task): Promise<void> {
     console.log(`[AgentDaemon] Starting task ${task.id}: ${task.title}`);
+
+    const registeredWorkspace = this.workspaceRepo.findById(task.workspaceId);
+    if (!registeredWorkspace) {
+      throw new Error(`Workspace ${task.workspaceId} not found`);
+    }
+    assertWorkspacePathAvailable(registeredWorkspace);
 
     if (this.shouldStartAsQueuedContinuation(task)) {
       this.pendingContinuationTaskIds.delete(task.id);
@@ -3635,6 +3649,11 @@ export class AgentDaemon extends EventEmitter {
     source?: Task["source"];
     taskOverrides?: Partial<Task>;
   }) {
+    const workspace = this.workspaceRepo.findById(params.workspaceId);
+    if (!workspace) {
+      throw new Error(`Workspace ${params.workspaceId} not found`);
+    }
+    assertWorkspacePathAvailable(workspace);
     const derived = this.deriveTaskStrategy({
       title: params.title,
       prompt: params.prompt,
@@ -12722,6 +12741,7 @@ export class AgentDaemon extends EventEmitter {
     if (!workspace) {
       throw new Error(`Workspace ${effectiveTask.workspaceId} not found`);
     }
+    assertWorkspacePathAvailable(workspace);
     const effectiveWorkspace = this.applyTaskWorkspaceOverrides(
       effectiveTask,
       workspace,

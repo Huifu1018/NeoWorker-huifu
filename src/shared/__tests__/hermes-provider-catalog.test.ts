@@ -16,7 +16,7 @@ describe("Hermes Agent provider", () => {
 
   it("has a multi-provider display entry", () => {
     expect(MULTI_LLM_PROVIDER_DISPLAY.hermes).toMatchObject({
-      name: "Hermes Agent",
+      name: "Configured provider",
     });
   });
 

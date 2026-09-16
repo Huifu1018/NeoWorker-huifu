@@ -1303,7 +1303,7 @@ export function MemoryHubSettings(props?: {
           <p className="settings-form-hint">
             {t(
               "memoryHub.supermemory.description",
-              "External memory provider integration inspired by Hermes: workspace-scoped profile fetches, explicit search/remember/forget tools, and optional background mirroring of NeoWorker memory captures.",
+              "External memory provider integration: workspace-scoped profile fetches, explicit search/remember/forget tools, and optional background mirroring of NeoWorker memory captures.",
             )}
           </p>
 

@@ -2086,6 +2086,35 @@ export class TaskEventRepository {
     TASK_TIMELINE_PAYLOAD_PREVIEW_CHARS;
   private static readonly TIMELINE_ADDITIONAL_TASK_ID_CHUNK_SIZE = 500;
   private static readonly TIMELINE_TURN_BOUNDARY_CONTEXT_LIMIT = 80;
+  private static readonly TIMELINE_VISIBLE_CONTEXT_LIMIT = 160;
+  private static readonly TIMELINE_VISIBLE_CONTEXT_EVENT_TYPES = [
+    "assistant_message",
+    "follow_up_completed",
+    "follow_up_failed",
+    "task_failed",
+    "task_cancelled",
+    "task_interrupted",
+    "step_started",
+    "step_completed",
+    "step_failed",
+    "step_skipped",
+    "verification_started",
+    "verification_passed",
+    "verification_failed",
+    "verification_pending_user_action",
+    "approval_requested",
+    "approval_granted",
+    "approval_denied",
+    "input_request_created",
+    "input_request_resolved",
+    "input_request_dismissed",
+    "error",
+    "timeline_error",
+    "llm_error",
+    "tool_error",
+    "tool_warning",
+    "tool_blocked",
+  ] as const;
 
   constructor(private db: Database.Database) {}
 
@@ -2815,6 +2844,18 @@ export class TaskEventRepository {
             singleEventByteLimit,
           )
         : [];
+    const latestPlanRow =
+      planContextRow ||
+      selectedRows.find((row) => this.isPersistedPlanDefinitionRow(row));
+    const visibleContextRows =
+      cursorWhere.length === 0
+        ? this.findTimelineVisibleContextRows(
+            taskId,
+            selectedRows,
+            singleEventByteLimit,
+            !latestPlanRow,
+          )
+        : [];
     const durableContextRows =
       cursorWhere.length === 0
         ? this.findDurableTimelineContextRows(
@@ -2823,9 +2864,6 @@ export class TaskEventRepository {
             singleEventByteLimit,
           )
         : [];
-    const latestPlanRow =
-      planContextRow ||
-      selectedRows.find((row) => this.isPersistedPlanDefinitionRow(row));
     const planStepContextRows =
       cursorWhere.length === 0 && latestPlanRow
         ? this.findLatestPlanStepContextRows(
@@ -2837,6 +2875,7 @@ export class TaskEventRepository {
     const contextRows = [
       planContextRow,
       ...turnBoundaryContextRows,
+      ...visibleContextRows,
       ...planStepContextRows,
       ...durableContextRows,
     ].filter((row): row is Any => !!row);
@@ -3031,6 +3070,84 @@ export class TaskEventRepository {
         taskId,
         TaskEventRepository.TIMELINE_TURN_BOUNDARY_CONTEXT_LIMIT,
       ) as Any[];
+    return rows
+      .filter((row) => !selectedIds.has(String(row.id ?? "")))
+      .map((row) => {
+        const payloadBytes = Number(row.payload_bytes) || 0;
+        return payloadBytes > singleEventByteLimit
+          ? this.buildTimelineTruncatedPayloadRow(row, payloadBytes)
+          : row;
+      });
+  }
+
+  /**
+   * Keep user-facing execution milestones in the first page even when a
+   * runtime emits hundreds of transport, checkpoint, or command-output rows.
+   * Without this projection the renderer receives only hidden telemetry and
+   * the transcript appears blank until the user manually loads older pages.
+   */
+  private findTimelineVisibleContextRows(
+    taskId: string,
+    selectedRows: Any[],
+    singleEventByteLimit: number,
+    includeStepLifecycle: boolean,
+  ): Any[] {
+    if (!taskId) return [];
+    const selectedIds = new Set(
+      selectedRows
+        .map((row) => (typeof row.id === "string" ? row.id : ""))
+        .filter((id) => id.length > 0),
+    );
+    const effectiveTypes =
+      TaskEventRepository.TIMELINE_VISIBLE_CONTEXT_EVENT_TYPES;
+    const selectedTypes = includeStepLifecycle
+      ? effectiveTypes
+      : effectiveTypes.filter(
+          (type) =>
+            type !== "step_started" &&
+            type !== "step_completed" &&
+            type !== "step_failed" &&
+            type !== "step_skipped",
+        );
+    const typePlaceholders = selectedTypes.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `
+        /* visible_timeline_context */
+        SELECT
+          id,
+          task_id,
+          timestamp,
+          type,
+          CASE
+            WHEN LENGTH(CAST(COALESCE(payload, '') AS BLOB)) > ${singleEventByteLimit}
+              THEN SUBSTR(COALESCE(payload, ''), 1, ${TaskEventRepository.TRUNCATED_PAYLOAD_PREVIEW_CHARS})
+            ELSE payload
+          END AS payload,
+          schema_version,
+          event_id,
+          seq,
+          ts,
+          status,
+          step_id,
+          group_id,
+          actor,
+          legacy_type,
+          COALESCE(seq, timestamp) AS timeline_order,
+          LENGTH(CAST(COALESCE(payload, '') AS BLOB)) AS payload_bytes
+        FROM task_events
+        WHERE task_id = ?
+          AND COALESCE(legacy_type, type) IN (${typePlaceholders})
+        ORDER BY COALESCE(seq, timestamp) DESC, timestamp DESC, id DESC
+        LIMIT ?
+      `,
+      )
+      .all(
+        taskId,
+        ...selectedTypes,
+        TaskEventRepository.TIMELINE_VISIBLE_CONTEXT_LIMIT,
+      ) as Any[];
+
     return rows
       .filter((row) => !selectedIds.has(String(row.id ?? "")))
       .map((row) => {

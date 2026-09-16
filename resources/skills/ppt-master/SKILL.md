@@ -44,6 +44,11 @@ metadata:
   `create_presentation` tool exactly once. The host pins that call to the
   PPT Master advanced renderer, canonical output path, and validation ledger;
   it is not the ordinary quick-template path while this skill is active.
+- When `source_path` points to a PPTX/POTX/PPT/POT file, treat that file as
+  the native template source of record. Clone/fill that package and preserve
+  its slide master, layouts, theme colors, fonts, aspect ratio, and reusable
+  assets. Do not create a blank deck or generic template that merely imitates
+  the source colors, typography, or rough style.
 - `create_presentation` is a NeoWorker host tool, not an upstream Python
   renderer. If the tool catalog exposes it, do not report it as missing and do
   not substitute upstream full-page renderers for the final delivery. The

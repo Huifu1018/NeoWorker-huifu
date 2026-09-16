@@ -321,6 +321,22 @@ describe("TaskExecutor skill shortlist routing", () => {
     ).toBe(true);
   });
 
+  it("routes translation of multiple existing PPT files through Presentation Studio", () => {
+    const executor = createExecutor("帮我把这几个 PPT 翻译成中文");
+    expect(
+      (TaskExecutor as Any).prototype.taskRequestsPresentationStudioWorkflow.call(
+        executor,
+        executor.task.prompt,
+      ),
+    ).toBe(true);
+    expect(
+      (TaskExecutor as Any).prototype.taskRequestsVisualPresentationWorkflow.call(
+        executor,
+        executor.task.prompt,
+      ),
+    ).toBe(false);
+  });
+
   it("routes data-heavy deck creation through Presentation Studio", async () => {
     const executor = createExecutor("生成一份包含大量可编辑财务图表的季度分析 PPT。");
     expect(

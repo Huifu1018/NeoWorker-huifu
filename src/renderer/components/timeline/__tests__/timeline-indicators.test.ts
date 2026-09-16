@@ -97,6 +97,30 @@ describe("timeline indicators", () => {
     expect(indicator.tone).toBe("error");
   });
 
+  it("renders recovered timeline errors as warnings instead of fatal errors", () => {
+    const indicator = resolveTimelineIndicator(
+      makeEvent("timeline_error", {
+        legacyType: "tool_error",
+        recoveredIntermediateFailure: true,
+      }),
+    );
+    expect(indicator.icon).toBe(AlertTriangle);
+    expect(indicator.tone).toBe("warning");
+    expect(indicator.label).toBe("Recovered tool attempt");
+  });
+
+  it("renders a tool failure as a warning while recovery is in progress", () => {
+    const indicator = resolveTimelineIndicator(
+      makeEvent("timeline_error", {
+        legacyType: "tool_error",
+        intermediateFailurePending: true,
+      }),
+    );
+    expect(indicator.icon).toBe(AlertTriangle);
+    expect(indicator.tone).toBe("warning");
+    expect(indicator.label).toBe("Recovery in progress");
+  });
+
   it("maps artifacts to FileOutput success icon", () => {
     const indicator = resolveTimelineIndicator(
       makeEvent(

@@ -25,6 +25,27 @@ export interface BuildToolResultEnvelopeParams {
 const MAX_MODEL_PAYLOAD_CHARS = 200_000;
 const MODEL_PAYLOAD_TRUNCATION_MARKER = "\n[Tool result truncated by NeoWorker]\n";
 
+export function getToolErrorMessage(
+  value: unknown,
+  fallback = "Tool execution failed",
+): string {
+  if (value instanceof Error && value.message.trim()) return value.message.trim();
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["message", "error", "display", "reason"] as const) {
+      const nested = record[key];
+      if (nested === value) continue;
+      const message = getToolErrorMessage(nested, "");
+      if (message) return message;
+    }
+    if (typeof record.kind === "string" && record.kind.trim()) {
+      return `${record.kind.trim()} error`;
+    }
+  }
+  return fallback;
+}
+
 function truncateText(text: string, retained: number, tail: boolean): string {
   if (text.length <= retained) return text;
   // Avoid cutting a UTF-16 surrogate pair in half, including in plain text.
@@ -125,7 +146,7 @@ function stringifyModelPayload(params: BuildToolResultEnvelopeParams): string {
       : "";
   let payload: string;
   if (params.error) {
-    const message = String((params.error as { message?: string })?.message || params.error || "");
+    const message = getToolErrorMessage(params.error, "");
     payload = reminder
       ? stringifyPayloadWithReminder(message || "Tool execution failed", reminder, "error")
       : JSON.stringify({ error: message || "Tool execution failed" });

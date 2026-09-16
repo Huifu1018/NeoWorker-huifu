@@ -25,4 +25,15 @@ describe("enrichToolEventPayload", () => {
 
     expect(payload.envelope).toEqual({ toolName: "run_command", status: "error" });
   });
+
+  it("preserves the message inside a structured tool error", () => {
+    const payload = enrichToolEventPayload("tool_error", {
+      tool: "monty_run",
+      error: { kind: "runtime", message: "Variable x is not defined" },
+    });
+
+    expect(JSON.parse((payload.envelope as Any).modelPayload)).toEqual({
+      error: "Variable x is not defined",
+    });
+  });
 });

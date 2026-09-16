@@ -3437,6 +3437,54 @@ relationship_memory:
     );
   });
 
+  it("keeps PPTX translation and its recovery on the native source package", () => {
+    executor = createExecutorWithStubs([], {});
+    (executor as Any).task.title = "Translate existing presentations";
+    (executor as Any).task.prompt = "帮我把这几个 PPT 翻译成中文";
+    (executor as Any).appliedSkills = [
+      {
+        skillId: "presentation-studio",
+        skillName: "Presentation Studio",
+        trigger: "model",
+        parameters: {
+          mode: "edit",
+          preserve_source_design: true,
+          source_paths: '["/tmp/one.pptx","/tmp/two.pptx"]',
+        },
+        content: "Translate native PPTX packages without rebuilding them.",
+        reason: "Default PowerPoint workflow",
+        appliedAt: Date.now(),
+      },
+    ];
+    const step: Any = {
+      id: "translate-native-decks",
+      description: "Translate the attached PowerPoint decks into Chinese",
+      status: "pending",
+    };
+    const contract = (executor as Any).resolveStepExecutionContract(step);
+
+    const workflowHint = (executor as Any).buildDeterministicWorkflowHint(
+      contract,
+    );
+    expect(workflowHint).toContain("NATIVE TRANSLATION WORKFLOW");
+    expect(workflowHint).toContain("one independent copy per input");
+    expect(workflowHint).toContain("Do not bootstrap a blank project");
+
+    const recovery = (executor as Any).buildWriteRecoveryTemplate(
+      step,
+      contract,
+    );
+    expect(recovery.templateId).toBe(
+      "write_recovery:presentation_studio_native_translation",
+    );
+    expect(JSON.stringify(recovery.steps)).toContain(
+      "Do not bootstrap or compile a replacement deck",
+    );
+    expect(JSON.stringify(recovery.steps)).not.toContain(
+      "compile a minimal valid deck",
+    );
+  });
+
   it("blocks legacy presentation generators while Presentation Studio is active", () => {
     executor = createExecutorWithStubs([], {});
     (executor as Any).task.title = "Create a PowerPoint deck";

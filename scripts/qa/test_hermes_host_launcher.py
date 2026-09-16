@@ -2,6 +2,7 @@
 
 import importlib.util
 import asyncio
+import json
 from pathlib import Path
 import sys
 import types
@@ -106,6 +107,72 @@ class HostLauncherTests(unittest.TestCase):
         self.assertEqual(result["api_key"], "secret-from-neoworker")
         self.assertIsNone(result["command"])
         self.assertEqual(result["args"], [])
+
+    def test_classifies_application_errors_separately_from_transport_errors(self):
+        self.assertTrue(launcher.is_neoworker_application_tool_error(
+            '{"error":"{\\"error\\":\\"Tool web_fetch timed out after 30s\\"}"}'
+        ))
+        self.assertTrue(launcher.is_neoworker_application_tool_error(
+            '{"error":"HTTP 403: Forbidden"}'
+        ))
+        self.assertFalse(launcher.is_neoworker_application_tool_error(
+            '{"error":"MCP server \'neoworker\' transport is down; reconnect requested"}'
+        ))
+        self.assertFalse(launcher.is_neoworker_application_tool_error(
+            '{"error":"MCP call failed: RuntimeError: connection closed"}'
+        ))
+        self.assertFalse(launcher.is_neoworker_application_tool_error(
+            '{"result":"ok"}'
+        ))
+
+    def test_application_tool_failures_do_not_open_the_neoworker_server_breaker(self):
+        tools_package = types.ModuleType("tools")
+        tools_package.__path__ = []
+        mcp_tool = types.ModuleType("tools.mcp_tool")
+        resets = []
+
+        def make_handler(_server_name, _tool_name, _tool_timeout):
+            return lambda _args, **_kwargs: json.dumps({
+                "error": json.dumps({"error": "Tool web_fetch timed out after 30s"})
+            })
+
+        mcp_tool._make_tool_handler = make_handler
+        mcp_tool._reset_server_error = lambda server_name: resets.append(server_name)
+
+        with patch.dict(sys.modules, {
+            "tools": tools_package,
+            "tools.mcp_tool": mcp_tool,
+        }):
+            launcher.install_neoworker_mcp_failure_isolation()
+            handler = mcp_tool._make_tool_handler("neoworker", "web_fetch", 30)
+            result = handler({"url": "https://example.invalid"})
+
+        self.assertIn("timed out", result)
+        self.assertEqual(resets, ["neoworker"])
+
+    def test_transport_failures_still_use_hermes_server_breaker(self):
+        tools_package = types.ModuleType("tools")
+        tools_package.__path__ = []
+        mcp_tool = types.ModuleType("tools.mcp_tool")
+        resets = []
+
+        def make_handler(_server_name, _tool_name, _tool_timeout):
+            return lambda _args, **_kwargs: json.dumps({
+                "error": "MCP call failed: RuntimeError: connection closed"
+            })
+
+        mcp_tool._make_tool_handler = make_handler
+        mcp_tool._reset_server_error = lambda server_name: resets.append(server_name)
+
+        with patch.dict(sys.modules, {
+            "tools": tools_package,
+            "tools.mcp_tool": mcp_tool,
+        }):
+            launcher.install_neoworker_mcp_failure_isolation()
+            handler = mcp_tool._make_tool_handler("neoworker", "parse_document", 30)
+            handler({"path": "document.pptx"})
+
+        self.assertEqual(resets, [])
 
     def test_surfaces_a_provider_failure_as_structured_acp_metadata(self):
         run_agent = types.ModuleType("run_agent")

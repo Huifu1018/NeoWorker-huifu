@@ -1,6 +1,6 @@
 import { spawn, ChildProcess, execSync } from "child_process";
 import * as path from "path";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import type { Workspace, CommandTerminationReason } from "../../../shared/types";
 import type { AgentDaemon } from "../daemon";
 import { GuardrailManager } from "../../guardrails/guardrail-manager";
@@ -318,15 +318,35 @@ function resolveShellForCommandExecution(): string {
     return resolveWindowsShellExecutable(process.env, existsSync);
   }
 
-  const envShell = process.env.SHELL;
-  if (envShell && existsSync(envShell)) return envShell;
+  return resolveUnixShellExecutable(process.env, existsSync, realpathSync);
+}
 
-  // In minimal Linux containers (e.g., Alpine), /bin/bash may not exist.
-  if (existsSync("/bin/bash")) return "/bin/bash";
-  if (existsSync("/bin/sh")) return "/bin/sh";
+export function resolveUnixShellExecutable(
+  env: NodeJS.ProcessEnv = process.env,
+  probe: (filePath: string) => boolean = existsSync,
+  resolveRealPath: (filePath: string) => string = realpathSync,
+): string {
+  const candidates = [
+    env.SHELL,
+    process.platform === "darwin" ? "/bin/zsh" : undefined,
+    "/bin/bash",
+    "/bin/sh",
+  ];
 
-  // Last resort: fall back to whatever is set (even if it doesn't exist).
-  return envShell || "/bin/sh";
+  for (const candidate of candidates) {
+    if (!candidate || !probe(candidate)) continue;
+    try {
+      // macOS may expose the selected shell as /private/var/select/sh. The
+      // native sandbox permits /bin/bash or /bin/zsh but rejects that alias.
+      const canonicalPath = resolveRealPath(candidate);
+      if (canonicalPath && probe(canonicalPath)) return canonicalPath;
+    } catch {
+      return candidate;
+    }
+    return candidate;
+  }
+
+  return env.SHELL || "/bin/sh";
 }
 
 /**
@@ -1862,5 +1882,6 @@ export const _testUtils = {
   buildSafeShellPath,
   getShellArgs,
   prepareWindowsCommand,
+  resolveUnixShellExecutable,
   resolveWindowsShellExecutable,
 };

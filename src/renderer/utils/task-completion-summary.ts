@@ -36,6 +36,9 @@ export function selectCompletionResultSummary(event: TaskEvent): string {
   const durable = getTrimmedString(
     event.payload?.bestKnownOutcome?.resultSummary,
   );
+  if (event.payload?.deliveryRecoveredBeforeLaterUserMessage === true) {
+    return direct;
+  }
   if (!direct) return durable;
   if (!durable) return direct;
 

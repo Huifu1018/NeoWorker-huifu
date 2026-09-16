@@ -110,6 +110,10 @@ describe("PPT Master bundled skill", () => {
     expect(expanded).toContain("create_presentation` is a NeoWorker host tool");
     expect(expanded).toContain("does not require `python-pptx` or `cairosvg`");
     expect(expanded).toContain("Do not call `generate_presentation`");
+    expect(expanded).toContain("native template source of record");
+    expect(expanded).toContain(
+      "Do not create a blank deck or a new generic template",
+    );
     expect(expanded).toContain(
       "canonical task project directory is exactly `/tmp/neoworker-artifacts`",
     );
@@ -207,6 +211,60 @@ describe("PPT Master bundled skill", () => {
     }
   });
 
+  it("infers the uploaded template source before host-pinned presentation calls", () => {
+    const workspacePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-ppt-master-upload-routing-"),
+    );
+    try {
+      const artifactRoot = path.join(
+        workspacePath,
+        "artifacts",
+        "skills",
+        "task-ppt-master-upload-routing",
+        "ppt-master",
+      );
+      const sourcePath = path.join(
+        workspacePath,
+        ".neoworker",
+        "uploads",
+        "123",
+        "template.pptx",
+      );
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(sourcePath, "placeholder");
+      const executor = createPptMasterExecutor(
+        workspacePath,
+        artifactRoot,
+        "task-ppt-master-upload-routing",
+        {
+          taskPrompt:
+            "/ppt-master 基于附件 PPT 模板撰写\n- template.pptx (.neoworker/uploads/123/template.pptx)",
+        },
+      );
+      const prepared = (
+        TaskExecutor as Any
+      ).prototype.preparePresentationWorkflowToolInput.call(
+        executor,
+        "create_presentation",
+        {
+          filename: "ordinary.pptx",
+          slides: [{ title: "Template deck", slideType: "cover" }],
+        },
+      );
+
+      expect(prepared).toMatchObject({
+        sourcePath,
+        generationMode: "ppt-master",
+        presentationWorkflow: "ppt-master",
+      });
+      expect(prepared.styleBrief).toContain(
+        "template source of record",
+      );
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
   it("finds an uploaded PPTX when PPT Master was invoked with natural language", async () => {
     const workspacePath = fs.mkdtempSync(
       path.join(os.tmpdir(), "neoworker-ppt-master-source-inference-"),
@@ -216,6 +274,7 @@ describe("PPT Master bundled skill", () => {
         workspacePath,
         ".neoworker",
         "uploads",
+        "123",
         "template.pptx",
       );
       fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
@@ -226,7 +285,7 @@ describe("PPT Master bundled skill", () => {
       registry.daemon = {
         getTaskById: vi.fn(async () => ({
           title: "/ppt-master 帮我基于附件模板优化PPT",
-          prompt: `附件：${path.relative(workspacePath, sourcePath)}`,
+          prompt: "附件：template.pptx",
         })),
       };
 
@@ -538,12 +597,37 @@ describe("PPT Master bundled skill", () => {
     expect(preflight).toContain('"final_delivery_requires_cairosvg": False');
     expect(preflight).toContain("Missing optional modules must not be reported");
   });
+
+  it("keeps the host create_presentation tool visible while PPT Master is active", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      id: "task-ppt-master-tool-filter",
+      title: "继续优化材料",
+      agentConfig: { requestedSkillId: "ppt-master" },
+    };
+
+    const filtered = (TaskExecutor.prototype as Any).filterToolsByCanonicalOfficeOutputIntent.call(
+      executor,
+      [
+        { name: "run_command" },
+        { name: "create_presentation" },
+        { name: "generate_presentation" },
+      ],
+    );
+
+    expect(filtered.map((tool: Any) => tool.name)).toEqual([
+      "run_command",
+      "create_presentation",
+      "generate_presentation",
+    ]);
+  });
 });
 
 type PptMasterExecutorOptions = {
   requestedSkillId?: string;
   includeAppliedSkill?: boolean;
   taskTitle?: string;
+  taskPrompt?: string;
   appliedSkillId?: "ppt-master" | "visual-presentation" | "presentation-studio";
 };
 
@@ -557,6 +641,7 @@ function createPptMasterExecutor(
   executor.task = {
     id: taskId,
     ...(options.taskTitle ? { title: options.taskTitle } : {}),
+    ...(options.taskPrompt ? { prompt: options.taskPrompt } : {}),
     ...(options.requestedSkillId
       ? { agentConfig: { requestedSkillId: options.requestedSkillId } }
       : {}),

@@ -2045,6 +2045,7 @@ interface UpdateChannelSpecializationData {
 }
 
 interface ReadFileForViewerOptions {
+  includeDocxBase64?: boolean;
   enableImageOcr?: boolean;
   imageOcrMaxChars?: number;
   includeImageContent?: boolean;
@@ -6226,6 +6227,7 @@ export interface FileViewerResult {
       renderStatus:
         "cached" | "rendering" | "rendered" | "text_only" | "failed";
       renderMessage?: string;
+      renderer?: "officecli" | "libreoffice" | "artifact_tool";
     };
     webPreview?: {
       format: "html";
@@ -7428,18 +7430,53 @@ export interface ElectronAPI {
   // Search Settings
   getSearchSettings: () => Promise<{
     primaryProvider:
-      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      | "tavily"
+      | "exa"
+      | "brave"
+      | "serpapi"
+      | "serper"
+      | "google"
+      | "duckduckgo"
+      | null;
     fallbackProvider:
-      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      | "tavily"
+      | "exa"
+      | "brave"
+      | "serpapi"
+      | "serper"
+      | "google"
+      | "duckduckgo"
+      | null;
   }>;
   saveSearchSettings: (settings: Any) => Promise<{ success: boolean }>;
   getSearchConfigStatus: () => Promise<{
     primaryProvider:
-      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      | "tavily"
+      | "exa"
+      | "brave"
+      | "serpapi"
+      | "serper"
+      | "google"
+      | "duckduckgo"
+      | null;
     fallbackProvider:
-      "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo" | null;
+      | "tavily"
+      | "exa"
+      | "brave"
+      | "serpapi"
+      | "serper"
+      | "google"
+      | "duckduckgo"
+      | null;
     providers: Array<{
-      type: "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo";
+      type:
+        | "tavily"
+        | "exa"
+        | "brave"
+        | "serpapi"
+        | "serper"
+        | "google"
+        | "duckduckgo";
       name: string;
       description: string;
       configured: boolean;

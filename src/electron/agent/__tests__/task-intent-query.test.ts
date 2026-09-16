@@ -100,6 +100,20 @@ Attached files (relative to workspace):
     expect(query).not.toContain("Excel 台账数据");
   });
 
+  it("treats translating an attached PPTX as an in-place presentation edit", () => {
+    const query = buildCanonicalTaskIntentQuery({
+      rawPrompt: "把这几个文件翻译成英文",
+      prompt: `把这几个文件翻译成英文
+
+Attached files (relative to workspace):
+- product-a.pptx (.neoworker/uploads/789/product-a.pptx)
+- product-b.pptx (.neoworker/uploads/789/product-b.pptx)`,
+    });
+
+    expect(query).toContain("翻译成英文");
+    expect(query).toContain("attached PowerPoint presentation");
+  });
+
   it("does not turn a conversion input format into a competing output skill", () => {
     const query = buildCanonicalTaskIntentQuery({
       title: "把这个转成 Excel",

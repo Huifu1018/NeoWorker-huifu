@@ -6,6 +6,8 @@ import { execFile } from "child_process";
 import { pathToFileURL } from "url";
 import { promisify } from "util";
 import { resolveCodexArtifactToolRuntime } from "./codex-artifact-tool-runtime";
+import { resolveBundledOfficeCliExecutable } from "./officecli-runtime";
+import { renderOfficeHtmlVisualEvidence } from "./office-html-visual-renderer";
 import { getUserDataDir } from "./user-data-dir";
 import {
   extractPptxStructuredContentFromFile,
@@ -16,7 +18,7 @@ import {
 const execFileAsync = promisify(execFile);
 const DEFAULT_RENDER_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_RENDERED_SLIDES = 80;
-const PPTX_PREVIEW_CACHE_VERSION = "4-cjk-font-aliases";
+const PPTX_PREVIEW_CACHE_VERSION = "5-bundled-officecli";
 const PPTX_FONTCONFIG_VERSION = "2-cjk-font-aliases";
 
 export type PptxPreviewRenderMode = "fast" | "full";
@@ -38,6 +40,7 @@ export interface PptxPresentationPreview {
   slides: PptxPreviewSlide[];
   renderStatus: PptxPreviewRenderStatus;
   renderMessage?: string;
+  renderer?: "officecli" | "libreoffice" | "artifact_tool";
 }
 
 type CommandRunner = (
@@ -64,6 +67,7 @@ interface PptxPreviewServiceOptions {
   cacheRoot?: string;
   commandRunner?: CommandRunner;
   artifactToolRunner?: ArtifactToolRunner | null;
+  officeCliRunner?: ArtifactToolRunner | null;
   renderTimeoutMs?: number;
   maxRenderedSlides?: number;
   imageUrlFactory?: (imagePath: string) => string | Promise<string>;
@@ -73,7 +77,7 @@ interface CachedRenderManifest {
   sourcePath: string;
   sourceSize: number;
   sourceMtimeMs: number;
-  renderer?: "artifact_tool" | "libreoffice";
+  renderer?: "artifact_tool" | "libreoffice" | "officecli";
   imageFiles: Array<{ index: number; fileName: string }>;
 }
 
@@ -86,6 +90,7 @@ export class PptxPreviewService {
   private readonly cacheRoot: string;
   private readonly commandRunner: CommandRunner;
   private readonly artifactToolRunner: ArtifactToolRunner | null;
+  private readonly officeCliRunner: ArtifactToolRunner | null;
   private readonly renderTimeoutMs: number;
   private readonly maxRenderedSlides: number;
   private readonly imageUrlFactory?: (
@@ -118,6 +123,13 @@ export class PptxPreviewService {
               runnerOptions,
             )
         : options.artifactToolRunner;
+    this.officeCliRunner =
+      options.officeCliRunner === undefined
+        ? process.versions.electron
+          ? (input, runnerOptions) =>
+              runBundledOfficeCliRenderer(this.commandRunner, input, runnerOptions)
+          : null
+        : options.officeCliRunner;
     this.renderTimeoutMs = options.renderTimeoutMs ?? DEFAULT_RENDER_TIMEOUT_MS;
     this.maxRenderedSlides =
       options.maxRenderedSlides ?? DEFAULT_MAX_RENDERED_SLIDES;
@@ -173,11 +185,14 @@ export class PptxPreviewService {
     const cachedImages = await cachedImagesPromise;
     if (cachedImages.size > 0) {
       const structured = await structuredPromise;
-      return this.toPreview(
-        structured,
-        cachedImages,
-        input.renderMode === "fast" ? "cached" : "rendered",
-      );
+      return {
+        ...this.toPreview(
+          structured,
+          cachedImages,
+          input.renderMode === "fast" ? "cached" : "rendered",
+        ),
+        renderer: await this.readRenderer(cacheDir),
+      };
     }
 
     if (input.renderMode === "fast") {
@@ -203,12 +218,24 @@ export class PptxPreviewService {
         renderResult.images.size,
       );
     }
-    return this.toPreview(
-      structured,
-      renderResult.images,
-      renderResult.images.size > 0 ? "rendered" : "text_only",
-      renderResult.message,
-    );
+    return {
+      ...this.toPreview(
+        structured,
+        renderResult.images,
+        renderResult.images.size > 0 ? "rendered" : "text_only",
+        renderResult.message,
+      ),
+      renderer: renderResult.images.size > 0 ? await this.readRenderer(cacheDir) : undefined,
+    };
+  }
+
+  private async readRenderer(cacheDir: string): Promise<PptxPresentationPreview["renderer"]> {
+    try {
+      const manifest: CachedRenderManifest = JSON.parse(await fs.readFile(path.join(cacheDir, "manifest.json"), "utf8"));
+      return manifest.renderer;
+    } catch {
+      return undefined;
+    }
   }
 
   private getStructuredContent(
@@ -361,9 +388,8 @@ export class PptxPreviewService {
     stats: { size: number; mtimeMs: number },
     cacheDir: string,
   ): Promise<{ images: Map<number, PreviewImage>; message?: string }> {
-    // LibreOffice is the substantially faster renderer for native Office
-    // files in the bundled runtime. Keep artifact-tool as a compatibility
-    // fallback for decks that LibreOffice cannot convert.
+    // Preserve the existing native Office converter when installed. The bundled
+    // renderer makes desktop preview usable without any external installation.
     const libreOfficeResult = await this.renderSlideImagesWithLibreOffice(
       resolvedPath,
       stats,
@@ -372,6 +398,9 @@ export class PptxPreviewService {
     if (libreOfficeResult.images.size > 0) {
       return libreOfficeResult;
     }
+
+    const officeCliResult = await this.renderSlideImagesWithOfficeCli(resolvedPath, stats, cacheDir);
+    if (officeCliResult.images.size > 0) return officeCliResult;
 
     const artifactResult = await this.renderSlideImagesWithArtifactTool(
       resolvedPath,
@@ -384,10 +413,43 @@ export class PptxPreviewService {
 
     return {
       images: new Map(),
-      message: artifactResult.message
-        ? `${libreOfficeResult.message} ${artifactResult.message}`
-        : libreOfficeResult.message,
+      message: [officeCliResult.message, libreOfficeResult.message, artifactResult.message].filter(Boolean).join(" "),
     };
+  }
+
+  private async renderSlideImagesWithOfficeCli(
+    resolvedPath: string,
+    stats: { size: number; mtimeMs: number },
+    cacheDir: string,
+  ): Promise<{ images: Map<number, PreviewImage>; message?: string }> {
+    if (!this.officeCliRunner) return { images: new Map() };
+    let staging: string | undefined;
+    try {
+      await fs.mkdir(this.cacheRoot, { recursive: true });
+      staging = await fs.mkdtemp(path.join(this.cacheRoot, "officecli-"));
+      await this.officeCliRunner(
+        { sourcePath: resolvedPath, outputDir: staging, maxSlides: this.maxRenderedSlides },
+        { timeout: this.renderTimeoutMs },
+      );
+      const files = await listRenderedSlideFiles(staging, this.maxRenderedSlides);
+      if (!files.length) throw new Error("No slide images were produced.");
+      const structured = await this.extractStructuredContent(resolvedPath, files.length);
+      const expected = Math.min(structured.slideCount, this.maxRenderedSlides);
+      if (files.length !== expected || files.some((file, index) => file.index !== index + 1)) {
+        throw new Error(`Incomplete slide preview: expected ${expected} pages, received ${files.length}.`);
+      }
+      await fs.mkdir(cacheDir, { recursive: true });
+      for (const file of files) {
+        await fs.copyFile(file.path, path.join(cacheDir, path.basename(file.path)));
+      }
+      const imageFiles = await listRenderedSlideFiles(cacheDir, this.maxRenderedSlides);
+      await this.writeRenderManifest(cacheDir, resolvedPath, stats, imageFiles, "officecli");
+      return { images: await this.readRenderedImages(imageFiles) };
+    } catch (error) {
+      return { images: new Map(), message: `Bundled presentation renderer failed: ${error instanceof Error ? error.message : String(error)}` };
+    } finally {
+      if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+    }
   }
 
   private async renderSlideImagesWithArtifactTool(
@@ -582,6 +644,31 @@ export class PptxPreviewService {
 
     const imageDataUrl = await readPngDataUrl(imagePath);
     return imageDataUrl ? { imageDataUrl } : null;
+  }
+}
+
+async function runBundledOfficeCliRenderer(
+  commandRunner: CommandRunner,
+  input: { sourcePath: string; outputDir: string; maxSlides: number },
+  options: { timeout: number },
+): Promise<void> {
+  const executable = resolveBundledOfficeCliExecutable();
+  if (!executable) throw new Error("Bundled OfficeCLI is not available.");
+  const startedAt = Date.now();
+  const htmlPath = path.join(input.outputDir, "preview.html");
+  await commandRunner(executable, ["view", input.sourcePath, "html", "-o", htmlPath, "--json"], {
+    timeout: options.timeout,
+    maxBuffer: 8 * 1024 * 1024,
+    env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" },
+  });
+  const result = await renderOfficeHtmlVisualEvidence({
+    htmlPath,
+    outputPath: path.join(input.outputDir, "preview.png"),
+    maxPages: input.maxSlides,
+    timeoutMs: Math.max(1, options.timeout - (Date.now() - startedAt)),
+  });
+  for (const [index, imagePath] of result.imagePaths.entries()) {
+    await fs.copyFile(imagePath, path.join(input.outputDir, `slide-${index + 1}.png`));
   }
 }
 

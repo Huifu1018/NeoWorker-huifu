@@ -12,10 +12,70 @@ from __future__ import annotations
 import json
 import os
 import sys
+from functools import wraps
 from importlib.metadata import version
 
 
 SUPPORTED_HERMES_VERSION = "0.18.0"
+NEOWORKER_MCP_SERVER_NAME = "neoworker"
+
+
+def is_neoworker_application_tool_error(result):
+    """Return whether a failed tool result still proves the host is reachable.
+
+    Hermes 0.18 increments its server-wide MCP circuit breaker for every
+    ``isError`` tool result. A few ordinary web timeouts can therefore block
+    unrelated local tools such as ``parse_document`` for the next minute.
+    NeoWorker's host returns a valid MCP response for these application-level
+    failures, so they must not be treated as transport outages.
+    """
+    try:
+        payload = json.loads(result) if isinstance(result, str) else result
+    except (TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or "error" not in payload:
+        return False
+
+    error_text = str(payload.get("error") or "").strip().lower()
+    if not error_text:
+        return False
+    transport_markers = (
+        "mcp server 'neoworker' is unreachable",
+        "mcp server 'neoworker' is not connected",
+        "mcp server 'neoworker' transport is down",
+        "mcp call failed:",
+        "mcp client disconnected",
+    )
+    return not any(marker in error_text for marker in transport_markers)
+
+
+def install_neoworker_mcp_failure_isolation():
+    """Keep one tool failure from opening Hermes' server-wide breaker."""
+    try:
+        import tools.mcp_tool as mcp_tool
+    except ImportError:
+        return
+
+    if getattr(mcp_tool, "_neoworker_failure_isolation_installed", False):
+        return
+    original_factory = mcp_tool._make_tool_handler
+
+    def isolated_factory(server_name, tool_name, tool_timeout):
+        handler = original_factory(server_name, tool_name, tool_timeout)
+        if server_name != NEOWORKER_MCP_SERVER_NAME:
+            return handler
+
+        @wraps(handler)
+        def isolated_handler(args, **kwargs):
+            result = handler(args, **kwargs)
+            if is_neoworker_application_tool_error(result):
+                mcp_tool._reset_server_error(server_name)
+            return result
+
+        return isolated_handler
+
+    mcp_tool._make_tool_handler = isolated_factory
+    mcp_tool._neoworker_failure_isolation_installed = True
 
 
 def neoworker_provider_kwargs():
@@ -74,11 +134,20 @@ def runtime_check():
     import acp_adapter.entry  # noqa: F401
     import acp_adapter.server  # noqa: F401
     import run_agent  # noqa: F401
+    import tools.mcp_tool as mcp_tool
+
+    install_neoworker_mcp_failure_isolation()
+    failure_isolation_installed = bool(
+        getattr(mcp_tool, "_neoworker_failure_isolation_installed", False)
+    )
+    if not failure_isolation_installed:
+        raise RuntimeError("NeoWorker MCP failure isolation was not installed")
 
     print(json.dumps({
         "ok": True,
         "frozen": bool(getattr(sys, "frozen", False)),
         "hermesAgentVersion": installed_version,
+        "mcpFailureIsolation": failure_isolation_installed,
     }))
 
 
@@ -101,6 +170,8 @@ def main():
     os.environ["HERMES_ENABLE_PROJECT_PLUGINS"] = "0"
 
     import run_agent
+
+    install_neoworker_mcp_failure_isolation()
 
     original_agent = run_agent.AIAgent
 

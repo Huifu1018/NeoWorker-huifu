@@ -5,6 +5,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { compareWorkspaceFilesNewestFirst } from "../../shared/workspace-file-order";
 import {
   UnifiedFile,
   FileHubSource,
@@ -84,7 +85,7 @@ export class FileHubService {
       const entries = fs.readdirSync(workspacePath, { withFileTypes: true });
       const files: UnifiedFile[] = [];
 
-      for (const entry of entries.slice(0, options.limit || 100)) {
+      for (const entry of entries) {
         // Skip hidden files and common noise
         if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 
@@ -103,6 +104,7 @@ export class FileHubService {
               : MIME_EXTENSIONS[ext] || "application/octet-stream",
             size: stat.size,
             modifiedAt: stat.mtimeMs,
+            createdAt: stat.birthtimeMs > 0 ? stat.birthtimeMs : undefined,
             isDirectory: entry.isDirectory(),
           });
         } catch {
@@ -110,7 +112,10 @@ export class FileHubService {
         }
       }
 
-      return files.sort((a, b) => b.modifiedAt - a.modifiedAt);
+      return files.sort(options.sortBy === "createdAt"
+        ? compareWorkspaceFilesNewestFirst
+        : (a, b) => b.modifiedAt - a.modifiedAt
+      ).slice(0, options.limit || 100);
     } catch (error) {
       this.deps.log?.("Failed to list local workspace files", {
         workspacePath,
@@ -141,11 +146,12 @@ export class FileHubService {
         source: "artifacts" as FileHubSource,
         mimeType: a.mimeType || a.mime_type || "application/octet-stream",
         size: a.size || 0,
-        modifiedAt: a.createdAt || a.created_at || Date.now(),
+        createdAt: a.createdAt || a.created_at || undefined,
+        modifiedAt: a.createdAt || a.created_at || 0,
         metadata: { taskId },
       });
     }
-    return files;
+    return options.sortBy === "createdAt" ? files.sort(compareWorkspaceFilesNewestFirst) : files;
   }
 
   // ── Search ──────────────────────────────────────────────────────

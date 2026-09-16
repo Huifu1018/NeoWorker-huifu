@@ -147,6 +147,39 @@ export class TaskStrategyService {
     return true;
   }
 
+  private static shouldUseStructuredSearchAnswer(
+    prompt: string,
+    route: IntentRoute,
+    strategy: DerivedTaskStrategy,
+  ): boolean {
+    const text = String(prompt || "")
+      .replace(STRATEGY_CONTEXT_BLOCK_REGEX, "")
+      .trim();
+    if (!text) return false;
+    const lower = text.toLowerCase();
+    const searchOrResearchIntent =
+      /\b(?:search|look\s+up|find\s+(?:out|me)?|research|investigate|news|latest|recent|current|articles?|reports?|coverage|sources?|citations?|compare|benchmark)\b/.test(
+        lower,
+      ) ||
+      /(?:搜索|搜一下|检索|查一下|查一查|查询|查找|找一下|找找|研究|调研|新闻|报道|文章|资料|来源|引用|最新|最近|近期|当前|实时|有哪些|整理)/.test(
+        text,
+      );
+    if (!searchOrResearchIntent) return false;
+
+    const likelyWebOrSourceLookup =
+      strategy.taskDomain === "research" ||
+      route.signals.includes("needs-tool-inspection") ||
+      route.signals.includes("workflow-pipeline") ||
+      /\b(?:web|internet|online|site|source|citation|news|latest|recent|current|today|this week|this month)\b/.test(
+        lower,
+      ) ||
+      /(?:网页|网上|网站|来源|引用|新闻|报道|文章|最新|最近|近期|当前|实时|今天|本周|这个月)/.test(
+        text,
+      );
+
+    return likelyWebOrSourceLookup;
+  }
+
   static deriveLlmProfile(
     strategy: Pick<DerivedTaskStrategy, "executionMode" | "preflightRequired">,
     taskContext: {
@@ -672,6 +705,17 @@ export class TaskStrategyService {
         "- Then use the Maps MCP nearby ranking/search tools, preferably maps.rank_nearby_options via the configured MCP prefix.",
         "- If location access is denied, unavailable, or times out, do not retry get_current_location in the same task; ask for a typed venue/address or landmark.",
         "- Answer with the top walkable option, walking time, fit, open-status confidence, and a map/source link when available.",
+      );
+    }
+
+    if (this.shouldUseStructuredSearchAnswer(text, route, strategy)) {
+      lines.push(
+        "structured_search_answer_contract:",
+        "- For web/search/news/research lookup answers, optimize for scanning: start with a one-sentence direct answer, then use a compact Markdown table when listing multiple results, sources, reports, articles, options, or comparisons.",
+        "- Choose table columns that match the user's question. For news/articles/reports, prefer: Date | Title/source | Why it matters / relation to the query. Add a Source/Link column when links are available.",
+        "- Keep table cells short; cap the primary table at about 4-8 high-signal rows sorted by relevance or recency.",
+        "- Put caveats, methodology, or lower-priority details after the table in 1-3 short bullets. Avoid long numbered sections, deeply nested bullets, and wall-of-text source digests unless the user explicitly asks for a full report.",
+        "- If the evidence is sparse or uncertain, state that plainly before the table rather than padding the answer.",
       );
     }
 

@@ -5,7 +5,14 @@ import { describe, expect, it } from "vitest";
 const readingStylesPath = fileURLToPath(
   new URL("../../styles/conversation-reading.css", import.meta.url),
 );
+const globalStylesPath = fileURLToPath(
+  new URL("../../styles/index.css", import.meta.url),
+);
+const mainContentStylesPath = fileURLToPath(
+  new URL("../MainContent/main-content.css", import.meta.url),
+);
 const entryPath = fileURLToPath(new URL("../../main.tsx", import.meta.url));
+const i18nPath = fileURLToPath(new URL("../../i18n/index.ts", import.meta.url));
 
 describe("conversation reading design", () => {
   it("loads the reading layer after the legacy design styles", () => {
@@ -73,6 +80,40 @@ describe("conversation reading design", () => {
     expect(styles).toMatch(
       /\.conversation-flow \.assistant-artifact-cards\s*\{[\s\S]*?margin:\s*14px auto 0;/,
     );
+  });
+
+  it("keeps end-of-turn artifact cards separated from the next user query", () => {
+    const styles = readFileSync(readingStylesPath, "utf8");
+
+    expect(styles).toMatch(
+      /\.conversation-flow \.conversation-artifact-stack\.assistant-artifact-cards\s*\{[\s\S]*?margin:\s*14px auto 24px;/,
+    );
+  });
+
+  it("uses a quiet blue query tint and compact completed-turn metadata", () => {
+    const styles = readFileSync(readingStylesPath, "utf8");
+    const i18n = readFileSync(i18nPath, "utf8");
+
+    expect(styles).toMatch(
+      /\.theme-light \.chat-message\.user-message \.chat-bubble\.user-bubble,[\s\S]*?\.theme-light \.chat-message\.user-message \.quoted-follow-up-reply\s*\{[\s\S]*?border-color:\s*#dceaf8;[\s\S]*?background:\s*#eef6ff;/,
+    );
+    expect(styles).toMatch(
+      /\.density-focused \.prompt-task-control-row\s*\{[\s\S]*?padding-bottom:\s*10px;/,
+    );
+    expect(styles).toMatch(
+      /\.chat-message\.assistant-message \.message-actions\s*\{[\s\S]*?max-width:\s*var\(--conversation-reading-max\);[\s\S]*?margin:\s*6px auto 0;/,
+    );
+    expect(i18n).toContain('"taskHeader.workedFor": "用时 {duration}"');
+  });
+
+  it("keeps lazy-loaded message styles from overriding the query tint", () => {
+    for (const stylesPath of [globalStylesPath, mainContentStylesPath]) {
+      const styles = readFileSync(stylesPath, "utf8");
+
+      expect(styles).toMatch(
+        /\.theme-light \.chat-message\.user-message \.chat-bubble\.user-bubble,[\s\S]*?\.theme-light \.chat-message\.user-message \.quoted-follow-up-reply\s*\{[\s\S]*?background:\s*#eef6ff;[\s\S]*?border-color:\s*#dceaf8;/,
+      );
+    }
   });
 
   it("keeps assistant identity, prose and execution rows on one reading rail", () => {

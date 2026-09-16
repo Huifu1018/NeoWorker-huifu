@@ -7,6 +7,8 @@ import { containsOfficeMojibake } from "./office-font-resolver";
 export interface OfficeHtmlVisualRenderInput {
   htmlPath: string;
   outputPath: string;
+  maxPages?: number;
+  timeoutMs?: number;
 }
 
 export interface OfficeHtmlVisualRenderResult {
@@ -46,6 +48,8 @@ function pageImageName(index: number): string {
 export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
   htmlPath,
   outputPath,
+  maxPages,
+  timeoutMs = 60_000,
 }) => {
   if (!process.versions.electron) {
     throw new Error("NeoWorker's embedded Chromium renderer is only available inside the desktop app.");
@@ -87,8 +91,12 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
     if (url !== pathToFileURL(path.resolve(htmlPath)).toString()) event.preventDefault();
   });
 
+  const timeout = setTimeout(() => {
+    if (!window.isDestroyed()) window.destroy();
+  }, timeoutMs);
   try {
     await window.loadURL(pathToFileURL(path.resolve(htmlPath)).toString());
+    await window.webContents.insertCSS("* { scroll-behavior: auto !important; }");
     await window.webContents.executeJavaScript(
       "document.fonts ? document.fonts.ready.then(() => true) : true",
       true,
@@ -105,7 +113,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
     const regions = (await window.webContents.executeJavaScript(`(() => {
       const thumbnails = Array.from(document.querySelectorAll(".thumb"));
       const visibleSlides = Array.from(document.querySelectorAll(".slide"));
-      if (thumbnails.length > 1 && visibleSlides.length >= 1) {
+      if (thumbnails.length > 1 && visibleSlides.length === 1) {
         return thumbnails.map((_node, index) => ({
           selector: ".thumb",
           captureSelector: ".slide",
@@ -115,12 +123,12 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
       }
       const selectors = [".slide", ".page", "[data-page]", ".page-wrapper", "section"];
       for (const selector of selectors) {
-        const nodes = Array.from(document.querySelectorAll(selector)).filter((node) => {
+        const nodes = Array.from(document.querySelectorAll(selector)).map((node, index) => ({ node, index })).filter(({ node }) => {
           const rect = node.getBoundingClientRect();
           const style = window.getComputedStyle(node);
           return rect.width >= 200 && rect.height >= 120 && style.display !== "none" && style.visibility !== "hidden";
         });
-        if (nodes.length) return nodes.map((_node, index) => ({ selector, index }));
+        if (nodes.length) return nodes.map(({ index }) => ({ selector, index }));
       }
       return document.body ? [{ selector: "body", index: 0 }] : [];
     })()`, true)) as VisualRegion[];
@@ -133,7 +141,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
     await fs.mkdir(evidenceDirectory, { recursive: true });
     const imagePaths: string[] = [];
 
-    for (const region of regions) {
+    for (const region of regions.slice(0, maxPages)) {
       const rect = (await window.webContents.executeJavaScript(`(async () => {
         const activationNode = document.querySelectorAll(${JSON.stringify(region.selector)})[${region.index}];
         if (${Boolean(region.activate)} && activationNode) {
@@ -144,6 +152,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
           ? `document.querySelector(${JSON.stringify(region.captureSelector)})`
           : `activationNode`};
         if (!node) return null;
+        await Promise.all(Array.from(node.querySelectorAll("img")).map((image) => image.decode().catch(() => {})));
         node.scrollIntoView({ block: "center", inline: "center" });
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const bounds = node.getBoundingClientRect();
@@ -194,6 +203,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
       renderer: "electron-chromium",
     };
   } finally {
+    clearTimeout(timeout);
     if (!window.isDestroyed()) window.destroy();
   }
 };

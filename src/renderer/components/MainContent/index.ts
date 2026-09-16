@@ -48,6 +48,7 @@ export {
   shouldShowChatTaskExecutionRows,
   selectVisibleCommandOutputSessions,
   shouldShowBootstrapProgressRow,
+  isActionBlockInCurrentTurn,
   shouldMarkActionBlockActiveForCurrentTurn,
   getBootstrapProgressTitle,
   deriveProgressHeartbeat,

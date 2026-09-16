@@ -492,6 +492,34 @@ describe("TaskExecutor completion contract integration", () => {
     }
   });
 
+  it("lets an explicit HTML format qualify a Chinese ledger deliverable", () => {
+    expect(extractExplicitOutputExtensions("", "生成一个html台账")).toEqual([".html"]);
+    expect(
+      extractExplicitOutputExtensions("", "生成一个 HTML 格式的交互式台账"),
+    ).toEqual([".html"]);
+    expect(extractExplicitOutputExtensions("", "生成 Excel 台账")).toEqual([".xlsx"]);
+    expect(extractExplicitOutputExtensions("", "生成一个台账")).toEqual([".xlsx"]);
+    expect(
+      extractExplicitOutputExtensions("", "生成 HTML 页面和 Excel 台账"),
+    ).toEqual([".xlsx", ".html"]);
+  });
+
+  it("does not inherit an Excel requirement for an HTML ledger follow-up", () => {
+    const executor = createExecuteHarness({
+      title: "生成excel台账",
+      prompt: "基于文档内容，生成一个台账",
+      rawPrompt: "基于文档内容，生成一个台账",
+      lastOutput: "Excel 台账已经生成。",
+    });
+
+    const contract = (executor as Any).buildFollowUpCompletionContract(
+      "生成一个html台账",
+    );
+
+    expect(contract.requiredArtifactExtensions).toEqual([".html"]);
+    expect((executor as Any).isArtifactFormatSwitchFollowUp(contract)).toBe(true);
+  });
+
   it("recognizes Chinese HTML presentation-form wording as an artifact request", () => {
     expect(
       extractExplicitOutputExtensions(
@@ -797,6 +825,49 @@ describe("TaskExecutor completion contract integration", () => {
     expect(getFollowUpIterationLimit(contract, 8)).toBe(8);
   });
 
+  it("keeps the previous follow-up PPT contract when a long-lived chat continues", () => {
+    const executor = createExecuteHarness({
+      title: "查询航班",
+      prompt: "查询明天广州飞上海的航班",
+      rawPrompt: "查询明天广州飞上海的航班",
+      lastOutput: "航班信息如下。",
+    });
+    (executor as Any).activeFollowUpCompletionContract = {
+      requiresArtifactEvidence: true,
+      requiredArtifactExtensions: [".pptx"],
+      artifactKind: "presentation",
+      requiredSuccessfulTools: ["create_presentation"],
+      requiresDirectAnswer: false,
+      requiresDecisionSignal: false,
+    };
+
+    const contract = (executor as Any).buildFollowUpCompletionContract("继续");
+
+    expect(contract.requiresArtifactEvidence).toBe(true);
+    expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
+    expect(contract.allowExistingArtifactEvidence).toBe(true);
+  });
+
+  it("does not inherit a failed PDF contract into an unrelated follow-up", () => {
+    const executor = createExecuteHarness({
+      title: "生成详细的分析报告，PDF文档",
+      prompt: "生成详细的分析报告，PDF文档",
+      lastOutput: "PDF 没有生成。",
+    });
+
+    const weatherContract = (executor as Any).buildFollowUpCompletionContract(
+      "帮我查一下明天北京的天气",
+    );
+    const fileCountContract = (executor as Any).buildFollowUpCompletionContract(
+      "这个文件夹中有多少文件？",
+    );
+
+    expect(weatherContract.requiresArtifactEvidence).toBe(false);
+    expect(weatherContract.requiredArtifactExtensions).toEqual([]);
+    expect(fileCountContract.requiresArtifactEvidence).toBe(false);
+    expect(fileCountContract.requiredArtifactExtensions).toEqual([]);
+  });
+
   it("keeps an Excel continuation scoped to Excel when attachment text mentions PPT", () => {
     const workspacePath = fs.mkdtempSync(
       path.join(os.tmpdir(), "neoworker-xlsx-continuation-"),
@@ -1090,6 +1161,24 @@ Attached files (relative to workspace):
     expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
   });
 
+  it("requires a PPTX output when translating existing presentations", () => {
+    const prompt = `帮我把这几个 PPT 翻译成中文
+
+Attached files (relative to workspace):
+- one.pptx (.neoworker/uploads/123/one.pptx)
+- two.pptx (.neoworker/uploads/123/two.pptx)`;
+    const contract = buildCompletionContract({
+      taskTitle: "翻译 PPT",
+      taskPrompt: prompt,
+      requiresDirectAnswer: false,
+      requiresDecisionSignal: false,
+      isWatchSkipRecommendationTask: false,
+    });
+
+    expect(contract.requiresArtifactEvidence).toBe(true);
+    expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
+  });
+
   it("rejects a follow-up Word request when only HTML was created", () => {
     const executor = createExecuteHarness({
       prompt: "Compare the two files.",
@@ -1144,6 +1233,30 @@ Attached files (relative to workspace):
       (executor as Any).getFollowUpArtifactGuardError(contract, startedAt, new Set<string>()),
     ).toBeNull();
     fs.rmSync(workspacePath, { recursive: true, force: true });
+  });
+
+  it("accepts the reported PPT-to-Word follow-up without requiring a new PPT", () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "neoworker-ppt-to-word-"));
+    try {
+      const outputPath = writeOfficeEvidence(workspacePath, "analysis.docx", "word/document.xml");
+      const executor = createExecuteHarness({ prompt: "生成PPT", lastOutput: "Word 报告已生成", createdFiles: [outputPath] }) as Any;
+      executor.workspace.path = workspacePath;
+      const contract = executor.buildFollowUpCompletionContract("基于PPT内容，转型word，进行详细分析");
+      executor.activeFollowUpCompletionContract = contract;
+      expect(contract.requiredArtifactExtensions).toEqual([".docx"]);
+      expect(executor.inferRequiredArtifactExtensions()).toEqual([".docx"]);
+      expect(executor.buildFollowUpCompletionContract("继续").requiredArtifactExtensions).toEqual([".docx"]);
+      const startedAt = Date.now() - 100;
+      executor.daemon.getTaskEvents.mockReturnValue([{ timestamp: Date.now(), type: "artifact_created", payload: { path: outputPath } }]);
+      expect(executor.getFollowUpArtifactGuardError(contract, startedAt, new Set<string>())).toBeNull();
+      expect(executor.getMissingArtifactExtensions(contract, [outputPath])).toEqual([]);
+      expect(executor.getMissingArtifactExtensions(contract, [])).toEqual([".docx"]);
+      const emptyPath = path.join(workspacePath, "empty.docx");
+      fs.writeFileSync(emptyPath, "");
+      expect(executor.getMissingArtifactExtensions(contract, [emptyPath])).toEqual([".docx"]);
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
   });
 
   it("treats compile-into-report prompts as requiring artifact evidence", () => {

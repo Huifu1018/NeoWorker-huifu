@@ -45,6 +45,16 @@ describe("localizeProgressText", () => {
     ).toBe("Office 文件已生成，质检发现 2 个待处理问题。");
   });
 
+  it("localizes the bounded artifact-repair status", () => {
+    applyPersistedLanguage("zh-CN");
+
+    expect(
+      localizeProgressText(
+        "The requested output file is still missing; creating it before completion.",
+      ),
+    ).toBe("尚未检测到要求的输出文件，正在生成后再完成任务。");
+  });
+
   it("uses the product-facing Office tool name in progress text", () => {
     applyPersistedLanguage("zh-CN");
     expect(

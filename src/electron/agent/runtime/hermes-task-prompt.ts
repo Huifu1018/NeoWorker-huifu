@@ -3,6 +3,7 @@ export interface HermesInitialPromptOptions {
   workspacePath: string;
   contextNotes?: string[];
   appliedSkillContext?: string;
+  deliverableContract?: string;
   resuming?: boolean;
 }
 
@@ -15,6 +16,7 @@ export interface HermesRecoveryPromptOptions {
   taskPrompt: string;
   workspacePath: string;
   appliedSkillContext?: string;
+  deliverableContract?: string;
 }
 
 // Leave headroom for the runtime contract and envelope tags so the full prompt
@@ -74,6 +76,10 @@ export function buildHermesInitialPrompt(
   const workspacePath = clampText(options.workspacePath, MAX_WORKSPACE_PATH_CHARS);
   const context = normalizeContextNotes(options.contextNotes);
   const skillContext = clampText(options.appliedSkillContext, MAX_CONTEXT_CHARS);
+  const deliverableContract = clampText(
+    options.deliverableContract,
+    MAX_CONTEXT_CHARS,
+  );
   const sections = [
     hostContract(),
     `<neoworker_workspace_v1>\nWorkspace root: ${workspacePath}\n</neoworker_workspace_v1>`,
@@ -83,6 +89,9 @@ export function buildHermesInitialPrompt(
       : "",
     skillContext
       ? `<neoworker_skills_v1>\n${skillContext}\n</neoworker_skills_v1>`
+      : "",
+    deliverableContract
+      ? `<neoworker_deliverable_contract_v1>\n${deliverableContract}\n</neoworker_deliverable_contract_v1>`
       : "",
     options.resuming
       ? [
@@ -119,6 +128,10 @@ export function buildHermesRecoveryPrompt(
   const workspacePath = clampText(options.workspacePath, MAX_WORKSPACE_PATH_CHARS);
   const taskPrompt = clampText(options.taskPrompt, 12_000);
   const skillContext = clampText(options.appliedSkillContext, MAX_CONTEXT_CHARS);
+  const deliverableContract = clampText(
+    options.deliverableContract,
+    MAX_CONTEXT_CHARS,
+  );
   return [
     "<neoworker_recovery_v1>",
     "The previous Hermes transport or process ended before the task was fully finalized.",
@@ -126,6 +139,9 @@ export function buildHermesRecoveryPrompt(
     `Original task objective (reference only):\n${taskPrompt}`,
     skillContext
       ? `<neoworker_skills_v1>\n${skillContext}\n</neoworker_skills_v1>`
+      : "",
+    deliverableContract
+      ? `<neoworker_deliverable_contract_v1>\n${deliverableContract}\n</neoworker_deliverable_contract_v1>`
       : "",
     "Continue from the saved Hermes checkpoint. Inspect existing files and prior tool results first.",
     "Do not automatically repeat a tool call whose side effect result is unknown. If confirmation is requested, wait for it.",

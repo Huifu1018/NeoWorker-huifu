@@ -68,6 +68,18 @@ describe("MontyTools", () => {
     expect(res.output).toBe(42);
   });
 
+  it("returns a readable string for Monty failures", async () => {
+    const res = await tools.montyRun({ code: "" });
+
+    expect(res).toMatchObject({
+      success: false,
+      error: "monty code is empty",
+      kind: "syntax",
+    });
+    expect(typeof res.error).toBe("string");
+    expect(res.error).not.toBe("[object Object]");
+  });
+
   it("monty_run exposes safe stdlib helpers (json_parse/json_stringify/json_extract)", async () => {
     const res = await tools.montyRun({
       code: [

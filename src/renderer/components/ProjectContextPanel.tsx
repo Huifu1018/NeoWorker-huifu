@@ -50,7 +50,11 @@ import { getLocalizedSubagentDisplay } from "../utils/localized-agent-roles";
 import { translate, getCurrentLanguage } from "../i18n";
 import { FEATURE_VISIBILITY } from "../feature-visibility";
 import { DocumentAwareFileModal } from "./DocumentAwareFileModal";
-import { getInlinePreviewKindForGeneratedFile } from "./MainContent/artifact-logic";
+import {
+  collectEndOfTaskArtifactCardStacks,
+  extractGeneratedArtifactPathsFromText,
+  getInlinePreviewKindForGeneratedFile,
+} from "./MainContent/artifact-logic";
 import {
   deriveSharedTaskEventUiState,
   type FileInfo,
@@ -60,7 +64,14 @@ import {
   getArtifactPathIdentityKey,
   isCanonicalTaskArtifactOutputPath,
 } from "../utils/artifact-path-identity";
-import { isInternalWorkspaceProcessPath } from "../utils/task-artifact-visibility";
+import {
+  isInternalWorkspaceProcessPath,
+  isUserVisibleTaskArtifactPath,
+} from "../utils/task-artifact-visibility";
+import { hasTaskOutputs } from "../utils/task-outputs";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
+import { compareWorkspaceFilesNewestFirst, getWorkspaceFileCreationTime } from "../../shared/workspace-file-order";
+import { normalizeInitialPromptText } from "./MainContent/task-event-presentation";
 import "./project-context-panel.css";
 
 type ProjectPanelTab = "outputs" | "files" | "changes" | "session";
@@ -77,6 +88,7 @@ export type WorkspaceFile = {
   mimeType?: string;
   size?: number;
   modifiedAt?: number;
+  createdAt?: number;
   isDirectory?: boolean;
 };
 
@@ -95,6 +107,8 @@ function normalizeWorkspaceFileEntry(
     size: typeof entry?.size === "number" ? entry.size : undefined,
     modifiedAt:
       typeof entry?.modifiedAt === "number" ? entry.modifiedAt : undefined,
+    createdAt:
+      typeof entry?.createdAt === "number" ? entry.createdAt : undefined,
     isDirectory: Boolean(entry?.isDirectory),
   };
 }
@@ -227,8 +241,47 @@ export function collapseSupersededTaskOutputFiles(
   });
 }
 
+export function scopeTaskOutputFilesToLatestTurn(options: {
+  files: FileInfo[];
+  events: TaskEvent[];
+  workspacePath?: string;
+}): FileInfo[] {
+  if (options.files.length === 0 || options.events.length === 0) {
+    return options.files;
+  }
+
+  let latestUserMessageIndex = -1;
+  for (let index = options.events.length - 1; index >= 0; index -= 1) {
+    if (getEffectiveTaskEventType(options.events[index]) === "user_message") {
+      latestUserMessageIndex = index;
+      break;
+    }
+  }
+  if (latestUserMessageIndex < 0) return options.files;
+
+  const latestTurnOutputKeys = new Set<string>();
+  for (const stack of collectEndOfTaskArtifactCardStacks(options.events, 32)) {
+    if (stack.anchorEventIndex < latestUserMessageIndex) continue;
+    for (const artifact of stack.artifacts) {
+      const identityKey = getArtifactPathIdentityKey(
+        artifact.path,
+        options.workspacePath,
+      );
+      if (identityKey) latestTurnOutputKeys.add(identityKey);
+    }
+  }
+
+  return options.files.filter((file) =>
+    latestTurnOutputKeys.has(
+      getArtifactPathIdentityKey(file.path, options.workspacePath),
+    ),
+  );
+}
+
 const RECOVERED_OUTPUT_GRACE_MS = 30 * 60 * 1000;
 const RECOVERED_OUTPUT_CLOCK_SKEW_MS = 5_000;
+const DELIVERED_FILE_CONTEXT_RE =
+  /(?:交付|产物|输出|文件|生成|保存|导出|deliver|artifact|output|file|generated|created|saved|exported)/i;
 
 export function shouldPublishTaskOutputs(task?: Task): boolean {
   return task?.status === "completed";
@@ -246,10 +299,12 @@ export function deriveRecoveredTemporaryWorkspaceOutputs({
   task,
   workspace,
   files,
+  events = [],
 }: {
   task: Task | undefined;
   workspace: Workspace | null;
   files: WorkspaceFile[];
+  events?: TaskEvent[];
 }): FileInfo[] {
   if (!task || !workspace) return [];
   if (
@@ -259,22 +314,114 @@ export function deriveRecoveredTemporaryWorkspaceOutputs({
   ) {
     return [];
   }
-  if (!/missing artifact evidence/i.test(String(task.error || ""))) return [];
-
+  const taskEvents = events
+    .filter((event) => !event.taskId || event.taskId === task.id)
+    .sort((left, right) => left.timestamp - right.timestamp);
+  let latestUserMessageIndex = -1;
+  for (let index = taskEvents.length - 1; index >= 0; index -= 1) {
+    if (getEffectiveTaskEventType(taskEvents[index]) === "user_message") {
+      latestUserMessageIndex = index;
+      break;
+    }
+  }
+  const currentTurnEvents =
+    latestUserMessageIndex >= 0
+      ? taskEvents.slice(latestUserMessageIndex)
+      : taskEvents;
+  const currentTurnStartedAt =
+    currentTurnEvents[0]?.timestamp || task.createdAt;
+  const currentTurnCompletion = [...currentTurnEvents]
+    .reverse()
+    .find(
+      (event) => getEffectiveTaskEventType(event) === "task_completed",
+    );
   const startedAt = Math.max(
     0,
-    task.createdAt - RECOVERED_OUTPUT_CLOCK_SKEW_MS,
+    currentTurnStartedAt -
+      (latestUserMessageIndex >= 0 ? 0 : RECOVERED_OUTPUT_CLOCK_SKEW_MS),
   );
-  const finishedAt = task.completedAt || task.updatedAt || Date.now();
+  const finishedAt =
+    currentTurnCompletion?.timestamp ||
+    task.completedAt ||
+    task.updatedAt ||
+    Date.now();
   const latestRecoveryAt = finishedAt + RECOVERED_OUTPUT_GRACE_MS;
+  const expectedPathKeys = new Set<string>();
+  const expectedFileNames = new Set<string>();
+  const deliveryTexts: string[] = [];
+  for (const event of currentTurnEvents) {
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (
+      effectiveType !== "assistant_message" &&
+      effectiveType !== "task_completed" &&
+      effectiveType !== "follow_up_completed"
+    ) {
+      continue;
+    }
+    const payload = event.payload || {};
+    const texts = [
+      payload.message,
+      payload.resultSummary,
+      payload.semanticSummary,
+      payload.followUpMessage,
+      payload.bestKnownOutcome?.resultSummary,
+      payload.bestKnownOutcome?.semanticSummary,
+    ];
+    for (const text of texts) {
+      if (typeof text !== "string") continue;
+      deliveryTexts.push(text);
+      for (const outputPath of extractGeneratedArtifactPathsFromText(text)) {
+        const identityKey = getArtifactPathIdentityKey(
+          outputPath,
+          workspace.path,
+        );
+        if (identityKey) expectedPathKeys.add(identityKey);
+        const outputName = fileName(outputPath).toLowerCase();
+        if (outputName) expectedFileNames.add(outputName);
+      }
+    }
+  }
+  for (const text of [task.resultSummary, task.semanticSummary]) {
+    if (typeof text === "string" && text.trim()) deliveryTexts.push(text);
+  }
+  const copiedSourceKeys = deriveCopiedSourceArtifactPathKeys(
+    currentTurnEvents,
+    workspace.path,
+  );
+  const allowUnreferencedLocalRecovery = /missing artifact evidence/i.test(
+    String(task.error || ""),
+  );
 
   return files
     .filter((file) => {
       if (file.isDirectory) return false;
       if (!file.path || !Number.isFinite(file.modifiedAt)) return false;
-      return (
+      if (!isUserVisibleTaskArtifactPath(file.path)) return false;
+      const identityKey = getArtifactPathIdentityKey(file.path, workspace.path);
+      if (!identityKey || copiedSourceKeys.has(identityKey)) return false;
+      const isInCurrentTurn =
         Number(file.modifiedAt) >= startedAt &&
-        Number(file.modifiedAt) <= latestRecoveryAt
+        Number(file.modifiedAt) <= latestRecoveryAt;
+      if (!isInCurrentTurn) return false;
+      if (file.source === "artifacts") return true;
+      if (allowUnreferencedLocalRecovery) return true;
+      const candidateName = fileName(file.path).toLowerCase();
+      const explicitlyDelivered = deliveryTexts.some((text) => {
+        const normalizedText = text.toLowerCase();
+        const mentionIndex = normalizedText.indexOf(candidateName);
+        if (mentionIndex < 0) return false;
+        const lineStart = normalizedText.lastIndexOf("\n", mentionIndex) + 1;
+        const lineEnd = normalizedText.indexOf("\n", mentionIndex);
+        const line = normalizedText.slice(
+          lineStart,
+          lineEnd < 0 ? normalizedText.length : lineEnd,
+        );
+        return DELIVERED_FILE_CONTEXT_RE.test(line);
+      });
+      return (
+        expectedPathKeys.has(identityKey) ||
+        expectedFileNames.has(candidateName) ||
+        explicitlyDelivered
       );
     })
     .sort((left, right) => Number(right.modifiedAt) - Number(left.modifiedAt))
@@ -324,11 +471,14 @@ type PendingSessionConversationRound = Omit<
   completed: boolean;
   failed: boolean;
   synthetic: boolean;
+  boundaryType: "synthetic" | "user_message" | "follow_up_started";
 };
 
 function taskConversationPrompt(task?: Task): string {
   if (!task) return "";
-  return String(task.userPrompt || task.rawPrompt || task.prompt || "").trim();
+  return normalizeInitialPromptText(
+    String(task.userPrompt || task.rawPrompt || task.prompt || ""),
+  );
 }
 
 function normalizeConversationText(text: string): string {
@@ -358,16 +508,16 @@ function payloadNestedString(
 
 function eventConversationText(event: TaskEvent): string {
   const effectiveType = getEffectiveTaskEventType(event);
-  if (
-    effectiveType === "user_message" ||
-    effectiveType === "assistant_message"
-  ) {
+  if (effectiveType === "user_message") {
+    return normalizeInitialPromptText(payloadString(event.payload, "message"));
+  }
+  if (effectiveType === "assistant_message") {
     return payloadString(event.payload, "message");
   }
   if (effectiveType === "follow_up_started") {
-    return (
+    return normalizeInitialPromptText(
       payloadString(event.payload, "followUpMessage") ||
-      payloadString(event.payload, "message")
+        payloadString(event.payload, "message"),
     );
   }
   return "";
@@ -380,10 +530,12 @@ function eventCompletionConversationText(event: TaskEvent): string {
     effectiveType === "follow_up_completed"
   ) {
     return (
-      payloadString(event.payload, "resultSummary") ||
-      payloadString(event.payload, "semanticSummary") ||
-      payloadNestedString(event.payload, "bestKnownOutcome", "resultSummary") ||
-      payloadString(event.payload, "message")
+      sanitizeHermesText(
+        payloadString(event.payload, "resultSummary") ||
+          payloadString(event.payload, "semanticSummary") ||
+          payloadNestedString(event.payload, "bestKnownOutcome", "resultSummary") ||
+          payloadString(event.payload, "message"),
+      )
     );
   }
   if (
@@ -422,6 +574,7 @@ function buildTaskConversationRounds(
         completed: false,
         failed: false,
         synthetic: true,
+        boundaryType: "synthetic",
       }
     : null;
 
@@ -453,6 +606,7 @@ function buildTaskConversationRounds(
           current.id = event.id;
           current.timestamp = event.timestamp;
           current.synthetic = false;
+          current.boundaryType = "user_message";
         }
         continue;
       }
@@ -467,17 +621,27 @@ function buildTaskConversationRounds(
         current.userText = userText;
         current.timestamp = event.timestamp;
         current.synthetic = false;
+        current.boundaryType = effectiveType;
         continue;
       }
       const repeatsPendingUserMessage =
-        effectiveType === "follow_up_started" &&
         current &&
         !current.synthetic &&
         !current.assistantText &&
         !current.completed &&
         !current.failed &&
+        current.boundaryType !== effectiveType &&
         normalizedCurrentText === normalizedUserText;
       if (repeatsPendingUserMessage) {
+        // Follow-up execution records both follow_up_started and user_message.
+        // Either event may arrive first, so treat equal adjacent boundaries as
+        // one round and prefer the durable user_message identity when present.
+        if (effectiveType === "user_message" && current) {
+          current.id = event.id;
+          current.turnId = `event:${event.id}`;
+          current.timestamp = event.timestamp;
+          current.boundaryType = "user_message";
+        }
         continue;
       }
       finishCurrent();
@@ -489,6 +653,7 @@ function buildTaskConversationRounds(
         completed: false,
         failed: false,
         synthetic: false,
+        boundaryType: effectiveType,
       };
       continue;
     }
@@ -1195,11 +1360,20 @@ export function ProjectContextPanel({
     null,
   );
   const workspaceFilesRequestRef = useRef(0);
-  const [recoveredOutputFiles, setRecoveredOutputFiles] = useState<FileInfo[]>(
-    [],
-  );
-  const [isLoadingRecoveredOutputs, setIsLoadingRecoveredOutputs] =
-    useState(false);
+  const recoveredOutputScopeKey = `${task?.id || "no-task"}:${workspace?.path || "no-workspace"}`;
+  const recoveredOutputsRequestRef = useRef(0);
+  const [recoveredOutputState, setRecoveredOutputState] = useState<{
+    scopeKey: string;
+    files: FileInfo[];
+    loading: boolean;
+  }>({ scopeKey: recoveredOutputScopeKey, files: [], loading: false });
+  const recoveredOutputFiles =
+    recoveredOutputState.scopeKey === recoveredOutputScopeKey
+      ? recoveredOutputState.files
+      : [];
+  const isLoadingRecoveredOutputs =
+    recoveredOutputState.scopeKey === recoveredOutputScopeKey &&
+    recoveredOutputState.loading;
   const [viewerFilePath, setViewerFilePath] = useState<string | null>(null);
   const [hiddenOutputPaths, setHiddenOutputPaths] = useState<Set<string>>(
     () => new Set(),
@@ -1366,17 +1540,34 @@ export function ProjectContextPanel({
     task?.id,
   ]);
 
-  const taskUi = useMemo(
+  const inspectedTaskUi = useMemo(
     () =>
-      sharedTaskEventUi ||
       deriveSharedTaskEventUiState({
         rawEvents: events,
         task,
         workspace,
         projectionMode: "inspect",
       }),
-    [events, sharedTaskEventUi, task, workspace],
+    [events, task, workspace],
   );
+  const taskUi = useMemo(() => {
+    if (!sharedTaskEventUi) return inspectedTaskUi;
+    const sharedHasOutputs =
+      hasTaskOutputs(sharedTaskEventUi.outputSummary) ||
+      sharedTaskEventUi.files.some((file) => file.action !== "deleted");
+    if (sharedHasOutputs) return sharedTaskEventUi;
+
+    const inspectedHasOutputs =
+      hasTaskOutputs(inspectedTaskUi.outputSummary) ||
+      inspectedTaskUi.files.some((file) => file.action !== "deleted");
+    if (!inspectedHasOutputs) return sharedTaskEventUi;
+
+    return {
+      ...sharedTaskEventUi,
+      files: inspectedTaskUi.files,
+      outputSummary: inspectedTaskUi.outputSummary,
+    };
+  }, [inspectedTaskUi, sharedTaskEventUi]);
   const currentFolderPath = folderPath || workspace?.path || null;
   const taskFiles = taskUi.files;
   const taskOutputsReady = shouldPublishTaskOutputs(task);
@@ -1392,12 +1583,21 @@ export function ProjectContextPanel({
       ),
     [taskFiles, workspace?.path],
   );
+  const currentTurnIndexedOutputFiles = useMemo(
+    () =>
+      scopeTaskOutputFilesToLatestTurn({
+        files: indexedOutputFiles,
+        events,
+        workspacePath: workspace?.path,
+      }),
+    [events, indexedOutputFiles, workspace?.path],
+  );
   // File events are emitted as soon as tools write to disk. Keep drafts,
   // temporary validation files, and in-place edits out of "This turn's
   // artifacts" until the task reaches its verified terminal state.
   const outputFileCandidates = taskOutputsReady
-    ? indexedOutputFiles.length > 0
-      ? indexedOutputFiles
+    ? currentTurnIndexedOutputFiles.length > 0
+      ? currentTurnIndexedOutputFiles
       : recoveredOutputFiles
     : [];
   const outputFiles = useMemo(
@@ -1440,6 +1640,7 @@ export function ProjectContextPanel({
         source: "local",
         path: currentFolderPath,
         limit: 250,
+        sortBy: "createdAt",
       });
       const artifactRequests =
         isWorkspaceRoot && workspaceId
@@ -1449,12 +1650,14 @@ export function ProjectContextPanel({
                 workspaceId,
                 path: workspacePath,
                 limit: 250,
+                sortBy: "createdAt",
               }),
               ...sessionArtifactTaskIds.map((taskId) =>
                 window.electronAPI.listHubFiles({
                   source: "artifacts",
                   taskId,
                   limit: 50,
+                  sortBy: "createdAt",
                 }),
               ),
             ]
@@ -1469,10 +1672,10 @@ export function ProjectContextPanel({
         Array.isArray(entries) ? entries : [],
       );
       const localFiles = (Array.isArray(localEntries) ? localEntries : [])
-        .map((entry) => normalizeWorkspaceFileEntry(entry, "local"))
+        .map((entry: Any) => normalizeWorkspaceFileEntry(entry, "local"))
         .filter((entry): entry is WorkspaceFile => Boolean(entry));
       const artifactFiles = artifactEntries
-        .map((entry) => normalizeWorkspaceFileEntry(entry, "artifacts"))
+        .map((entry: Any) => normalizeWorkspaceFileEntry(entry, "artifacts"))
         .filter((entry): entry is WorkspaceFile => Boolean(entry));
       if (requestId !== workspaceFilesRequestRef.current) return;
       setWorkspaceFiles(
@@ -1508,41 +1711,90 @@ export function ProjectContextPanel({
 
   const workspaceArtifactRefreshKey = useMemo(
     () =>
-      indexedOutputFiles
+      currentTurnIndexedOutputFiles
         .map((file) => `${file.action}:${file.path}:${file.timestamp}`)
         .join("|"),
-    [indexedOutputFiles],
+    [currentTurnIndexedOutputFiles],
   );
 
   const loadRecoveredOutputFiles = useCallback(async () => {
+    const requestId = ++recoveredOutputsRequestRef.current;
     if (
       !taskOutputsReady ||
       !workspace?.path ||
-      indexedOutputFiles.length > 0
+      currentTurnIndexedOutputFiles.length > 0
     ) {
-      setRecoveredOutputFiles([]);
+      setRecoveredOutputState({
+        scopeKey: recoveredOutputScopeKey,
+        files: [],
+        loading: false,
+      });
       return;
     }
-    setIsLoadingRecoveredOutputs(true);
+    setRecoveredOutputState({
+      scopeKey: recoveredOutputScopeKey,
+      files: [],
+      loading: true,
+    });
     try {
-      const files = await window.electronAPI.listHubFiles({
-        source: "local",
-        path: workspace.path,
-        limit: 250,
-      });
-      setRecoveredOutputFiles(
-        deriveRecoveredTemporaryWorkspaceOutputs({
+      const [localResult, artifactResult] = await Promise.allSettled([
+        window.electronAPI.listHubFiles({
+          source: "local",
+          path: workspace.path,
+          limit: 250,
+        }),
+        window.electronAPI.listHubFiles({
+          source: "artifacts",
+          taskId: task?.id,
+          limit: 100,
+        }),
+      ]);
+      if (requestId !== recoveredOutputsRequestRef.current) return;
+      const localFiles =
+        localResult.status === "fulfilled" && Array.isArray(localResult.value)
+          ? localResult.value
+              .map((entry: Any) => normalizeWorkspaceFileEntry(entry, "local"))
+              .filter((entry): entry is WorkspaceFile => Boolean(entry))
+          : [];
+      const artifactFiles =
+        artifactResult.status === "fulfilled" &&
+        Array.isArray(artifactResult.value)
+          ? artifactResult.value
+              .map((entry: Any) =>
+                normalizeWorkspaceFileEntry(entry, "artifacts"),
+              )
+              .filter((entry): entry is WorkspaceFile => Boolean(entry))
+          : [];
+      setRecoveredOutputState({
+        scopeKey: recoveredOutputScopeKey,
+        files: deriveRecoveredTemporaryWorkspaceOutputs({
           task,
           workspace,
-          files: Array.isArray(files) ? files : [],
+          files: mergeWorkspaceBrowserFiles(
+            artifactFiles,
+            localFiles,
+            workspace.path,
+          ),
+          events,
         }),
-      );
+        loading: false,
+      });
     } catch {
-      setRecoveredOutputFiles([]);
-    } finally {
-      setIsLoadingRecoveredOutputs(false);
+      if (requestId !== recoveredOutputsRequestRef.current) return;
+      setRecoveredOutputState({
+        scopeKey: recoveredOutputScopeKey,
+        files: [],
+        loading: false,
+      });
     }
-  }, [indexedOutputFiles.length, task, taskOutputsReady, workspace]);
+  }, [
+    events,
+    currentTurnIndexedOutputFiles.length,
+    recoveredOutputScopeKey,
+    task,
+    taskOutputsReady,
+    workspace,
+  ]);
 
   useEffect(() => {
     setFolderPath(null);
@@ -1671,11 +1923,7 @@ export function ProjectContextPanel({
           workspacePath: workspace?.path,
         }),
       )
-      .sort((a, b) => {
-        if (Boolean(a.isDirectory) !== Boolean(b.isDirectory))
-          return a.isDirectory ? -1 : 1;
-        return a.name.localeCompare(b.name, "zh-CN");
-      });
+      .sort(compareWorkspaceFilesNewestFirst);
     return normalizedQuery
       ? sorted.filter((file) =>
           file.name.toLowerCase().includes(normalizedQuery),
@@ -2431,7 +2679,7 @@ function WorkspaceFileRow({
                   "generated.components.projectcontextpanel.1399.84",
                   "folder",
                 )
-              : formatTime(file.modifiedAt)}
+              : formatTime(getWorkspaceFileCreationTime(file))}
           </small>
         </span>
       </button>

@@ -62,6 +62,62 @@
   margin-block: 3px 20px;
 }
 
+/* User prompts should be distinct from neutral file and system surfaces while
+   remaining quieter than selected controls. */
+.chat-message.user-message .chat-bubble.user-bubble,
+.chat-message.user-message .quoted-follow-up-reply {
+  border-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 9%,
+    var(--color-bg-secondary)
+  );
+}
+
+.theme-light .chat-message.user-message .chat-bubble.user-bubble,
+.theme-light .chat-message.user-message .quoted-follow-up-reply {
+  border-color: #dceaf8;
+  background: #eef6ff;
+}
+
+/* The timer doubles as the completed-turn disclosure. Keep it visually quiet
+   and align the final-answer actions to the same reading rail. */
+.density-focused .prompt-task-control-row {
+  margin-top: 10px;
+  padding-bottom: 10px;
+  border-bottom-color: color-mix(
+    in srgb,
+    var(--color-text-primary) 10%,
+    transparent
+  );
+}
+
+.density-focused .timeline-controls-label-button.with-duration {
+  gap: 4px;
+  color: var(--color-text-muted);
+  font-weight: 450;
+}
+
+.density-focused .timeline-controls-label-button.with-duration:hover {
+  color: var(--color-text-secondary);
+}
+
+.density-focused .timeline-controls-label-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conversation-flow .chat-message.assistant-message .message-actions {
+  width: 100%;
+  max-width: var(--conversation-reading-max);
+  margin: 6px auto 0;
+}
+
+.conversation-flow .message-feedback-btn {
+  color: var(--color-text-muted);
+}
+
 .conversation-flow
   .chat-message.assistant-message.assistant-response-message
   > .chat-bubble.assistant-bubble {
@@ -486,6 +542,12 @@
   width: 100%;
   max-width: var(--conversation-reading-max);
   margin: 14px auto 0;
+}
+
+/* End-of-turn delivery stacks are standalone feed rows. Preserve a clear turn
+   boundary before the next user message without loosening inline file cards. */
+.conversation-flow .conversation-artifact-stack.assistant-artifact-cards {
+  margin: 14px auto 24px;
 }
 
 .conversation-flow

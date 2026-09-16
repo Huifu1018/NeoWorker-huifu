@@ -19,6 +19,10 @@ import { FileViewerResult } from "../../electron/preload";
 import { repairHiddenHtmlContent } from "../../shared/html-content-visibility";
 import { useDocumentZoom } from "../hooks/useDocumentZoom";
 import { translate, useLanguage } from "../i18n";
+import {
+  HTML_PREVIEW_SRCDOC_SANDBOX,
+  HTML_PREVIEW_URL_SANDBOX,
+} from "./htmlPreviewSandbox";
 
 if (!hljs.getLanguage("typescript")) {
   hljs.registerLanguage("bash", bash);
@@ -737,15 +741,29 @@ export function FileViewer({
         );
       }
 
-      case "html":
+      case "html": {
+        const previewUrl =
+          fileData.webPreview?.canPreview && fileData.webPreview.previewUrl
+            ? fileData.webPreview.previewUrl
+            : undefined;
         return (
           <iframe
             className="file-viewer-html"
-            srcDoc={repairHiddenHtmlContent(fileData.htmlContent || "").content}
-            sandbox="allow-scripts allow-same-origin"
+            src={previewUrl}
+            srcDoc={
+              previewUrl
+                ? undefined
+                : repairHiddenHtmlContent(fileData.htmlContent || "").content
+            }
+            sandbox={
+              previewUrl
+                ? HTML_PREVIEW_URL_SANDBOX
+                : HTML_PREVIEW_SRCDOC_SANDBOX
+            }
             title={fileData.fileName}
           />
         );
+      }
 
       case "pdf":
         return (

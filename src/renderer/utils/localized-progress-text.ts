@@ -82,6 +82,8 @@ const ZH_EXACT_PROGRESS_TEXT: Record<string, string> = {
   "the office file passed structural checks and a visual preview was completed.":
     "Office 文件已通过结构检查，并完成可视化预览。",
   "the office file passed structural checks.": "Office 文件已通过结构检查。",
+  "the requested output file is still missing; creating it before completion.":
+    "尚未检测到要求的输出文件，正在生成后再完成任务。",
   ready: "就绪",
   "ready to continue": "已准备好继续",
   "reading files...": "正在读取文件...",

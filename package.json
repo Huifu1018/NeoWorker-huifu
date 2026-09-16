@@ -1,6 +1,6 @@
 {
   "name": "neoworker",
-  "version": "0.1.8-3",
+  "version": "0.1.8-8",
   "description": "NeoWorker - GUI-first, CLI-capable local AI super app and everything app for coding, email, agents, documents, spreadsheets, presentations, web design, automations, and agentic work",
   "main": "dist/electron/electron/main.js",
   "author": "Yuan-lab-LLM",
@@ -100,6 +100,7 @@
     "@phosphor-icons/react": "^2.1.10",
     "@pydantic/monty": "^0.0.4",
     "@slack/bolt": "^4.6.0",
+    "@xmldom/xmldom": "0.8.11",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "^6.0.0",
@@ -110,6 +111,7 @@
     "dingtalk-stream": "^2.1.4",
     "discord.js": "^14.25.1",
     "docx": "^9.5.2",
+    "docx-preview": "0.4.0",
     "electron-updater": "^6.3.9",
     "eventsource": "^4.1.0",
     "exceljs": "npm:devextreme-exceljs-fork@4.4.13",
@@ -248,7 +250,10 @@
           "ppt-master/requirements.txt",
           "ppt-master/LICENSE",
           "ppt-master/SPONSORS*.md",
-          "ppt-master/THIRD_PARTY_NOTICES.md"
+          "ppt-master/THIRD_PARTY_NOTICES.md",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.pyo"
         ]
       },
       {

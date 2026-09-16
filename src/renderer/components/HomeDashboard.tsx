@@ -46,6 +46,7 @@ import {
   shouldShowTaskInSidebarSessions,
 } from "./Sidebar";
 import { translate, useLanguage } from "../i18n";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 import { WorkSystemGuide } from "./WorkSystemGuide";
 import { NeoWorkerPageHeader } from "./NeoWorkerPageHeader";
 import { FEATURE_VISIBILITY } from "../feature-visibility";
@@ -481,8 +482,8 @@ function getAutomationSender(task: Task): string {
 
 function getAutomationPreview(task: Task): string {
   const text =
-    task.resultSummary?.trim() ||
-    task.bestKnownOutcome?.resultSummary?.trim() ||
+    sanitizeHermesText(task.resultSummary?.trim() || "") ||
+    sanitizeHermesText(task.bestKnownOutcome?.resultSummary?.trim() || "") ||
     task.prompt?.trim() ||
     task.userPrompt?.trim() ||
     "";
@@ -891,8 +892,8 @@ export function HomeDashboard({
           ? buildCompletionOutputMessage(outputSummary)
           : undefined;
         const resultSummary =
-          task.resultSummary?.trim() ||
-          task.bestKnownOutcome?.resultSummary?.trim() ||
+          sanitizeHermesText(task.resultSummary?.trim() || "") ||
+          sanitizeHermesText(task.bestKnownOutcome?.resultSummary?.trim() || "") ||
           "";
         const description = resultSummary
           ? resultSummary

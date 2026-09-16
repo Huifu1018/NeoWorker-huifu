@@ -12,6 +12,7 @@ import { sanitizeToolCallTextFromAssistant } from "../../shared/tool-call-text-s
 import { formatProviderErrorForDisplay } from "../../shared/provider-error-format";
 import { localizeErrorText } from "../utils/localized-error-text";
 import { translate, useLanguage } from "../i18n";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 
 interface AgentRoleInfo {
   id: string;
@@ -93,17 +94,19 @@ function isCompactStreamEventType(type: StreamEventType): boolean {
 
 function buildTaskCompletionStreamText(payload: TaskEvent["payload"]): string {
   const p = payload as Record<string, unknown> | undefined;
-  const resultSummary =
-    typeof p?.resultSummary === "string" ? p.resultSummary.trim() : "";
-  const semanticSummary =
-    typeof p?.semanticSummary === "string" ? p.semanticSummary.trim() : "";
+  const resultSummary = sanitizeHermesText(
+    typeof p?.resultSummary === "string" ? p.resultSummary.trim() : "",
+  );
+  const semanticSummary = sanitizeHermesText(
+    typeof p?.semanticSummary === "string" ? p.semanticSummary.trim() : "",
+  );
   const verificationVerdict =
     typeof p?.verificationVerdict === "string"
-      ? p.verificationVerdict.trim()
+      ? sanitizeHermesText(p.verificationVerdict.trim())
       : "";
   const verificationReport =
     typeof p?.verificationReport === "string"
-      ? p.verificationReport.trim()
+      ? sanitizeHermesText(p.verificationReport.trim())
       : "";
 
   const summary = [resultSummary, semanticSummary]

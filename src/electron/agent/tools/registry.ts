@@ -1,6 +1,13 @@
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
+import {
+  DOCUMENT_TRANSLATION_GUIDANCE,
+  buildDocumentTaskMessage,
+  getDocumentTranslationToolError,
+  resolveDocumentTranslationContract,
+  type DocumentTranslationContract,
+} from "../document-translation-contract";
 import { createHash, randomUUID } from "crypto";
 import mermaid from "mermaid";
 import { resolveVersionedOutputPath } from "../../utils/versioned-output-path";
@@ -93,7 +100,7 @@ import { isToolAllowedQuick } from "../../security/policy-manager";
 import { evaluateMontyToolPolicy } from "../../security/monty-tool-policy";
 import { BuiltinToolsSettingsManager } from "./builtin-settings";
 import { getCustomSkillLoader } from "../custom-skill-loader";
-import { buildCanonicalTaskIntentQuery } from "../task-intent-query";
+import { buildCanonicalTaskIntentQuery, extractOfficeAttachmentKinds, stripGeneratedTaskContext } from "../task-intent-query";
 import { SkillProposalService } from "../skills/SkillProposalService";
 import { SkillEvalService, type SkillEvalCase } from "../skills/SkillEvalService";
 import { PersonalityManager } from "../../settings/personality-manager";
@@ -730,6 +737,79 @@ export class ToolRegistry {
   private memoryTools: MemoryTools;
   private supermemoryTools: SupermemoryTools;
   private documentTools: DocumentTools;
+  private documentTranslationContract?: DocumentTranslationContract;
+  private verifiedTranslationOutputs = new Map<string, { hash: string; sourcePath: string }>();
+
+  setDocumentTaskContext(message: string): void {
+    const next = resolveDocumentTranslationContract(message, this.documentTranslationContract);
+    if (next.request !== this.documentTranslationContract?.request) this.verifiedTranslationOutputs.clear();
+    this.documentTranslationContract = next;
+  }
+
+  getDocumentTranslationGuidance(): string {
+    return this.documentTranslationContract?.preserveSource ? DOCUMENT_TRANSLATION_GUIDANCE : "";
+  }
+
+  getDocumentTaskContext(): string | undefined {
+    return this.documentTranslationContract?.request;
+  }
+
+  getDocumentTranslationCapabilityError(): string | null {
+    const contract = this.documentTranslationContract;
+    if (!contract?.preserveSource) return null;
+    const sourceTypes = extractOfficeAttachmentKinds(contract.request);
+    if (sourceTypes.includes("pdf") || /\bPDF\b/i.test(stripGeneratedTaskContext(contract.request))) {
+      return "当前 PDF 原版式翻译尚不支持，尤其不能保证阿拉伯语排版及图文原位对应，因此本轮没有交付替代报告。原文件已保留；如需改为重新排版的译文，请先明确确认。";
+    }
+    return null;
+  }
+
+  getDocumentTranslationDeliveryError(paths: string[]): string | null {
+    if (!this.documentTranslationContract?.preserveSource) return null;
+    const deliveredSources = new Set<string>();
+    for (const candidate of paths.filter((value) => /\.(?:pptx|docx|xlsx|pdf)$/i.test(value))) {
+      const resolved = path.resolve(this.workspace.path, candidate);
+      const receipt = this.verifiedTranslationOutputs.get(resolved);
+      try {
+        if (receipt && createHash("sha256").update(fs.readFileSync(resolved)).digest("hex") === receipt.hash) {
+          deliveredSources.add(receipt.sourcePath);
+          continue;
+        }
+      } catch { /* A missing output cannot serve as delivery evidence. */ }
+      return "翻译产物尚未通过原文件保真校验，不能宣称已完成。请使用 office_translation 保留原模板、图片和数据；PDF 保版式翻译尚不支持，不能通过新建报告或图片附录代替。";
+    }
+    const sources = extractWorkspaceUploadPaths(this.documentTranslationContract.request).filter((source) => /\.(?:pptx|docx|xlsx)$/i.test(source));
+    if (sources.some((source) => !deliveredSources.has(path.resolve(this.workspace.path, source)))) {
+      return "翻译产物尚未通过原文件保真校验：还有原附件没有对应的已验证译本，不能将部分文件或合并重建文件当作全部完成。";
+    }
+    return null;
+  }
+
+  private async runOfficeTranslation(input: Any): Promise<Any> {
+    const sourcePaths = extractWorkspaceUploadPaths(this.documentTranslationContract?.request || "");
+    if (this.documentTranslationContract?.preserveSource && sourcePaths.length > 0
+      && !sourcePaths.some((source) => path.resolve(this.workspace.path, source) === path.resolve(this.workspace.path, String(input.sourcePath || "")))) {
+      throw new Error("翻译源文件必须是本轮指定的原附件，不能先新建文件再冒充原文件翻译。");
+    }
+    const result = await this.documentTools.officeTranslation(input);
+    if (result?.success && result?.sourceFidelity?.verified && typeof result.path === "string") {
+      const resolved = path.resolve(this.workspace.path, result.path);
+      this.verifiedTranslationOutputs.set(resolved, {
+        hash: createHash("sha256").update(fs.readFileSync(resolved)).digest("hex"),
+        sourcePath: path.resolve(this.workspace.path, input.sourcePath),
+      });
+    }
+    return result;
+  }
+
+  private async assertDocumentTranslationTool(name: string): Promise<void> {
+    if (!this.documentTranslationContract) {
+      const task = await this.daemon.getTaskById?.(this.taskId);
+      this.setDocumentTaskContext(buildDocumentTaskMessage(task || {}));
+    }
+    const error = getDocumentTranslationToolError(this.documentTranslationContract, name);
+    if (error) throw new Error(error);
+  }
   private readonly officeArtifactCoordinator =
     new OfficeArtifactRequestCoordinator();
   private readonly officeArtifactRequestId: string;
@@ -2154,11 +2234,12 @@ export class ToolRegistry {
     return [policyMiddleware];
   }
 
-  private executeWithRegisteredHandler(
+  private async executeWithRegisteredHandler(
     name: string,
     input: Any,
     runtime?: Record<string, unknown>,
   ): Promise<Any> {
+    await this.assertDocumentTranslationTool(name);
     const handler = composeToolMiddleware(
       (context: ToolExecutionContext) => this.handlerRegistry.execute(name, context),
       this.executionMiddlewares,
@@ -2887,6 +2968,7 @@ export class ToolRegistry {
       this.mentionTools.completeMention(request.input.mentionId),
     );
     register("generate_document", async ({ request }) => this.documentTools.generateDocument(request.input));
+    register("office_translation", async ({ request }) => this.runOfficeTranslation(request.input), exclusiveSchedulerSpec);
     register("compile_latex", async ({ request }) => this.documentTools.compileLatex(request.input));
     register(
       "generate_presentation",
@@ -3723,6 +3805,7 @@ Skills:
 - generate_spreadsheet: Generate XLSX spreadsheets from structured sheets
 - create_document: Create Word/PDF (only when user explicitly requests DOCX or PDF — otherwise use write_file with .md)
 - generate_document: Generate PDF documents from markdown/sections
+- office_translation: Translate existing PPTX/DOCX/XLSX text while preserving the original package, images, layout, styles and formulas. Inspect then apply a translated manifest; not a new-template generator.
 - compile_latex: Compile a workspace .tex file into PDF using a system LaTeX engine
 - edit_document: Edit/append content to existing DOCX files
 - create_presentation: Create PowerPoint presentations
@@ -4053,6 +4136,7 @@ ${skillDescriptions}`;
       const execution = await this.executeWithRegisteredHandler(name, input, _runtime);
       return execution?.result ?? execution;
     }
+    await this.assertDocumentTranslationTool(name);
     // Optional workspace-local policy hook (.neoworker/policy/tools.monty).
     // Fail-open on policy script errors to avoid bricking tool execution.
     try {
@@ -5271,15 +5355,30 @@ ${skillDescriptions}`;
     return resolved;
   }
 
-  private async inferPptMasterSourcePath(): Promise<string | null> {
+  private isNativePresentationTranslationRequest(query: string): boolean {
+    if (this.documentTranslationContract?.preserveSource) return true;
+    const normalized = String(query || "").trim();
+    const translationCue =
+      /\b(?:locali[sz]e|translate|translation)\b|(?:翻译|汉化|本地化|译成|译为)/i.test(normalized);
+    const explicitRedesignCue =
+      /\b(?:rebuild|redesign|retemplate|replace\s+the\s+template|new\s+template)\b|(?:重新设计|重新制作|重做|换模板|更换模板|新模板)/i.test(
+        normalized,
+      );
+    return translationCue && !explicitRedesignCue;
+  }
+
+  private async inferPresentationSourceContext(): Promise<{
+    query: string;
+    sourcePaths: string[];
+  }> {
     let task: Task | null | undefined;
     try {
       task = await this.daemon.getTaskById(this.taskId);
     } catch {
-      return null;
+      return { query: "", sourcePaths: [] };
     }
 
-    const taskText = [
+    const taskText = this.documentTranslationContract?.request || [
       task?.title,
       task?.prompt,
       task?.rawPrompt,
@@ -5287,7 +5386,13 @@ ${skillDescriptions}`;
     ]
       .filter((value): value is string => typeof value === "string")
       .join("\n");
-    if (!taskText.trim()) return null;
+    const query = buildCanonicalTaskIntentQuery({
+      title: task?.title,
+      prompt: task?.prompt,
+      rawPrompt: this.documentTranslationContract?.request || task?.rawPrompt,
+      userPrompt: task?.userPrompt,
+    });
+    if (!taskText.trim()) return { query, sourcePaths: [] };
 
     const candidates: string[] = [];
     const addCandidate = (value: unknown) => {
@@ -5318,36 +5423,54 @@ ${skillDescriptions}`;
     if (/\.(?:pptx)\b/i.test(taskText)) {
       const uploadsRoot = path.join(this.workspace.path, ".neoworker", "uploads");
       try {
-        const uploadEntries = await fsPromises.readdir(uploadsRoot, {
-          withFileTypes: true,
-        });
-        const pptxEntries = uploadEntries.filter(
-          (entry) => entry.isFile() && /\.pptx$/i.test(entry.name),
+        const pptxPaths: string[] = [];
+        const collectPptxUploads = async (directory: string, depth: number) => {
+          if (depth > 2 || pptxPaths.length >= 32) return;
+          const entries = await fsPromises.readdir(directory, {
+            withFileTypes: true,
+          });
+          for (const entry of entries) {
+            const fullPath = path.join(directory, entry.name);
+            if (entry.isDirectory()) {
+              await collectPptxUploads(fullPath, depth + 1);
+              continue;
+            }
+            if (entry.isFile() && /\.pptx$/i.test(entry.name)) {
+              pptxPaths.push(fullPath);
+            }
+          }
+        };
+        await collectPptxUploads(uploadsRoot, 0);
+        const namedMatches = pptxPaths.filter((candidate) =>
+          taskText.includes(path.basename(candidate)),
         );
-        const namedMatches = pptxEntries.filter((entry) =>
-          taskText.includes(entry.name),
-        );
-        for (const entry of namedMatches.length === 1
+        for (const candidate of namedMatches.length > 0
           ? namedMatches
-          : pptxEntries.length === 1
-            ? pptxEntries
+          : pptxPaths.length === 1
+            ? pptxPaths
             : []) {
-          addCandidate(path.join(uploadsRoot, entry.name));
+          addCandidate(candidate);
         }
       } catch {
         // Uploads are optional; explicit paths above remain authoritative.
       }
     }
 
+    const sourcePaths: string[] = [];
     for (const candidate of candidates) {
       try {
         const stats = await fsPromises.stat(candidate);
-        if (stats.isFile()) return candidate;
+        if (stats.isFile()) sourcePaths.push(candidate);
       } catch {
         // Keep looking for another attachment representation.
       }
     }
-    return null;
+    return { query, sourcePaths };
+  }
+
+  private async inferPptMasterSourcePath(): Promise<string | null> {
+    const { sourcePaths } = await this.inferPresentationSourceContext();
+    return sourcePaths[0] || null;
   }
 
   /**
@@ -5515,6 +5638,33 @@ ${skillDescriptions}`;
         };
       }
     }
+    if (skill_id === "presentation-studio") {
+      const sourceContext = await this.inferPresentationSourceContext();
+      const explicitSourcePath = String(parameters.source_path || "").trim();
+      const sourcePaths =
+        sourceContext.sourcePaths.length > 0
+          ? sourceContext.sourcePaths
+          : explicitSourcePath
+            ? [explicitSourcePath]
+            : [];
+      if (sourcePaths.length > 0) {
+        parameters = {
+          ...parameters,
+          source_path: explicitSourcePath || (sourcePaths.length === 1 ? sourcePaths[0] : ""),
+          source_paths: JSON.stringify(sourcePaths),
+        };
+      }
+      if (
+        sourcePaths.length > 0 &&
+        this.isNativePresentationTranslationRequest(sourceContext.query)
+      ) {
+        parameters = {
+          ...parameters,
+          mode: "edit",
+          preserve_source_design: true,
+        };
+      }
+    }
 
     // Check for required parameters
     const artifactDir = path.join(
@@ -5622,10 +5772,34 @@ ${skillDescriptions}`;
     }
 
     // Expand the skill prompt with provided parameters
-    const expandedPrompt = skillLoader.expandPrompt(skill, parameters, {
+    let expandedPrompt = skillLoader.expandPrompt(skill, parameters, {
       artifactDir,
       workspaceArtifactDir,
     });
+    if (skill_id === "presentation-studio" && parameters.preserve_source_design === true) {
+      const sourcePaths = (() => {
+        try {
+          const parsed = JSON.parse(String(parameters.source_paths || "[]"));
+          return Array.isArray(parsed)
+            ? parsed.filter(
+                (value): value is string => typeof value === "string" && value.trim().length > 0,
+              )
+            : [];
+        } catch {
+          return [];
+        }
+      })();
+      expandedPrompt = [
+        expandedPrompt,
+        "",
+        "# Native PPTX translation lock",
+        "This request translates existing PowerPoint files. It is an edit operation, never a deck-creation operation.",
+        `Source decks: ${JSON.stringify(sourcePaths)}`,
+        "Use office_translation inspect/apply to produce one independent translated copy per source deck. Preserve slide masters, layouts, theme, fonts, dimensions, slide count/order, images, charts, tables, notes, transitions, and other reusable assets. No temporary Python dependencies are needed.",
+        "Change only translatable text plus the minimum text-fit properties required for the target language. Do not bootstrap a blank Presentation Studio project, invent a replacement template, merge source decks, or call create_presentation/generate_presentation.",
+        "Never overwrite an input. If native preservation cannot be completed, report the concrete blocker instead of silently rebuilding the deck with a generic template.",
+      ].join("\n");
+    }
     const contextDirectives: SkillContextDirectives = {
       ...(Array.isArray((skill.requires as Any)?.tools) &&
       ((skill.requires as Any)?.tools as unknown[]).some((tool) => typeof tool === "string")
@@ -7048,7 +7222,7 @@ ${skillDescriptions}`;
             sourcePath: {
               type: "string",
               description:
-                "Optional existing PPTX/template to fill while preserving its native slide design",
+                "Template input for ppt-master only. For existing-document translation use office_translation instead of create_presentation.",
             },
             officeProfile: {
               type: "string",
@@ -7087,6 +7261,8 @@ ${skillDescriptions}`;
             contentSnapshot: officeContentSnapshotInputSchema(),
             slides: {
               type: "array",
+              description:
+                "Array of slide objects. Pass the objects directly; never JSON-stringify the array or its items.",
               items: {
                 type: "object",
                 properties: {
@@ -7573,6 +7749,7 @@ ${skillDescriptions}`;
         description:
           `Search the web for information. This is the PRIMARY tool for research tasks - finding news, trends, discussions, and information on any topic. ` +
           `Use this FIRST for research, then use web_fetch if you need to read specific URLs from the results. ` +
+          `For flight schedules or fares, search results are discovery evidence only: fetch at least two route/date-specific or official source pages before summarizing, never present snippet-only results as a complete schedule, and explicitly identify unverified gaps. ` +
           `Do NOT use browser_navigate for research - web_search is faster and more efficient. ` +
           providerDesc,
         input_schema: {
@@ -7589,7 +7766,8 @@ ${skillDescriptions}`;
             },
             maxResults: {
               type: "number",
-              description: "Maximum number of results (default: 10, max: 20)",
+              description:
+                "Maximum number of results (default: 10; flight routes default: 20; max: 20)",
             },
             maxUses: {
               type: "number",

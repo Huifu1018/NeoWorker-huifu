@@ -5,6 +5,7 @@ import {
 } from "./task-event-compat";
 import { hasAssistantMediaDirective } from "./assistant-media-directives";
 import { isUserVisibleTaskArtifactPath } from "./task-artifact-visibility";
+import { isHermesRuntimeEvent } from "./runtime-privacy";
 
 export const IMPORTANT_EVENT_TYPES: EventType[] = [
   "task_created",
@@ -155,7 +156,7 @@ export function isInternalAssistantMessage(event: TaskEvent): boolean {
 
 export function isHermesStreamingEvent(event: TaskEvent): boolean {
   if (getEffectiveTaskEventType(event) !== "llm_streaming") return false;
-  return asObject(event.payload).runtime === "hermes";
+  return isHermesRuntimeEvent(event);
 }
 
 export function isLlmRequestCancelledEvent(event: TaskEvent): boolean {
@@ -336,6 +337,9 @@ function isImplementationOnlyBrowserActionEvent(event: TaskEvent): boolean {
 }
 
 export function isUserVisibleTaskArtifactEvent(event: TaskEvent): boolean {
+  // Runtime telemetry is useful to the executor but is never a user-facing
+  // timeline artifact. This also covers legacy Hermes phase/checkpoint rows.
+  if (isHermesRuntimeEvent(event)) return false;
   const effectiveType = getEffectiveTaskEventType(event);
   if (
     effectiveType !== "file_created" &&
@@ -823,6 +827,7 @@ export function shouldShowTaskEventInSummaryMode(
   event: TaskEvent,
   taskStatus?: TaskStatus,
 ): boolean {
+  if (isHermesRuntimeEvent(event)) return false;
   if (!isUserVisibleTaskArtifactEvent(event)) return false;
   if (isInjectedContextStepFailure(event)) return false;
   if (taskStatus === "cancelled" && isLlmRequestCancelledEvent(event))
@@ -844,6 +849,7 @@ export function shouldShowTaskEventInStepFeed(
   event: TaskEvent,
   options?: { verboseSteps?: boolean; taskStatus?: TaskStatus },
 ): boolean {
+  if (isHermesRuntimeEvent(event)) return false;
   if (!isUserVisibleTaskArtifactEvent(event)) return false;
   if (isHermesStreamingEvent(event)) return false;
   if (isInjectedContextStepFailure(event)) return false;

@@ -54,6 +54,17 @@ describe("session conversation rendering", () => {
     expect(styles).toContain("@media (max-width: 620px)");
   });
 
+  it("keeps normal completion confirmations compact while preserving exceptional states", () => {
+    const source = readFileSync(mainContentPath, "utf8");
+
+    expect(source).toContain("const isPlainSuccessfulCompletion =");
+    expect(source).toContain("!isPlainSuccessfulCompletion;");
+    expect(source).toContain("!isPlainSuccessfulCompletion && (");
+    expect(source).toContain("const showAssistantResponseStyling =");
+    expect(source).toContain("<ThumbsUp");
+    expect(source).toContain("<ThumbsDown");
+  });
+
   it("does not render the redundant task context action row", () => {
     const source = readFileSync(mainContentPath, "utf8");
 
@@ -68,6 +79,19 @@ describe("session conversation rendering", () => {
       /handleSelectConversationTurn[\s\S]*?cancelAnimationFrame\(autoScrollFrameRef\.current\)[\s\S]*?setAutoScroll\(false\)[\s\S]*?behavior:\s*"auto"/,
     );
     expect(source).toContain("stickToBottom: false");
+  });
+
+  it("keeps bottom-follow pinned while deferred answer content expands", () => {
+    const source = readFileSync(mainContentPath, "utf8");
+
+    expect(source).toContain("const autoScrollRef = useRef(true)");
+    expect(source).toContain("const observer = new ResizeObserver(pinAfterLayout)");
+    expect(source).toContain('container.querySelector<HTMLElement>(".task-content")');
+    expect(source).toContain("const targetTop = pinScrollElementToBottom(container)");
+    expect(source).toContain("autoScrollRef.current = nextAutoScroll");
+    expect(source).toMatch(
+      /handleSelectConversationTurn[\s\S]*?autoScrollRef\.current = false[\s\S]*?setAutoScroll\(false\)/,
+    );
   });
 
   it("uses relaxed reading rhythm for long-form answers and research updates", () => {

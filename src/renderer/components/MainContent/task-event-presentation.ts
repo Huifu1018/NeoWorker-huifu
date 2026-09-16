@@ -5,7 +5,10 @@ import type {
   TaskDomain,
   TaskStatus,
 } from "../../../shared/types";
-import { isTerminalTaskStatus } from "../../../shared/task-status";
+import {
+  isActiveTaskStatus,
+  isTerminalTaskStatus,
+} from "../../../shared/task-status";
 import { getEffectiveTaskEventType } from "../../utils/task-event-compat";
 import { isVerificationStepDescription } from "../../../shared/plan-utils";
 import { hasAssistantMediaDirective } from "../../utils/assistant-media-directives";
@@ -28,8 +31,242 @@ import {
 } from "../../utils/mission-control-copy";
 import { stripRunOutputLanguageRequirement } from "../../utils/run-output-language";
 import { selectCompletionResultSummary } from "../../utils/task-completion-summary";
+import { sanitizeHermesText } from "../../utils/runtime-privacy";
 
 type Any = Record<string, any>;
+
+function recoverableArtifactToolFamily(toolName: unknown): string | null {
+  if (typeof toolName !== "string") return null;
+  switch (toolName.trim().toLowerCase()) {
+    case "create_presentation":
+    case "generate_presentation":
+      return "presentation";
+    case "create_document":
+    case "generate_document":
+      return "document";
+    case "create_spreadsheet":
+    case "generate_spreadsheet":
+      return "spreadsheet";
+    default:
+      return null;
+  }
+}
+
+function taskEventCorrelationKey(event: TaskEvent): string {
+  const payload = event.payload || {};
+  const direct = [payload.toolUseId, payload.callId, payload.tool_use_id].find(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+  return typeof direct === "string" ? direct.trim() : "";
+}
+
+function isSuccessfulToolResultEvent(event: TaskEvent): boolean {
+  if (getEffectiveTaskEventType(event) !== "tool_result") return false;
+  const payload = event.payload || {};
+  const result =
+    payload.result && typeof payload.result === "object"
+      ? (payload.result as Any)
+      : {};
+  return (
+    payload.error === undefined &&
+    payload.isError !== true &&
+    result.error === undefined &&
+    result.success !== false
+  );
+}
+
+function isSuccessfulTerminalEvent(event: TaskEvent): boolean {
+  const effectiveType = getEffectiveTaskEventType(event);
+  if (effectiveType !== "task_completed" && effectiveType !== "follow_up_completed") {
+    return false;
+  }
+  const status = String(event.status || event.payload?.status || "").toLowerCase();
+  const terminalStatus = String(event.payload?.terminalStatus || "").toLowerCase();
+  return (
+    !["failed", "error", "cancelled"].includes(status) &&
+    !["failed", "needs_user_action", "partial_success"].includes(terminalStatus)
+  );
+}
+
+function isArtifactOutputEvent(event: TaskEvent): boolean {
+  const effectiveType = getEffectiveTaskEventType(event);
+  return (
+    effectiveType === "artifact_created" ||
+    effectiveType === "file_created" ||
+    event.type === "timeline_artifact_emitted"
+  );
+}
+
+interface RecoverableFailureCandidate {
+  eventId: string;
+  correlationKey: string;
+  artifactToolFamily: string | null;
+  usefulOutputAfterFailure: boolean;
+}
+
+/**
+ * Mark failed attempts that were superseded later in the same user turn.
+ * The original event stays in the execution record, but renderers can present
+ * it as a quiet recovered attempt instead of a final task failure.
+ */
+export const annotateRecoveredIntermediateFailures = (
+  events: TaskEvent[],
+  taskStatus?: TaskStatus,
+): TaskEvent[] => {
+  if (events.length === 0) return events;
+
+  const recoveredIds = new Set<string>();
+  let failures: RecoverableFailureCandidate[] = [];
+
+  for (const event of events) {
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (effectiveType === "user_message") {
+      failures = [];
+      continue;
+    }
+
+    if (eventLooksFailed(event)) {
+      failures.push({
+        eventId: event.id,
+        correlationKey: taskEventCorrelationKey(event),
+        artifactToolFamily: recoverableArtifactToolFamily(event.payload?.tool),
+        usefulOutputAfterFailure: false,
+      });
+      continue;
+    }
+
+    if (isSuccessfulToolResultEvent(event)) {
+      const correlationKey = taskEventCorrelationKey(event);
+      const artifactToolFamily = recoverableArtifactToolFamily(event.payload?.tool);
+      for (const failure of failures) {
+        failure.usefulOutputAfterFailure = true;
+        if (
+          (correlationKey && failure.correlationKey === correlationKey) ||
+          (artifactToolFamily && failure.artifactToolFamily === artifactToolFamily)
+        ) {
+          recoveredIds.add(failure.eventId);
+        }
+      }
+      continue;
+    }
+
+    if (isArtifactOutputEvent(event)) {
+      for (const failure of failures) {
+        failure.usefulOutputAfterFailure = true;
+        recoveredIds.add(failure.eventId);
+      }
+      continue;
+    }
+
+    if (isSuccessfulTerminalEvent(event)) {
+      for (const failure of failures) {
+        if (failure.usefulOutputAfterFailure) {
+          recoveredIds.add(failure.eventId);
+        }
+      }
+    }
+  }
+
+  const pendingIds = isActiveTaskStatus(taskStatus)
+    ? new Set(failures.map((failure) => failure.eventId))
+    : new Set<string>();
+  if (recoveredIds.size === 0 && pendingIds.size === 0) return events;
+  return events.map((event) =>
+    recoveredIds.has(event.id)
+      ? {
+          ...event,
+          payload: {
+            ...event.payload,
+            recoveredIntermediateFailure: true,
+            intermediateFailurePending: false,
+          },
+        }
+      : pendingIds.has(event.id)
+        ? {
+            ...event,
+            payload: {
+              ...event.payload,
+              intermediateFailurePending: true,
+            },
+          }
+        : event,
+  );
+};
+
+function repeatedTimelineFailureKey(event: TaskEvent): string | null {
+  const effectiveType = getEffectiveTaskEventType(event);
+  if (event.type !== "timeline_error" && effectiveType !== "tool_error") {
+    return null;
+  }
+  const message = getFailureEventText(event)
+    .toLowerCase()
+    .replace(/^tool\s+["']?[^"':]+["']?\s+(?:failed|error):\s*/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.。]+$/g, "")
+    .trim();
+  if (!message) return null;
+  const tool =
+    recoverableArtifactToolFamily(event.payload?.tool) ||
+    String(event.payload?.tool || "").trim().toLowerCase() ||
+    "unknown";
+  return `${tool}:${message}`;
+}
+
+/**
+ * Keep one visible error row for a repeated failure loop in the same user
+ * turn. Raw events remain untouched in persistence/debug views; the first row
+ * carries the aggregate count for the normal timeline.
+ */
+export const collapseRepeatedTimelineFailures = (
+  events: TaskEvent[],
+): TaskEvent[] => {
+  if (events.length === 0) return events;
+
+  const presented: TaskEvent[] = [];
+  const firstFailureIndex = new Map<string, number>();
+  let turnIndex = 0;
+
+  for (const event of events) {
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (
+      effectiveType === "user_message" ||
+      effectiveType === "follow_up_started"
+    ) {
+      turnIndex += 1;
+      firstFailureIndex.clear();
+      presented.push(event);
+      continue;
+    }
+
+    const failureKey = repeatedTimelineFailureKey(event);
+    if (!failureKey) {
+      presented.push(event);
+      continue;
+    }
+
+    const scopedKey = `${turnIndex}:${failureKey}`;
+    const existingIndex = firstFailureIndex.get(scopedKey);
+    if (existingIndex === undefined) {
+      firstFailureIndex.set(scopedKey, presented.length);
+      presented.push(event);
+      continue;
+    }
+
+    const firstEvent = presented[existingIndex];
+    const previousCount = Number(
+      firstEvent.payload?.repeatedFailureCount || 1,
+    );
+    presented[existingIndex] = {
+      ...firstEvent,
+      payload: {
+        ...firstEvent.payload,
+        repeatedFailureCount: previousCount + 1,
+      },
+    };
+  }
+
+  return presented;
+};
 
 // In non-verbose mode, hide verification noise (verification steps are still executed by the agent).
 export const isVerificationNoiseEvent = (event: TaskEvent): boolean => {
@@ -115,13 +352,15 @@ export const getCompletionSummaryText = (event: TaskEvent): string => {
   // `semanticSummary` is execution metadata (and can be a raw tool-batch label
   // such as "Let Me Check The Workspace"), not a second assistant reply. Only
   // use it when the task did not persist a real delivery message.
-  const summary = resultSummary || semanticSummary;
+  const summary = sanitizeHermesText(resultSummary || semanticSummary);
   if (!verificationVerdict && !verificationReport) {
     return summary;
   }
   const verification = [
-    verificationVerdict ? `Verification: ${verificationVerdict}` : "",
-    verificationReport || "",
+    verificationVerdict
+      ? `Verification: ${sanitizeHermesText(verificationVerdict)}`
+      : "",
+    sanitizeHermesText(verificationReport || ""),
   ]
     .filter((value) => value.length > 0)
     .join("\n");

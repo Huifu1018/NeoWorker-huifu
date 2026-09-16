@@ -19,12 +19,27 @@ const {
   getShellArgs,
   prepareWindowsCommand,
   resolveWindowsShellExecutable,
+  resolveUnixShellExecutable,
   isSandboxRuntimeFailure,
   buildEmptyCommandFailureMessage,
 } =
   _testUtils;
 
 describe("ShellTools Security Functions", () => {
+  describe("resolveUnixShellExecutable", () => {
+    it("resolves the macOS selected-shell alias before sandbox execution", () => {
+      const existing = new Set(["/private/var/select/sh", "/bin/bash"]);
+      expect(
+        resolveUnixShellExecutable(
+          { SHELL: "/private/var/select/sh" },
+          (candidate) => existing.has(candidate),
+          (candidate) =>
+            candidate === "/private/var/select/sh" ? "/bin/bash" : candidate,
+        ),
+      ).toBe("/bin/bash");
+    });
+  });
+
   describe("isValidPid", () => {
     describe("valid PIDs", () => {
       it("should accept PID 1 (init/launchd)", () => {

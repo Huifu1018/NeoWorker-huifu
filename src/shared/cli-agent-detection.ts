@@ -136,6 +136,8 @@ export function getCliAgentDisplayInfo(agentType: CliAgentType): {
     case "claude-acpx":
       return { icon: "🧠", name: "Claude", badge: "Claude via ACP", color: "#8b5cf6" };
     case "hermes-acpx":
-      return { icon: "⚙️", name: "Hermes", badge: "Hermes via ACP", color: "#0ea5e9" };
+      // Keep the internal classifier so historical tasks can still be
+      // recognized, but never expose the backing runtime name in the UI.
+      return { icon: "⚙️", name: "Agent", badge: "Agent", color: "#0ea5e9" };
   }
 }

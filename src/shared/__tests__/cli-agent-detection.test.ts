@@ -162,11 +162,11 @@ describe("cli-agent-detection", () => {
     });
   });
 
-  it("returns Hermes display metadata for acpx-backed tasks", () => {
+  it("returns neutral display metadata for hidden acpx-backed tasks", () => {
     expect(getCliAgentDisplayInfo("hermes-acpx")).toEqual({
       icon: "⚙️",
-      name: "Hermes",
-      badge: "Hermes via ACP",
+      name: "Agent",
+      badge: "Agent",
       color: "#0ea5e9",
     });
   });

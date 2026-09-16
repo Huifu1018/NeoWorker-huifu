@@ -215,8 +215,14 @@ vi.mock("fs", () => ({
 
 vi.mock("fs/promises", () => ({
   default: {
+    mkdir: vi.fn(),
+    readdir: vi.fn().mockRejectedValue(new Error("not found")),
+    stat: vi.fn().mockResolvedValue({ isFile: () => true }),
     writeFile: vi.fn(),
   },
+  mkdir: vi.fn(),
+  readdir: vi.fn().mockRejectedValue(new Error("not found")),
+  stat: vi.fn().mockResolvedValue({ isFile: () => true }),
   writeFile: vi.fn(),
 }));
 
@@ -394,6 +400,39 @@ describe("Skill tool", () => {
     return registry.takeResolvedSkillInvocation(result.skill_invocation_id);
   }
 
+  describe("document translation host guard", () => {
+    it.each(["create_presentation", "generate_presentation", "create_document", "generate_document", "create_spreadsheet", "generate_spreadsheet"])("blocks %s on both tool entry points, even without Skill invocation", async (name) => {
+      registry.setDocumentTaskContext("翻译成中文\n\nAttached files:\n- original.pptx (.neoworker/uploads/123/original.pptx)");
+      await expect(registry.executeTool(name, {})).rejects.toThrow("原模板");
+      await expect(registry.executeToolWithRuntime(name, {}, { runtime: "hermes" })).rejects.toThrow("原模板");
+    });
+    it("keeps the lock on continue and removes it on a new query", async () => {
+      registry.setDocumentTaskContext("翻译原文件 PDF");
+      registry.setDocumentTaskContext("继续");
+      expect(registry.getDocumentTranslationGuidance()).toContain("SOURCE-PRESERVING");
+      await expect(registry.executeTool("generate_document", {})).rejects.toThrow("原模板");
+      registry.setDocumentTaskContext("写一份新的报告");
+      expect(registry.getDocumentTranslationGuidance()).toBe("");
+      expect(registry.getDocumentTranslationDeliveryError(["old.pdf"])).toBeNull();
+    });
+    it("does not accept rebuilt shell outputs as successful translation evidence", () => {
+      registry.setDocumentTaskContext("翻译 PDF");
+      expect(registry.getDocumentTranslationDeliveryError(["rebuilt.pdf"])).toContain("保真校验");
+    });
+    it("does not allow a newly created file to masquerade as the source attachment", async () => {
+      registry.setDocumentTaskContext("翻译成中文\n\nAttached files:\n- original.pptx (.neoworker/uploads/123/original.pptx)");
+      await expect((registry as Any).runOfficeTranslation({ action: "inspect", sourcePath: "test_min.pptx" })).rejects.toThrow("本轮指定的原附件");
+    });
+    it("requires a separately verified copy for every source and reports PDF limitations", () => {
+      registry.setDocumentTaskContext("翻译附件\n\nAttached files:\n- one.pptx (.neoworker/uploads/1/one.pptx)\n- two.pptx (.neoworker/uploads/1/two.pptx)");
+      expect(registry.getDocumentTranslationDeliveryError([])).toContain("还有原附件");
+      registry.setDocumentTaskContext("翻译 PDF 成阿拉伯语，保留图片");
+      expect(registry.getDocumentTranslationCapabilityError()).toContain("尚不支持");
+      registry.setDocumentTaskContext("翻译并重新排版 PDF");
+      expect(registry.getDocumentTranslationCapabilityError()).toBeNull();
+    });
+  });
+
   describe("tool definition", () => {
     it("should expose Skill and remove legacy model-facing skill tools", () => {
       const tools = registry.getTools();
@@ -498,6 +537,60 @@ describe("Skill tool", () => {
 
       expect(result.success).toBe(true);
       expect(resolved?.content).toBe("Hello World with Good day");
+    });
+
+    it("locks attached PPTX translation to native edit mode", async () => {
+      const skill = createTestSkill({
+        id: "presentation-studio",
+        prompt: "Presentation mode={{mode}} source={{source_path}}",
+        parameters: [
+          {
+            name: "mode",
+            type: "select",
+            description: "Presentation mode",
+            default: "auto",
+            options: ["auto", "create", "edit"],
+          },
+          {
+            name: "source_path",
+            type: "string",
+            description: "Source deck",
+            default: "",
+          },
+        ],
+      });
+      mockSkills.set("presentation-studio", skill);
+      mockDaemon.getTaskById.mockResolvedValue({
+        id: "test-task-123",
+        title: "翻译 PPT",
+        prompt: `帮我把这几个 PPT 翻译成中文
+
+Attached files (relative to workspace):
+- one.pptx (.neoworker/uploads/123/one.pptx)
+- two.pptx (.neoworker/uploads/123/two.pptx)`,
+        rawPrompt: "帮我把这几个 PPT 翻译成中文",
+        userPrompt: "帮我把这几个 PPT 翻译成中文",
+      });
+
+      const result = await registry.executeTool("Skill", {
+        skill: "presentation-studio",
+      });
+      const resolved = takeResolvedSkill(result);
+
+      expect(resolved?.parameters).toEqual(
+        expect.objectContaining({
+          mode: "edit",
+          preserve_source_design: true,
+          source_path: "",
+        }),
+      );
+      expect(JSON.parse(String(resolved?.parameters?.source_paths))).toEqual([
+        "/mock/workspace/.neoworker/uploads/123/one.pptx",
+        "/mock/workspace/.neoworker/uploads/123/two.pptx",
+      ]);
+      expect(resolved?.content).toContain("Native PPTX translation lock");
+      expect(resolved?.content).toContain("never a deck-creation operation");
+      expect(resolved?.content).toContain("Do not bootstrap a blank Presentation Studio project");
     });
 
     it("should return error for missing required parameters", async () => {

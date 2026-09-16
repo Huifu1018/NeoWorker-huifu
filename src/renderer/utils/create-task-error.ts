@@ -17,6 +17,12 @@ export function unwrapCreateTaskError(error: unknown): string {
 
 export function formatCreateTaskError(error: unknown): string {
   const message = unwrapCreateTaskError(error);
+  if (/WORKSPACE_PATH_UNAVAILABLE/i.test(message)) {
+    return translate(
+      "app.error.createTask.workspacePathUnavailable",
+      "The workspace folder was moved, deleted, or replaced. Choose the folder again before continuing.",
+    );
+  }
   if (/selected workspace is not linked to this project/i.test(message)) {
     return translate(
       "app.error.createTask.workspaceProjectMismatch",

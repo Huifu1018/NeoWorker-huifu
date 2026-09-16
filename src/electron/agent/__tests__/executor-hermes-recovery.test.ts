@@ -5,7 +5,10 @@ import { HermesAcpClient, HermesAcpError } from "../runtime/hermes-acp-client";
 import type { HermesRuntimeAdapter } from "../runtime/hermes-runtime-adapter";
 
 const cwd = __dirname;
-const fixture = path.join(cwd, "../runtime/__tests__/fixtures/hermes-acp-fixture.cjs");
+const fixture = path.join(
+  cwd,
+  "../runtime/__tests__/fixtures/hermes-acp-fixture.cjs",
+);
 const adapters: HermesRuntimeAdapter[] = [];
 const executorsToCleanup: Any[] = [];
 afterEach(async () => {
@@ -19,7 +22,7 @@ afterEach(async () => {
         ),
       ),
   );
-  await Promise.all(adapters.splice(0).map(adapter => adapter.close()));
+  await Promise.all(adapters.splice(0).map((adapter) => adapter.close()));
   vi.restoreAllMocks();
 });
 
@@ -30,6 +33,11 @@ function executor(events: Array<{ payload: unknown }>) {
   instance.emitEvent = vi.fn();
   instance.enforceToolBudget = vi.fn();
   instance.totalToolCallCount = 0;
+  instance.toolUsageCounts = new Map();
+  instance.successfulToolUsageCounts = new Map();
+  instance.toolResultMemory = [];
+  instance.webEvidenceMemory = [];
+  instance.taskHadAnyToolSuccess = false;
   instance.daemon = {
     getTaskEvents: vi.fn(() => events.slice(-1)),
     logEvent: vi.fn((_task, type, payload) => {
@@ -43,9 +51,15 @@ function executor(events: Array<{ payload: unknown }>) {
 
 function fixtureTransport() {
   const start = HermesAcpClient.prototype.start;
-  vi.spyOn(HermesAcpClient.prototype, "start").mockImplementation(function (options) {
-    return start.call(this, { ...options, command: process.execPath, args: [fixture] });
-  });
+  vi.spyOn(HermesAcpClient.prototype, "start").mockImplementation(
+    function (options) {
+      return start.call(this, {
+        ...options,
+        command: process.execPath,
+        args: [fixture],
+      });
+    },
+  );
 }
 
 function adapter(instance: TaskExecutor) {
@@ -76,7 +90,9 @@ describe("Executor Hermes recovery", () => {
     };
     instance.appliedSkills = [];
 
-    const enriched = (TaskExecutor.prototype as Any).enrichHermesSkillToolResult.call(
+    const enriched = (
+      TaskExecutor.prototype as Any
+    ).enrichHermesSkillToolResult.call(
       instance,
       "Skill",
       { skill: "documents", args: "report.docx" },
@@ -107,26 +123,50 @@ describe("Executor Hermes recovery", () => {
   it("routes a new Hermes session's MCP tool call through the executor Tool Host", async () => {
     fixtureTransport();
     const instance = executor([]) as Any;
-    instance.getAvailableTools = () => [{ name: "run_command", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } }];
-    instance.getToolTimeoutMs = () => 1000;
-    instance.executeToolWithHeartbeat = vi.fn(async (_name, _input, _timeout, toolCallId) => ({
-      toolHostResponse: {
-        schemaVersion: "neoworker_tool_host_v1", requestId: "host-response", toolCallId,
-        status: "success", result: { stdout: "host\n", exitCode: 0 },
+    instance.getAvailableTools = () => [
+      {
+        name: "run_command",
+        description: "Run a command",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+        },
       },
-    }));
+    ];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(
+      async (_name, _input, _timeout, toolCallId) => ({
+        toolHostResponse: {
+          schemaVersion: "neoworker_tool_host_v1",
+          requestId: "host-response",
+          toolCallId,
+          status: "success",
+          result: { stdout: "host\n", exitCode: 0 },
+        },
+      }),
+    );
     const runtime = adapter(instance);
     const result = await runtime.prompt("host-tool");
     expect(instance.executeToolWithHeartbeat).toHaveBeenCalledWith(
-      "run_command", { command: "echo host" }, 1000, expect.stringContaining("hermes-mcp:"), expect.any(AbortSignal),
+      "run_command",
+      { command: "echo host" },
+      1000,
+      expect.stringContaining("hermes-mcp:"),
+      expect.any(AbortSignal),
       expect.objectContaining({
         schema: "neoworker_hermes_acp_v1",
         sessionId: "fixture-session",
       }),
     );
-    expect(JSON.parse(result.assistantText)).toMatchObject({ result: { isError: false, content: [{ text: '{"stdout":"host\\n","exitCode":0}' }] } });
+    expect(JSON.parse(result.assistantText)).toMatchObject({
+      result: {
+        isError: false,
+        content: [{ text: '{"stdout":"host\\n","exitCode":0}' }],
+      },
+    });
     expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
-    const dispatchCheckpoint = instance.executeToolWithHeartbeat.mock.calls[0]?.[5];
+    const dispatchCheckpoint =
+      instance.executeToolWithHeartbeat.mock.calls[0]?.[5];
     expect(dispatchCheckpoint).toMatchObject({
       schema: "neoworker_hermes_acp_v1",
       sessionId: "fixture-session",
@@ -134,11 +174,14 @@ describe("Executor Hermes recovery", () => {
         activeToolCallIds: [expect.stringContaining("hermes-mcp:")],
       },
     });
-    expect(runtime.getCheckpoint()?.toolProgress?.completedToolCallIds).toEqual([
-      expect.stringContaining("hermes-mcp:"),
-    ]);
+    expect(runtime.getCheckpoint()?.toolProgress?.completedToolCallIds).toEqual(
+      [expect.stringContaining("hermes-mcp:")],
+    );
     expect(instance.enforceToolBudget).toHaveBeenCalledWith("run_command");
-    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "tool_result",
+      expect.objectContaining({ tool: "run_command", runtime: "hermes" }),
+    );
     expect(instance.emitEvent).toHaveBeenCalledWith(
       "llm_streaming",
       expect.objectContaining({ runtime: "hermes", streaming: true }),
@@ -150,27 +193,165 @@ describe("Executor Hermes recovery", () => {
           payload?.sessionUpdate === "agent_message_chunk",
       ),
     ).toBe(false);
-    expect(instance.daemon.logEvent.mock.calls.some(([, type]) => type === "hermes_runtime_transport")).toBe(true);
+    expect(
+      instance.daemon.logEvent.mock.calls.some(
+        ([, type]) => type === "hermes_runtime_transport",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns a recoverable source failure to Hermes as an advisory result", async () => {
+    fixtureTransport();
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [
+      {
+        name: "run_command",
+        description: "Run a command",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+        },
+      },
+    ];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(
+      async (_name, _input, _timeout, toolCallId) => ({
+        toolHostResponse: {
+          schemaVersion: "neoworker_tool_host_v1",
+          requestId: "host-advisory-response",
+          toolCallId,
+          status: "error",
+          result: {
+            success: false,
+            error: "HTTP 432",
+            nonBlocking: true,
+            recoverableFallback: true,
+            failureKind: "source_unavailable",
+            immediateReminder: "Use a search result from a different hostname.",
+          },
+          error: "HTTP 432",
+        },
+      }),
+    );
+
+    const runtime = adapter(instance);
+    const result = await runtime.prompt("host-tool");
+    const parsed = JSON.parse(result.assistantText);
+    const payload = JSON.parse(parsed.result.content[0].text);
+
+    expect(parsed.result.isError).toBe(false);
+    expect(payload).toMatchObject({
+      success: false,
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "source_unavailable",
+    });
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "tool_warning",
+      expect.objectContaining({
+        advisory: true,
+        recoverableFallback: true,
+        failureKind: "source_unavailable",
+      }),
+    );
+    expect(instance.emitEvent).not.toHaveBeenCalledWith(
+      "tool_error",
+      expect.anything(),
+    );
+  });
+
+  it("keeps Office creation tools stable for warm Hermes follow-ups", () => {
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [
+      { name: "read_file" },
+      { name: "create_spreadsheet" },
+    ];
+    instance.toolRegistry = {
+      getTools: () => [
+        { name: "create_document" },
+        { name: "create_spreadsheet" },
+        { name: "create_presentation" },
+        { name: "run_command" },
+      ],
+    };
+    instance.applyAgentPolicyToolFilter = (tools: Any[]) => tools;
+    instance.isToolRestrictedByPolicy = () => false;
+
+    const tools = TaskExecutor.prototype.getHermesHostTools.call(instance);
+
+    expect(tools.map((tool: Any) => tool.name)).toEqual([
+      "read_file",
+      "create_spreadsheet",
+      "create_document",
+      "create_presentation",
+    ]);
+  });
+
+  it("applies the active PPTX contract at the Hermes Tool Host boundary", async () => {
+    const instance = executor([]) as Any;
+    instance.activeFollowUpCompletionContract = {
+      requiresArtifactEvidence: true,
+      requiredArtifactExtensions: [".pptx"],
+    };
+    instance.getAvailableTools = () => [
+      { name: "generate_spreadsheet" },
+      { name: "generate_presentation" },
+    ];
+    instance.toolRegistry = { getTools: () => instance.getAvailableTools() };
+    instance.applyAgentPolicyToolFilter = (tools: Any[]) => tools;
+    instance.isToolRestrictedByPolicy = () => false;
+    instance.toolCallDeduplicator = {
+      checkDuplicate: vi.fn(() => ({ isDuplicate: false })),
+      recordCall: vi.fn(),
+    };
+    instance.executeToolWithHeartbeat = vi.fn();
+    const runtime = adapter(instance) as Any;
+    const bridge = runtime.options.hostToolBridge;
+
+    await expect(
+      bridge.execute({
+        toolName: "generate_spreadsheet",
+        toolCallId: "wrong-office-format",
+        input: { filename: "wrong.xlsx", sheets: [] },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("Office output format mismatch");
+
+    expect(instance.executeToolWithHeartbeat).not.toHaveBeenCalled();
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "tool_error",
+      expect.objectContaining({
+        tool: "generate_spreadsheet",
+        error: expect.stringContaining("create_presentation"),
+      }),
+    );
   });
 
   it("keeps Hermes intermediate narration out of the final assistant text", async () => {
     fixtureTransport();
     const instance = executor([]) as Any;
-    instance.getAvailableTools = () => [{
-      name: "run_command",
-      description: "Run a command",
-      input_schema: { type: "object", properties: { command: { type: "string" } } },
-    }];
-    instance.getToolTimeoutMs = () => 1000;
-    instance.executeToolWithHeartbeat = vi.fn(async (_name, _input, _timeout, toolCallId) => ({
-      toolHostResponse: {
-        schemaVersion: "neoworker_tool_host_v1",
-        requestId: "host-response",
-        toolCallId,
-        status: "success",
-        result: { stdout: "host\n", exitCode: 0 },
+    instance.getAvailableTools = () => [
+      {
+        name: "run_command",
+        description: "Run a command",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+        },
       },
-    }));
+    ];
+    instance.getToolTimeoutMs = () => 1000;
+    instance.executeToolWithHeartbeat = vi.fn(
+      async (_name, _input, _timeout, toolCallId) => ({
+        toolHostResponse: {
+          schemaVersion: "neoworker_tool_host_v1",
+          requestId: "host-response",
+          toolCallId,
+          status: "success",
+          result: { stdout: "host\n", exitCode: 0 },
+        },
+      }),
+    );
 
     const result = await adapter(instance).prompt("narrated-host-tool");
 
@@ -214,14 +395,89 @@ describe("Executor Hermes recovery", () => {
     await TaskExecutor.prototype.sendMessageWithAcpxRuntime.call(
       instance,
       "Please verify the result.",
+      undefined,
+      undefined,
+      1234,
     );
 
     expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
       "follow-up completed",
       "hermes follow-up completed",
+      { outputEvidenceStartedAt: 1234 },
     );
     expect(instance.hermesRuntimeAdapter).toBe(runtime);
     expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("fails a Hermes artifact follow-up that produced no requested PPTX", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-missing-pptx",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "follow-up-missing-pptx",
+      agentConfig: { externalRuntime: { kind: "acpx", agent: "hermes" } },
+    };
+    instance.activeFollowUpCompletionContract = {
+      requiresArtifactEvidence: true,
+      requiredArtifactExtensions: [".pptx"],
+    };
+    instance.getAcpxExternalRuntimeConfig = () => ({
+      kind: "acpx",
+      agent: "hermes",
+    });
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi.fn(async () => ({
+      assistantText: "PPT 已完成。",
+      stopReason: "end_turn",
+      sessionId: checkpoint.sessionId,
+    }));
+    instance.buildQuotedAssistantContextMessage = (message: string) => message;
+    instance.buildFollowUpArtifactRetryInstruction = () =>
+      "Create the requested PPTX before completing.";
+    instance.buildIntegrationMentionEventPayload = () => ({});
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.getFollowUpArtifactGuardError = () =>
+      "Follow-up missing artifact evidence";
+    instance.getArtifactEvidencePathsForFollowUpContract = () => [];
+    instance.getMissingArtifactExtensions = () => [".pptx"];
+    instance.finalizeArtifactFollowUpFailure = vi.fn();
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.emitEvent = vi.fn();
+    instance.finalizeTaskBestEffort = vi.fn();
+
+    await TaskExecutor.prototype.sendMessageWithAcpxRuntime.call(
+      instance,
+      "翻译成韩文，发我一个PPT",
+      undefined,
+      undefined,
+      {
+        outputEvidenceStartedAt: 1234,
+        previousStatus: "completed",
+        previousCompletedAt: 1000,
+        createdFilesBefore: new Set(),
+      },
+    );
+
+    expect(instance.finalizeArtifactFollowUpFailure).toHaveBeenCalledWith(
+      "Follow-up missing artifact evidence",
+      "completed",
+      [".pptx"],
+      1000,
+    );
+    expect(instance.finalizeTaskBestEffort).not.toHaveBeenCalled();
+    expect(instance.emitEvent).not.toHaveBeenCalledWith(
+      "follow_up_completed",
+      expect.anything(),
+    );
   });
 
   it("continues an initial Hermes turn when the first response is only an in-progress note", async () => {
@@ -273,9 +529,9 @@ describe("Executor Hermes recovery", () => {
     );
 
     expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
-    expect(instance.runHermesPromptWithTransientRetry.mock.calls[1][1]).toContain(
-      "<neoworker_completion_guard_v1>",
-    );
+    expect(
+      instance.runHermesPromptWithTransientRetry.mock.calls[1][1],
+    ).toContain("<neoworker_completion_guard_v1>");
     expect(instance.emitEvent).toHaveBeenCalledWith(
       "progress_update",
       expect.objectContaining({
@@ -289,6 +545,181 @@ describe("Executor Hermes recovery", () => {
     );
     expect(instance.hermesRuntimeAdapter).toBe(runtime);
     expect(runtime.close).not.toHaveBeenCalled();
+  });
+
+  it("gives initial artifact tasks a hard contract and performs one bounded repair", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-initial-pdf-repair",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "initial-pdf-repair",
+      rawPrompt: "生成详细的分析报告，PDF文档",
+    };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.getContractPrompt = () => "生成详细的分析报告，PDF文档";
+    instance.buildAppliedSkillContext = () => "";
+    instance.buildCompletionContract = () => ({
+      requiresArtifactEvidence: true,
+      requiredArtifactExtensions: [".pdf"],
+    });
+    instance.getFollowUpArtifactGuardError = vi
+      .fn()
+      .mockReturnValueOnce("missing PDF")
+      .mockReturnValueOnce(null);
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi
+      .fn()
+      .mockResolvedValueOnce({
+        assistantText: "分析已完成。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      })
+      .mockResolvedValueOnce({
+        assistantText: "PDF 已生成。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      });
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    instance.emitEvent = vi.fn();
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "生成详细的分析报告，PDF文档",
+    );
+
+    expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
+    expect(
+      instance.runHermesPromptWithTransientRetry.mock.calls[0][1],
+    ).toContain("<neoworker_deliverable_contract_v1>");
+    expect(
+      instance.runHermesPromptWithTransientRetry.mock.calls[1][1],
+    ).toContain('create_document with format="pdf"');
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "progress_update",
+      expect.objectContaining({ state: "repairing_artifact" }),
+    );
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "PDF 已生成。",
+      "hermes runtime completed",
+    );
+  });
+
+  it("finishes from existing tool evidence when Hermes unexpectedly cancels without a final answer", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-cancelled-guard",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = {
+      id: "cancelled-hermes-guard",
+      rawPrompt: "帮我查询一下明天深圳飞上海的航班信息",
+    };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi
+      .fn()
+      .mockResolvedValueOnce({
+        assistantText: "",
+        stopReason: "cancelled",
+        sessionId: checkpoint.sessionId,
+      })
+      .mockResolvedValueOnce({
+        assistantText: "明天深圳飞上海有多个直飞班次，虹桥和浦东均可到达。",
+        stopReason: "end_turn",
+        sessionId: checkpoint.sessionId,
+      });
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    instance.emitEvent = vi.fn();
+
+    await TaskExecutor.prototype.executeWithHermesRuntime.call(
+      instance,
+      "帮我查询一下明天深圳飞上海的航班信息",
+    );
+
+    expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
+    const completionPrompt =
+      instance.runHermesPromptWithTransientRetry.mock.calls[1][1];
+    expect(completionPrompt).toContain("Do not call any more tools");
+    expect(completionPrompt).toContain(
+      "successful tool results already present",
+    );
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "明天深圳飞上海有多个直飞班次，虹桥和浦东均可到达。",
+      "hermes runtime completed",
+    );
+  });
+
+  it("fails instead of reporting success when every Hermes completion pass is empty", async () => {
+    const checkpoint = {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "session-empty-final",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "neoworker",
+    } as const;
+    const runtime = {
+      getCheckpoint: vi.fn(() => checkpoint),
+      close: vi.fn(async () => undefined),
+    };
+    const instance = executor([]) as Any;
+    instance.task = { id: "empty-final-hermes", rawPrompt: "查一下航班" };
+    instance.paused = false;
+    instance.cancelled = false;
+    instance.taskCompleted = false;
+    instance.hermesCheckpoint = undefined;
+    instance.taskContextNotes = [];
+    instance.getContractPrompt = () => "";
+    instance.buildAppliedSkillContext = () => "";
+    instance.daemon.updateTaskStatus = vi.fn();
+    instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
+    instance.runHermesPromptWithTransientRetry = vi.fn(async () => ({
+      assistantText: "",
+      stopReason: "end_turn",
+      sessionId: checkpoint.sessionId,
+    }));
+    instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
+    instance.finalizeTaskBestEffort = vi.fn();
+    instance.emitEvent = vi.fn();
+
+    await expect(
+      TaskExecutor.prototype.executeWithHermesRuntime.call(
+        instance,
+        "查一下航班",
+      ),
+    ).rejects.toMatchObject({ code: "HERMES_EMPTY_FINAL_RESPONSE" });
+
+    expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(3);
+    expect(instance.finalizeTaskBestEffort).not.toHaveBeenCalled();
   });
 
   it("continues a Hermes follow-up turn before allowing queued messages to drain", async () => {
@@ -338,9 +769,9 @@ describe("Executor Hermes recovery", () => {
     );
 
     expect(instance.runHermesPromptWithTransientRetry).toHaveBeenCalledTimes(2);
-    expect(instance.runHermesPromptWithTransientRetry.mock.calls[1][1]).toContain(
-      "<neoworker_completion_guard_v1>",
-    );
+    expect(
+      instance.runHermesPromptWithTransientRetry.mock.calls[1][1],
+    ).toContain("<neoworker_completion_guard_v1>");
     expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
       "Codex 相关目录合计约 12.4GB，主要占用来自构建缓存。",
       "hermes follow-up completed",
@@ -353,27 +784,65 @@ describe("Executor Hermes recovery", () => {
     fixtureTransport();
     const instance = executor([]) as Any;
     instance.getAvailableTools = () => [
-      { name: "write_file", description: "Write a file", input_schema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } },
-      { name: "run_command", description: "Run a command", input_schema: { type: "object", properties: { command: { type: "string" } } } },
+      {
+        name: "write_file",
+        description: "Write a file",
+        input_schema: {
+          type: "object",
+          properties: { path: { type: "string" }, content: { type: "string" } },
+        },
+      },
+      {
+        name: "run_command",
+        description: "Run a command",
+        input_schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+        },
+      },
     ];
     instance.getToolTimeoutMs = () => 1000;
-    instance.executeToolWithHeartbeat = vi.fn(async (name, input, _timeout, toolCallId) => ({
-      toolHostResponse: {
-        schemaVersion: "neoworker_tool_host_v1", requestId: `response-${name}`, toolCallId,
-        status: "success", result: name === "write_file" ? { path: input.path, bytesWritten: input.content.length } : { stdout: "hello from Hermes", exitCode: 0 },
-      },
-      result: name === "write_file" ? { path: input.path, bytesWritten: input.content.length } : { stdout: "hello from Hermes", exitCode: 0 },
-      status: "success", durationMs: 1, envelope: {}, policyTrace: [],
-    }));
+    instance.executeToolWithHeartbeat = vi.fn(
+      async (name, input, _timeout, toolCallId) => ({
+        toolHostResponse: {
+          schemaVersion: "neoworker_tool_host_v1",
+          requestId: `response-${name}`,
+          toolCallId,
+          status: "success",
+          result:
+            name === "write_file"
+              ? { path: input.path, bytesWritten: input.content.length }
+              : { stdout: "hello from Hermes", exitCode: 0 },
+        },
+        result:
+          name === "write_file"
+            ? { path: input.path, bytesWritten: input.content.length }
+            : { stdout: "hello from Hermes", exitCode: 0 },
+        status: "success",
+        durationMs: 1,
+        envelope: {},
+        policyTrace: [],
+      }),
+    );
     const runtime = adapter(instance);
     const result = await runtime.prompt("host-multi-tool");
     expect(instance.executeToolWithHeartbeat).toHaveBeenCalledTimes(2);
-    expect(instance.executeToolWithHeartbeat.mock.calls.map(([name]) => name)).toEqual(["write_file", "run_command"]);
-    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "write_file", runtime: "hermes" }));
-    expect(instance.emitEvent).toHaveBeenCalledWith("tool_result", expect.objectContaining({ tool: "run_command", runtime: "hermes" }));
+    expect(
+      instance.executeToolWithHeartbeat.mock.calls.map(([name]) => name),
+    ).toEqual(["write_file", "run_command"]);
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "tool_result",
+      expect.objectContaining({ tool: "write_file", runtime: "hermes" }),
+    );
+    expect(instance.emitEvent).toHaveBeenCalledWith(
+      "tool_result",
+      expect.objectContaining({ tool: "run_command", runtime: "hermes" }),
+    );
     const assistant = JSON.parse(result.assistantText);
     expect(assistant.write.result.content[0].text).toContain("bytesWritten");
-    expect(assistant.shell.result.content[0].text).toContain("hello from Hermes");
+    expect(assistant.shell.result.content[0].text).toContain(
+      "hello from Hermes",
+    );
     expect(runtime.getCheckpoint()?.toolOwnership).toBe("neoworker");
   });
 
@@ -385,19 +854,37 @@ describe("Executor Hermes recovery", () => {
     instance.getAcpxExternalRuntimeConfig = () => ({ agent: "hermes" });
     instance.hermesRuntimeAdapter = { pause };
     instance.daemon.updateTaskStatus = vi.fn();
-    instance.emitEvent = vi.fn((type: string, payload: unknown) => events.push({ type, payload }));
+    instance.emitEvent = vi.fn((type: string, payload: unknown) =>
+      events.push({ type, payload }),
+    );
     await TaskExecutor.prototype.pause.call(instance);
     expect(instance.paused).toBe(true);
     expect(pause).toHaveBeenCalledOnce();
-    expect(instance.daemon.updateTaskStatus).toHaveBeenCalledWith("pause-hermes", "paused");
-    expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: "task_paused" })]));
+    expect(instance.daemon.updateTaskStatus).toHaveBeenCalledWith(
+      "pause-hermes",
+      "paused",
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "task_paused" }),
+      ]),
+    );
   });
 
   it("resumes Hermes from the persisted checkpoint through the executor lifecycle", async () => {
     const events: unknown[] = [];
     const runtime = {
-      prompt: vi.fn(async () => ({ assistantText: "continued", stopReason: "end_turn", sessionId: "session-1" })),
-      getCheckpoint: vi.fn(() => ({ schema: "neoworker_hermes_acp_v1", sessionId: "session-1", cwd, agentVersion: "fixture" })),
+      prompt: vi.fn(async () => ({
+        assistantText: "continued",
+        stopReason: "end_turn",
+        sessionId: "session-1",
+      })),
+      getCheckpoint: vi.fn(() => ({
+        schema: "neoworker_hermes_acp_v1",
+        sessionId: "session-1",
+        cwd,
+        agentVersion: "fixture",
+      })),
       close: vi.fn(),
     };
     const instance = executor([]) as Any;
@@ -410,13 +897,22 @@ describe("Executor Hermes recovery", () => {
     instance.getAcpxExternalRuntimeConfig = () => ({ agent: "hermes" });
     instance.daemon.updateTaskStatus = vi.fn();
     instance.createHermesRuntimeAdapter = vi.fn(() => runtime);
-    instance.getLifecycleMutex = () => ({ runExclusive: (fn: () => Promise<void>) => fn() });
-    instance.emitEvent = vi.fn((type: string, payload: unknown) => events.push({ type, payload }));
+    instance.getLifecycleMutex = () => ({
+      runExclusive: (fn: () => Promise<void>) => fn(),
+    });
+    instance.emitEvent = vi.fn((type: string, payload: unknown) =>
+      events.push({ type, payload }),
+    );
     instance.enforceTaskOutputLanguageForDisplay = (text: string) => text;
     instance.finalizeTaskBestEffort = vi.fn();
     await TaskExecutor.prototype.resume.call(instance);
-    expect(runtime.prompt).toHaveBeenCalledWith(expect.stringContaining("last checkpoint"));
-    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith("continued", "hermes runtime resumed");
+    expect(runtime.prompt).toHaveBeenCalledWith(
+      expect.stringContaining("last checkpoint"),
+    );
+    expect(instance.finalizeTaskBestEffort).toHaveBeenCalledWith(
+      "continued",
+      "hermes runtime resumed",
+    );
     expect(instance.hermesRuntimeAdapter).toBe(runtime);
     expect(runtime.close).not.toHaveBeenCalled();
   });
@@ -474,16 +970,18 @@ describe("Executor Hermes recovery", () => {
       "resumed after provider retry",
       "hermes runtime resumed",
     );
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "log",
-        payload: expect.objectContaining({
-          metric: "hermes_runtime_retry",
-          safeBeforeToolDispatch: true,
-          safeForAutomaticRetry: true,
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "log",
+          payload: expect.objectContaining({
+            metric: "hermes_runtime_retry",
+            safeBeforeToolDispatch: true,
+            safeForAutomaticRetry: true,
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
     expect(instance.hermesRuntimeAdapter).toBe(runtime);
     expect(runtime.close).not.toHaveBeenCalled();
   });
@@ -584,10 +1082,7 @@ describe("Executor Hermes recovery", () => {
     getTaskEvents.mockReturnValue([{ seq: 42 }]);
 
     expect((runtime as Any).options.getLogSequence()).toBe(42);
-    expect(getTaskEvents).toHaveBeenCalledWith(
-      "recover-hermes",
-      { limit: 1 },
-    );
+    expect(getTaskEvents).toHaveBeenCalledWith("recover-hermes", { limit: 1 });
     expect(
       getTaskEvents.mock.calls.some(
         ([taskId, options]: [string, Any]) =>
@@ -624,7 +1119,10 @@ describe("Executor Hermes recovery", () => {
       close: vi.fn(async () => undefined),
     };
     const instance = executor([]) as Any;
-    instance.task = { id: "transient-hermes", rawPrompt: "Run a transient test." };
+    instance.task = {
+      id: "transient-hermes",
+      rawPrompt: "Run a transient test.",
+    };
     instance.paused = false;
     instance.cancelled = false;
     instance.taskCompleted = false;
@@ -651,16 +1149,18 @@ describe("Executor Hermes recovery", () => {
       "recovered after provider retry",
       "hermes runtime completed",
     );
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        type: "log",
-        payload: expect.objectContaining({
-          metric: "hermes_runtime_retry",
-          safeBeforeToolDispatch: true,
-          safeForAutomaticRetry: true,
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "log",
+          payload: expect.objectContaining({
+            metric: "hermes_runtime_retry",
+            safeBeforeToolDispatch: true,
+            safeForAutomaticRetry: true,
+          }),
         }),
-      }),
-    ]));
+      ]),
+    );
   });
 
   it("does not send the retry request when cancellation arrives during backoff", async () => {
@@ -680,21 +1180,24 @@ describe("Executor Hermes recovery", () => {
       let rejectPrompt!: (error: unknown) => void;
       let checkpointAvailable = false;
       const runtime = {
-        getCheckpoint: vi.fn(() => checkpointAvailable ? checkpoint : undefined),
-        getToolProgressRevision: vi.fn(() => 0),
-        prompt: vi.fn(
-          () => {
-            checkpointAvailable = true;
-            return new Promise<never>((_resolve, reject) => {
-              rejectPrompt = reject;
-            });
-          },
+        getCheckpoint: vi.fn(() =>
+          checkpointAvailable ? checkpoint : undefined,
         ),
+        getToolProgressRevision: vi.fn(() => 0),
+        prompt: vi.fn(() => {
+          checkpointAvailable = true;
+          return new Promise<never>((_resolve, reject) => {
+            rejectPrompt = reject;
+          });
+        }),
         retry: vi.fn(),
         close: vi.fn(async () => undefined),
       };
       const instance = executor([]) as Any;
-      instance.task = { id: "cancel-backoff-hermes", rawPrompt: "Cancel the retry." };
+      instance.task = {
+        id: "cancel-backoff-hermes",
+        rawPrompt: "Cancel the retry.",
+      };
       instance.paused = false;
       instance.cancelled = false;
       instance.taskCompleted = false;
@@ -760,7 +1263,10 @@ describe("Executor Hermes recovery", () => {
       close: vi.fn(async () => undefined),
     };
     const instance = executor([]) as Any;
-    instance.task = { id: "side-effect-hermes", rawPrompt: "Run a side effect." };
+    instance.task = {
+      id: "side-effect-hermes",
+      rawPrompt: "Run a side effect.",
+    };
     instance.paused = false;
     instance.cancelled = false;
     instance.taskCompleted = false;
@@ -873,7 +1379,10 @@ describe("Executor Hermes recovery", () => {
       close: vi.fn(async () => undefined),
     };
     const instance = executor([]) as Any;
-    instance.task = { id: "non-retryable-hermes", rawPrompt: "Provider quota test." };
+    instance.task = {
+      id: "non-retryable-hermes",
+      rawPrompt: "Provider quota test.",
+    };
     instance.paused = false;
     instance.cancelled = false;
     instance.taskCompleted = false;
@@ -908,13 +1417,16 @@ describe("Executor Hermes recovery", () => {
     const create = vi.spyOn(HermesAcpClient.prototype, "newSession");
     const restored = adapter(executor(events));
     expect(await restored.prompt("continue")).toMatchObject({
-      sessionId: checkpoint!.sessionId, assistantText: "你好 OK",
+      sessionId: checkpoint!.sessionId,
+      assistantText: "你好 OK",
     });
-    expect(load).toHaveBeenCalledWith(checkpoint!.sessionId, cwd, [expect.objectContaining({
-      type: "http",
-      name: "neoworker",
-      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/),
-    })]);
+    expect(load).toHaveBeenCalledWith(checkpoint!.sessionId, cwd, [
+      expect.objectContaining({
+        type: "http",
+        name: "neoworker",
+        url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/),
+      }),
+    ]);
     expect(checkpoint?.toolOwnership).toBe("neoworker");
     expect(create).not.toHaveBeenCalled();
   });
@@ -926,7 +1438,9 @@ describe("Executor Hermes recovery", () => {
     const controller = new AbortController();
     await first.connect();
     controller.abort();
-    await expect(first.prompt("wait", controller.signal)).rejects.toMatchObject({ code: "CANCELLED" });
+    await expect(first.prompt("wait", controller.signal)).rejects.toMatchObject(
+      { code: "CANCELLED" },
+    );
     // Simulate event retention not being available for this in-process retry.
     (instance as Any).daemon.getTaskEvents.mockReturnValue([]);
     expect(adapter(instance).getCheckpoint()).toEqual(first.getCheckpoint());
@@ -934,10 +1448,31 @@ describe("Executor Hermes recovery", () => {
 
   it.each([
     { schema: "wrong", sessionId: "old", cwd, agentVersion: "fixture" },
-    { schema: "neoworker_hermes_acp_v1", sessionId: "old", cwd: "/other", agentVersion: "fixture" },
-    { schema: "neoworker_hermes_acp_v1", sessionId: "", cwd, agentVersion: "fixture" },
-    { schema: "neoworker_hermes_acp_v1", sessionId: "old", cwd, agentVersion: "fixture", toolOwnership: "invalid" },
-  ])("does not silently restart a task with an invalid persisted checkpoint", payload => {
-    expect(() => adapter(executor([{ payload }]))).toThrow("Cannot restore Hermes");
-  });
+    {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "old",
+      cwd: "/other",
+      agentVersion: "fixture",
+    },
+    {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "",
+      cwd,
+      agentVersion: "fixture",
+    },
+    {
+      schema: "neoworker_hermes_acp_v1",
+      sessionId: "old",
+      cwd,
+      agentVersion: "fixture",
+      toolOwnership: "invalid",
+    },
+  ])(
+    "does not silently restart a task with an invalid persisted checkpoint",
+    (payload) => {
+      expect(() => adapter(executor([{ payload }]))).toThrow(
+        "Cannot restore task progress",
+      );
+    },
+  );
 });

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import type { Task, TaskEvent } from "../../../shared/types";
 import {
   buildTaskEventDetailForTransport,
@@ -38,6 +41,29 @@ function makeEvent(
 }
 
 describe("task-event transport", () => {
+  it("recovers verified deliveries in both history and timeline transport", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "delivery-transport-"));
+    try {
+      fs.writeFileSync(path.join(root, "report.xlsx"), "existing artifact");
+      const event = makeEvent("completion", "task_completed", Date.now(), { payload: {
+        resultSummary: "## 已完成\n`report.xlsx`",
+        outputSummary: { created: [], outputCount: 0, folders: [] },
+      } });
+      const taskRepo = { findById: () => makeTask(), findByParent: () => [] };
+      const workspaceRepo = { findById: () => ({ path: root }) };
+      const eventRepo = {
+        findRecentByTaskId: () => [event], findByTaskIds: () => [],
+        findTimelinePage: () => ({ taskId: "task-1", events: [event] }) as any,
+        findEventDetailById: () => ({ event }) as any,
+      };
+      const history = buildTaskEventHistoryForTransport({ taskId: "task-1", limit: 10, taskRepo, eventRepo, workspaceRepo });
+      const page = buildTaskTimelinePageForTransport({ request: { taskId: "task-1" }, taskRepo, eventRepo, workspaceRepo, sanitizeValue: (value) => value });
+      expect(history[0].payload.outputSummary.primaryOutputPath).toBe("report.xlsx");
+      expect(page.events[0].payload.outputSummary.primaryOutputPath).toBe("report.xlsx");
+      expect(event.payload.outputSummary.outputCount).toBe(0);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("preserves verbose timeline metadata when serializing remote history", () => {
     const event = makeEvent("evt-1", "timeline_step_updated", 10, {
       legacyType: "tool_call",
