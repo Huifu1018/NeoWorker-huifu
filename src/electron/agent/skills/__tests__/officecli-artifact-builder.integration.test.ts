@@ -157,7 +157,7 @@ describe("OfficeCliArtifactBuilder integration", () => {
       "task-template-fill",
     );
     const result = await tools.createPresentation({
-      filename: "ignored-by-ppt-master.pptx",
+      filename: "template-report.pptx",
       sourcePath: templatePath,
       generationMode: "ppt-master",
       presentationWorkflow: "ppt-master",
@@ -172,7 +172,7 @@ describe("OfficeCliArtifactBuilder integration", () => {
     const outputPath = path.join(tempDir, result.path);
     await validate(executable!, outputPath);
     expect(result.success).toBe(true);
-    expect(result.path).toBe("artifacts/skills/task-template-fill/ppt-master/output/presentation.pptx");
+    expect(result.path).toBe("artifacts/skills/task-template-fill/ppt-master/output/template-report.pptx");
     expect(result.qualityCheck.validation?.passed).toBe(true);
     await expect(
       fs.stat(path.join(tempDir, "artifacts", "skills", "task-template-fill", "ppt-master", "validation", "pptx-delivery-check.json")),

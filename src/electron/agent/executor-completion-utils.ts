@@ -512,6 +512,7 @@ export function buildCompletionGuidancePrompt(opts: {
  */
 export function detectReadOnlyConstraint(prompt: string): boolean {
   const lower = String(prompt || "").toLowerCase();
+  if (/(?:不要|无需|不必|不需要|别)\s*(?:生成|创建|输出|修改|写入)\s*(?:任何|新的?)?\s*文件(?!名|路径)/.test(lower)) return true;
 
   // Explicit "do not" / "don't" constraints — unambiguous
   const hasExplicitConstraint =

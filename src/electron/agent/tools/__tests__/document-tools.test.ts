@@ -191,6 +191,53 @@ describe("DocumentTools", () => {
     }
   });
 
+  it("resumes staged translations and never delivers a partial checkpoint", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-resume-"));
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const deck = new PptxGenJS();
+      deck.addSlide().addText("Hello", { x: 1, y: 1, w: 3, h: 1 });
+      deck.addSlide().addText("World", { x: 1, y: 1, w: 3, h: 1 });
+      deck.addSlide().addText("World", { x: 1, y: 1, w: 3, h: 1 });
+      fs.writeFileSync(path.join(directory, "source.pptx"), Buffer.from(await deck.write({ outputType: "nodebuffer" }) as Buffer));
+      const register = vi.fn();
+      const tools = new DocumentTools(directory, "task", register);
+      const inspect = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+      expect(inspect.remaining).toBeGreaterThan(1);
+      const stageInput = { action: "stage", sourcePath: "source.pptx", translationsPath: inspect.translationsPath };
+      const first = inspect.nextUnits[0];
+      await tools.officeTranslation({ ...stageInput, units: [{ id: first.id, text: "Translated first" }] });
+      const freshTools = new DocumentTools(directory, "task", register);
+      const resumed = await freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+      expect(resumed.completed).toBe(1);
+      expect(resumed.remaining).toBe(inspect.total - 1);
+      expect(resumed.uniqueRemaining).toBe(resumed.remaining - 1);
+      expect(resumed.nextUnits.filter((unit: Any) => unit.text === "World")).toHaveLength(1);
+      expect(resumed.nextUnits.some((unit: Any) => unit.id === first.id)).toBe(false);
+      await expect(freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "translated.pptx" })).rejects.toThrow("尚未全部完成");
+      expect(register).not.toHaveBeenCalled();
+      await freshTools.officeTranslation({ ...stageInput, units: resumed.nextUnits.map((unit: Any) => ({ id: unit.id, text: `Translated ${unit.text}` })) });
+      const result = await freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "translated.pptx" });
+      expect(result.success).toBe(true);
+      expect(register).toHaveBeenCalledTimes(1);
+      const english = await freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "English" });
+      expect(english.completed).toBe(0);
+      expect(english.translationsPath).not.toBe(inspect.translationsPath);
+      register.mockImplementationOnce(() => { throw new Error("durable copy failed"); });
+      await expect(freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "retry.pptx" })).rejects.toThrow("durable copy failed");
+      const retried = await freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "retry.pptx" });
+      expect(retried.reusedExistingArtifact).toBe(true);
+      expect(retried.path).toBe("retry.pptx");
+      expect(fs.existsSync(path.join(directory, "retry-v2.pptx"))).toBe(false);
+      const checkpointPath = path.join(directory, english.translationsPath);
+      const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
+      checkpoint.completedUnitIds = ["unknown-id"];
+      fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint));
+      await expect(freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "English" })).rejects.toThrow("进度损坏");
+      expect(JSON.parse(fs.readFileSync(checkpointPath, "utf8"))).toEqual(checkpoint);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("setWorkspace updates the internal workspace path", async () => {
     const tools = new DocumentTools("/original/path", "task-1");
 

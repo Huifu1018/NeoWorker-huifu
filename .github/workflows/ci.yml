@@ -211,11 +211,16 @@ jobs:
 
       - name: Run Windows execution-chain tests
         run: >-
-          npx vitest run
+          npx vitest --config config/vitest.config.ts run
           src/electron/agent/sandbox/__tests__/sandbox-factory.test.ts
           src/electron/agent/sandbox/__tests__/windows-package-manager-launch.test.ts
           src/electron/agent/sandbox/__tests__/windows-process.integration.test.ts
           src/electron/agent/tools/__tests__/shell-tools.test.ts
+          src/electron/agent/tools/__tests__/shell-environment.test.ts
+          src/electron/documents/__tests__/office-translation.test.ts
+          src/electron/utils/__tests__/durable-temp-artifact.test.ts
+          src/electron/utils/__tests__/PptxPreviewService.test.ts
+          tests/electron/pptx-extractor.test.ts
           src/electron/agent/tools/__tests__/shell-session-manager.test.ts
           src/electron/agent/tools/__tests__/windows-shell-session.integration.test.ts
           src/electron/agent/runtime/__tests__/tool-host-protocol.test.ts

@@ -464,7 +464,6 @@ import {
   isRedundantTimelineEvidenceEvent,
   estimateTaskFeedRowHeight,
   assignTimelineRef,
-  getAutoScrollTargetTop,
   pinScrollElementToBottom,
   shouldScheduleAutoScrollWrite,
 } from "./task-feed-logic";
@@ -1331,11 +1330,6 @@ const TaskConversationRenderedRows = memo(
     task,
     formatTime,
     isReplayMode,
-    transcriptMode,
-    hiddenLiveFeedRowCount,
-    canReturnToLiveView,
-    onShowFullTimeline,
-    onBackToLiveView,
     mainBodyRef,
     timelineRef,
     getRenderedFeedRow,
@@ -1353,11 +1347,6 @@ const TaskConversationRenderedRows = memo(
     task: Task | null | undefined;
     formatTime: (timestamp: number) => string;
     isReplayMode: boolean;
-    transcriptMode: TranscriptMode;
-    hiddenLiveFeedRowCount: number;
-    canReturnToLiveView: boolean;
-    onShowFullTimeline: () => void;
-    onBackToLiveView: () => void;
     mainBodyRef: React.RefObject<HTMLDivElement | null>;
     timelineRef: React.RefObject<HTMLDivElement | null>;
     getRenderedFeedRow: (row: TaskFeedRow) => React.ReactNode;
@@ -1577,7 +1566,9 @@ const TaskConversationRenderedRows = memo(
                       disabled={row.isLoading}
                       onClick={handleLoadMoreTimelineHistory}
                     >
-                      {row.isLoading ? "Loading earlier history..." : "Load earlier history"}
+                      {row.isLoading
+                        ? translate("task.history.loading", "Loading earlier messages...")
+                        : translate("task.history.loadEarlier", "Load earlier messages")}
                     </button>
                   ) : null}
                 </div>
@@ -1638,69 +1629,6 @@ const TaskConversationRenderedRows = memo(
 
     return (
       <div className="conversation-flow" ref={setConversationFlowNode}>
-        {transcriptMode === "live" && hiddenLiveFeedRowCount > 0 && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "10px 12px",
-              border: "1px solid var(--border-color, rgba(255,255,255,0.12))",
-              borderRadius: 10,
-              background: "var(--surface-secondary, rgba(255,255,255,0.04))",
-              color: "var(--text-secondary, rgba(255,255,255,0.72))",
-              fontSize: 12,
-              lineHeight: 1.45,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              }}
-            >
-              <span>
-                {translate(
-                  "task.liveFeed.hiddenRows",
-                  "Showing the current live work. {count} earlier items are hidden while the task is running.",
-                  { count: hiddenLiveFeedRowCount },
-                )}
-              </span>
-              <button
-                type="button"
-                className="action-block-show-all-btn"
-                onClick={onShowFullTimeline}
-              >
-                {translate("task.liveFeed.showFullTimeline", "Show full timeline")}
-              </button>
-            </div>
-          </div>
-        )}
-        {transcriptMode === "inspect" && canReturnToLiveView && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "10px 12px",
-              border: "1px solid var(--border-color, rgba(255,255,255,0.12))",
-              borderRadius: 10,
-              background: "var(--surface-secondary, rgba(255,255,255,0.04))",
-              color: "var(--text-secondary, rgba(255,255,255,0.72))",
-              fontSize: 12,
-              lineHeight: 1.45,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <span>
-              {translate("task.transcript.inspectingFull", "Inspecting the full transcript.")}
-            </span>
-            <button type="button" className="action-block-show-all-btn" onClick={onBackToLiveView}>
-              {translate("task.transcript.backToLive", "Back to live view")}
-            </button>
-          </div>
-        )}
         {showBootstrapProgress ? (
           <StepFeed
             title={
@@ -1770,11 +1698,6 @@ const TaskConversationRenderedRows = memo(
     prev.task?.bestKnownOutcome?.capturedAt === next.task?.bestKnownOutcome?.capturedAt &&
     prev.formatTime === next.formatTime &&
     prev.isReplayMode === next.isReplayMode &&
-    prev.transcriptMode === next.transcriptMode &&
-    prev.hiddenLiveFeedRowCount === next.hiddenLiveFeedRowCount &&
-    prev.canReturnToLiveView === next.canReturnToLiveView &&
-    prev.onShowFullTimeline === next.onShowFullTimeline &&
-    prev.onBackToLiveView === next.onBackToLiveView &&
     prev.mainBodyRef === next.mainBodyRef &&
     prev.timelineRef === next.timelineRef &&
     prev.getRenderedFeedRow === next.getRenderedFeedRow &&
@@ -1815,7 +1738,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
   const isChatTask = props.isChatTask as boolean;
   const isTaskWorking = props.isTaskWorking as boolean;
   const isReplayMode = props.isReplayMode as boolean;
-  const defaultTranscriptMode = props.defaultTranscriptMode as TranscriptMode;
   const transcriptMode = props.transcriptMode as TranscriptMode;
   const lastAssistantMessage = props.lastAssistantMessage as TaskEvent | null;
   const initialPromptEventId = props.initialPromptEventId as string | null;
@@ -1899,8 +1821,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
   const voiceEnabled = props.voiceEnabled as boolean;
   const wrappingUp = props.wrappingUp as boolean;
   const workspace = props.workspace as Workspace | null;
-  const showFullTimeline = props.showFullTimeline as () => void;
-  const returnToDefaultTranscript = props.returnToDefaultTranscript as () => void;
   const showChatTaskExecutionRows = shouldShowChatTaskExecutionRows({
     isChatTask,
     verboseSteps,
@@ -2372,7 +2292,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       transcriptEvents,
     ],
   );
-  const { visibleFeedRows, hiddenLiveFeedRowCount } = useMemo(
+  const { visibleFeedRows } = useMemo(
     () => selectVisibleTaskFeedRows(displayFeedRows, transcriptMode),
     [displayFeedRows, transcriptMode],
   );
@@ -3906,11 +3826,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                 task={task}
                 formatTime={formatTime}
                 isReplayMode={isReplayMode}
-                transcriptMode={transcriptMode}
-                hiddenLiveFeedRowCount={hiddenLiveFeedRowCount}
-                canReturnToLiveView={defaultTranscriptMode === "live"}
-                onShowFullTimeline={showFullTimeline}
-                onBackToLiveView={returnToDefaultTranscript}
                 mainBodyRef={mainBodyRef}
                 timelineRef={timelineRef}
                 getRenderedFeedRow={getRenderedFeedRow}
@@ -3972,15 +3887,11 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       task?.status,
       task?.terminalStatus,
       feedRows,
-      hiddenLiveFeedRowCount,
       transcriptMode,
-      defaultTranscriptMode,
       lastActionBlockTimelineIndex,
       latestUserMessageEventIndex,
       latestUserMessageEventId,
       renderLatestUserMessageActionRow,
-      returnToDefaultTranscript,
-      showFullTimeline,
       timelineItems,
       timelineRef,
       toggledEvents,
@@ -4017,7 +3928,6 @@ function areTaskConversationFlowPropsEqual(prev: any, next: any): boolean {
     prev.isChatTask === next.isChatTask &&
     prev.isTaskWorking === next.isTaskWorking &&
     prev.isReplayMode === next.isReplayMode &&
-    prev.defaultTranscriptMode === next.defaultTranscriptMode &&
     prev.transcriptMode === next.transcriptMode &&
     prev.lastAssistantMessage?.id === next.lastAssistantMessage?.id &&
     prev.initialPromptEventId === next.initialPromptEventId &&
@@ -4059,8 +3969,6 @@ function areTaskConversationFlowPropsEqual(prev: any, next: any): boolean {
     prev.formatTime === next.formatTime &&
     prev.renderCommandOutputs === next.renderCommandOutputs &&
     prev.toggleEventExpanded === next.toggleEventExpanded &&
-    prev.showFullTimeline === next.showFullTimeline &&
-    prev.returnToDefaultTranscript === next.returnToDefaultTranscript &&
     prev.onOpenBrowserView === next.onOpenBrowserView &&
     prev.onOpenSpreadsheetArtifact === next.onOpenSpreadsheetArtifact &&
     prev.onOpenDocumentArtifact === next.onOpenDocumentArtifact &&
@@ -5156,22 +5064,16 @@ function MainContentComponent({
     });
   }, [markStartupOnce, selectedTaskId, task?.id]);
 
-  const [transcriptModeOverride, setTranscriptModeOverride] = useState<TranscriptMode | null>(null);
-  // Keep execution records visible by default and persist explicit user
-  // choices. Live projection still owns active tasks so older queries do not
-  // stack above the current execution trace.
+  // One persisted switch controls execution details for both live and finished turns.
   const [verboseSteps, setVerboseSteps] = useState(true);
   const isReplayMode = replayControls?.isReplayMode ?? false;
   const includeExecutionRecordEvents = shouldIncludeExecutionRecordEvents({
     verboseSteps,
     isReplayMode,
   });
-  useEffect(() => {
-    setTranscriptModeOverride(null);
-  }, [task?.id]);
   const effectiveSharedTaskEventUi = shouldBypassLiveTaskEventProjection({
     projectionMode: sharedTaskEventUi?.projectionMode,
-    transcriptModeOverride,
+    transcriptModeOverride: null,
     verboseSteps,
   })
     ? null
@@ -6571,15 +6473,7 @@ function MainContentComponent({
     isChatTask,
     taskStatus: task?.status,
   });
-  const transcriptMode = transcriptModeOverride ?? defaultTranscriptMode;
-  useEffect(() => {
-    if (defaultTranscriptMode === "inspect" && transcriptModeOverride !== null) {
-      setTranscriptModeOverride(null);
-    }
-  }, [defaultTranscriptMode, transcriptModeOverride]);
-  const showFullTimeline = useCallback(() => {
-    setTranscriptModeOverride("inspect");
-  }, []);
+  const transcriptMode = defaultTranscriptMode;
 
   useEffect(() => {
     const taskId = task?.id ?? null;
@@ -6603,14 +6497,6 @@ function MainContentComponent({
     defaultPermissionAccessMode,
     setPermissionAccessMode,
   ]);
-  const returnToDefaultTranscript = useCallback(() => {
-    setTranscriptModeOverride(null);
-  }, []);
-  const toggleCompletedTranscriptMode = useCallback(() => {
-    if (defaultTranscriptMode !== "delivery") return;
-    setTranscriptModeOverride((current) => (current === "inspect" ? null : "inspect"));
-  }, [defaultTranscriptMode]);
-  const canToggleCompletedTranscript = defaultTranscriptMode === "delivery";
   const liveWorkStartedAt = workTiming.startedAt;
   // A newer follow-up user_message can arrive before the task object changes
   // from its previous terminal status. In that state isTaskWorking is true,
@@ -8449,8 +8335,9 @@ function MainContentComponent({
     };
   }, [autoScroll, composerDraftCacheKey]);
 
-  // Auto-scroll to bottom when visible transcript rows materially change.
-  useEffect(() => {
+  // Position before paint: a passive effect plus RAF exposes an intermediate
+  // history position when a follow-up changes the transcript's height.
+  useLayoutEffect(() => {
     if (!autoScroll || restoringComposerScrollRef.current || !mainBodyRef.current) return;
     const container = mainBodyRef.current;
     if (
@@ -8467,34 +8354,18 @@ function MainContentComponent({
     if (autoScrollFrameRef.current) {
       cancelAnimationFrame(autoScrollFrameRef.current);
     }
-    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-      autoScrollFrameRef.current = null;
-      const nextTargetTop = getAutoScrollTargetTop(container.scrollHeight, container.clientHeight);
-      const stillAtTarget = Math.abs(container.scrollTop - nextTargetTop) < 2;
-      lastAutoScrollTargetRef.current = nextTargetTop;
-      if (!stillAtTarget) {
-        container.scrollTop = nextTargetTop;
-        incrementRendererPerfCounter("task-scroll.follow_write_count", rendererPerfLoggingEnabled);
-      } else {
-        incrementRendererPerfCounter(
-          "task-scroll.follow_skipped_count",
-          rendererPerfLoggingEnabled,
-        );
-      }
-    });
-    return () => {
-      if (autoScrollFrameRef.current) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
-      }
-    };
+    autoScrollFrameRef.current = null;
+    lastAutoScrollTargetRef.current = pinScrollElementToBottom(container);
+    incrementRendererPerfCounter("task-scroll.follow_write_count", rendererPerfLoggingEnabled);
   }, [
     autoScroll,
     childEvents.length,
     childTasks.length,
     commandOutputSessions.length,
+    composerDraftCacheKey,
     latestVisibleTaskEvent?.id,
     rendererPerfLoggingEnabled,
+    transcriptMode,
   ]);
 
   // Restore each workspace/session to its own reading position. A ResizeObserver
@@ -11450,32 +11321,13 @@ function MainContentComponent({
   const renderTimelineControlsStatus = useCallback(
     () => (
       <div className="timeline-controls-status">
-        {canToggleCompletedTranscript ? (
-          <button
-            type="button"
-            className="timeline-controls-label timeline-controls-label-button with-duration"
-            onClick={toggleCompletedTranscriptMode}
-            aria-expanded={transcriptMode !== "delivery"}
-            title={transcriptMode === "delivery" ? "Show full timeline" : "Show only final output"}
-          >
-            <span>{workDurationLabel}</span>
-            <span className="timeline-controls-label-chevron" aria-hidden="true">
-              {transcriptMode === "delivery" ? (
-                <ChevronRight size={13} strokeWidth={1.8} />
-              ) : (
-                <ChevronDown size={13} strokeWidth={1.8} />
-              )}
-            </span>
-          </button>
-        ) : (
-          <span
-            className={`timeline-controls-label ${
+        <span
+          className={`timeline-controls-label ${
             isTaskWorkingForDuration || isTaskFinished ? "with-duration" : ""
-            }${isTaskWorkingForDuration ? " is-working" : ""}`}
-          >
-            {workDurationLabel}
-          </span>
-        )}
+          }${isTaskWorkingForDuration ? " is-working" : ""}`}
+        >
+          {workDurationLabel}
+        </span>
         {isTaskWorking && progressHeartbeat && (
           <span
             className="timeline-controls-progress"
@@ -11504,13 +11356,11 @@ function MainContentComponent({
       </div>
     ),
     [
-      canToggleCompletedTranscript,
       continuationStatusChip,
       isTaskFinished,
       isTaskWorking,
       isTaskWorkingForDuration,
       progressHeartbeat,
-      toggleCompletedTranscriptMode,
       transcriptMode,
       workDurationLabel,
     ],
@@ -13068,10 +12918,7 @@ function MainContentComponent({
       isChatTask={isChatTask}
       isTaskWorking={isTaskWorking}
       isReplayMode={isReplayMode}
-      defaultTranscriptMode={defaultTranscriptMode}
       transcriptMode={transcriptMode}
-      showFullTimeline={showFullTimeline}
-      returnToDefaultTranscript={returnToDefaultTranscript}
       markdownComponents={markdownComponents}
       mainBodyRef={mainBodyRef}
       messageFeedbackMap={messageFeedbackMap}

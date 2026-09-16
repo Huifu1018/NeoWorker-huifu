@@ -16309,6 +16309,8 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "task.liveFeed.hiddenRows":
       "正在显示当前实时工作。任务运行时已隐藏前面 {count} 条记录。",
     "task.liveFeed.showFullTimeline": "显示完整时间线",
+    "task.history.loading": "正在加载更早对话…",
+    "task.history.loadEarlier": "加载更早对话",
     "feedback.skip": "跳过",
     "task.researchMode": "研究模式",
     "timeline.outputReady": "输出已就绪",

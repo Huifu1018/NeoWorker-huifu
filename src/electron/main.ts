@@ -113,6 +113,7 @@ import { shouldUseNativeWindowFrame } from "../shared/native-window-frame";
 import { GuardrailManager } from "./guardrails/guardrail-manager";
 import { AppearanceManager } from "./settings/appearance-manager";
 import { resolveOpaqueWindowBackground } from "./window-background";
+import { installEditContextMenu } from "./edit-context-menu";
 import { MemoryFeaturesManager } from "./settings/memory-features-manager";
 import { PersonalityManager } from "./settings/personality-manager";
 import { MCPClientManager } from "./mcp/client/MCPClientManager";
@@ -1350,6 +1351,7 @@ if (isCliDirectRunMode()) {
         mainWindow.setFullScreen(true);
       }
       installMainWindowStatePersistence(mainWindow);
+      installEditContextMenu(mainWindow, () => AppearanceManager.loadSettings().language);
 
       const loadMainWindowContent = () => {
         if (!mainWindow || mainWindow.isDestroyed()) {

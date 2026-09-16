@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import JSZip from "jszip";
+import { DOMParser } from "@xmldom/xmldom";
 
 type PptxRelationship = {
   type?: string;
@@ -103,7 +104,7 @@ export async function extractPptxStructuredContentFromFile(
   const zip = await JSZip.loadAsync(zipData);
   const metadata = await extractPptxMetadataFromZip(zip);
 
-  const slideEntries = Object.keys(zip.files)
+  const fallbackEntries = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
     .sort((a, b) => {
       const aMatch = a.match(/slide(\d+)\.xml$/i);
@@ -112,6 +113,7 @@ export async function extractPptxStructuredContentFromFile(
       const bIndex = bMatch ? Number(bMatch[1]) : 0;
       return aIndex - bIndex;
     });
+  const slideEntries = await orderedSlideEntries(zip, fallbackEntries);
 
   const slides: PptxExtractedSlide[] = [];
   const truncationNotices: string[] = [];
@@ -133,7 +135,7 @@ export async function extractPptxStructuredContentFromFile(
     const notes = await extractPptxNotesFromZip(zip, relationships, slideNumber);
 
     slides.push({
-      index: slideNumber,
+      index: processedSlideCount,
       title: derivePptxSlideTitle(extracted),
       text: extracted,
       notes: notes || undefined,
@@ -162,6 +164,33 @@ export async function extractPptxStructuredContentFromFile(
     metadata: metadata.entries,
     truncationNotices,
   };
+}
+
+async function orderedSlideEntries(zip: JSZip, fallback: string[]): Promise<string[]> {
+  const presentation = zip.file("ppt/presentation.xml");
+  const relationships = zip.file("ppt/_rels/presentation.xml.rels");
+  if (!presentation || !relationships) return fallback;
+  const parse = (xml: string) => new DOMParser({
+    errorHandler: {
+      warning: () => {},
+      error: () => { throw new Error("Invalid presentation XML"); },
+      fatalError: () => { throw new Error("Invalid presentation XML"); },
+    },
+  }).parseFromString(xml, "application/xml");
+  const rels = Array.from(parse(await relationships.async("string")).getElementsByTagNameNS("*", "Relationship"));
+  const targets = new Map(rels.filter((rel) => rel.getAttribute("TargetMode") !== "External" && /\/slide$/.test(rel.getAttribute("Type") || ""))
+    .map((rel) => {
+      const target = rel.getAttribute("Target") || "";
+      return [rel.getAttribute("Id"), path.posix.normalize(target.startsWith("/") ? target.slice(1) : path.posix.join("ppt", target))];
+    }));
+  // Part filenames are identities, not slide numbers. Template cloning and
+  // reordering routinely leave gaps and unrelated orphan parts in the ZIP.
+  return Array.from(parse(await presentation.async("string")).getElementsByTagNameNS("*", "sldId")).map((slide) => {
+    const relationshipId = Array.from(slide.attributes).find((attribute) => attribute.localName === "id" && attribute.namespaceURI?.endsWith("/relationships"))?.value;
+    const target = targets.get(relationshipId || "");
+    if (!target || !target.startsWith("ppt/slides/") || !zip.file(target)) throw new Error("Presentation references a missing slide");
+    return target;
+  });
 }
 
 function decodePptxXmlText(value: string): string {

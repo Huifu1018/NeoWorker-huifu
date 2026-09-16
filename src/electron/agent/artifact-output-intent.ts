@@ -1,6 +1,6 @@
 // Only the object of an output action contributes a required format. Source
 // formats before a conversion or after "from/based on" are not deliverables.
-const OUTPUT_ACTION = /\b(?:convert|turn|transform)\b[^\n;!?]{0,160}?\b(?:into|to)\b|\b(?:create|generate|produce|draft|build|write|make|prepare|design|author|compose|save|export|output|compile|synthesize|combine|merge|join|stitch|concatenate|concat|transcode|remux)\b(?=\s|$|[:：])|(?:创建|生成|制作|产出|编制|撰写|起草|保存|导出|输出(?!要求)|写入|整理成|转换成|转换为|转成|转为|转型(?:成|为)?|另存为|改成|改为|生动(?=\s*(?:pdf|word|docx|excel|xlsx|ppt)))/gi;
+const OUTPUT_ACTION = /\b(?:convert|turn|transform)\b[^\n;!?]{0,160}?\b(?:into|to)\b|\b(?:create|generate|produce|draft|build|write|make|prepare|design|author|compose|save|export|output|compile|synthesize|combine|merge|join|stitch|concatenate|concat|transcode|remux)\b(?=\s|$|[:：])|(?:创建|生成|制作|产出|编制|撰写|起草|保存|导出|输出(?!要求)|写入|写|做|给我|我要|整理成|转换成|转换为|转成|转为|转型(?:成|为)?|另存为|改成|改为|生动(?=\s*(?:pdf|word|docx|excel|xlsx|ppt)))/gi;
 
 const FORMATS: Array<[string, RegExp]> = [
   [".docx", /(?<![a-z0-9])(?:word|docx?)(?![a-z0-9])/i],
@@ -25,9 +25,18 @@ function withoutSourceReferences(text: string): string {
     .replace(/(?:pptx?|powerpoint|word|docx?|excel|xlsx?|pdf|csv|html)(?:内容|文件|文档|材料)?的(?=\s*(?:pptx?|powerpoint|word|docx?|excel|xlsx?|pdf|csv|html))/gi, " ")
     .replace(/\b[\w.-]+-based\b/gi, " ")
     .replace(/\b(?:of|about|from|using|based\s+on)\b[^\n,;]{0,100}?(?=\b(?:as|in|into)\s+(?:(?:a|an|the)\s+)?(?:word|docx|pdf|pptx?|excel|xlsx|csv|html)\b)/gi, " ")
-    .split(/(?:基于|根据|参考|读取|使用|来源|输入|不要|而不是)|\b(?:of|about|comparing|from|based\s+on|using|according\s+to|for\s+later|rather\s+than|instead\s+of|do\s+not|don'?t|without)\b/i)[0]
+    .split(/(?:基于|根据|参考|读取|使用|来源|输入|关于|有关|不要|而不是)|\b(?:of|about|comparing|from|based\s+on|using|according\s+to|for\s+later|rather\s+than|instead\s+of|do\s+not|don'?t|without)\b/i)[0]
     // A filename's basename is not a format: presentation-plan.json is JSON.
     .replace(/[\p{L}\p{N}_./\\-]+\.(docx?|xlsx?|pptx?|pdf|csv|html?|md|jsonl?|txt|mp4|mov|webm)(?![a-z0-9])/giu, " .$1");
+}
+
+// A reference template refines the current deliverable; it is not itself an
+// output-format switch. Callers must resolve the preceding user-authored turn.
+export function isArtifactRevisionRequest(text: string): boolean {
+  if (/(?:不要|无需|不必|不需要|别)\s*(?:生成|输出|制作|写|做)|只(?:需|要)?\s*(?:解释|分析|回答|文字|文本)|什么意思|\b(?:do\s+not|don't|never)\s+(?:create|generate|write|make)|\b(?:explain|text\s+only)\b/i.test(text)) return false;
+  if (/(?:继续|接着)\s*(?:查|搜索|分析|回答)|\bcontinue\s+(?:searching|search|looking\s+up)\b/i.test(text)) return false;
+  return /\b(?:continue|finish|complete|fix|repair|resume|retry|regenerate|rebuild|redo|rerun)\b|(?:继续|补全|补齐|完善|完成|修复|重试|重新生成|重新制作|重做|再生成|重跑|不完整|没生成完|没有生成完)/i.test(text) ||
+    /(?:基于|根据|参考|使用|用|沿用|套用|按|换成)[^。！？\n]{0,60}(?:模板|模版|版式|排版)|(?:保持|保留|调整|修改)[^。！？\n]{0,30}(?:版式|排版|字体|配色)|(?:增加|添加|补充|加入|补上)[^。！？\n]{0,20}(?:图片|图表|内容)|内容[^。！？\n]{0,15}(?:详细|详尽|精简)|\b(?:use|apply|follow)\b[^.!?\n]{0,60}\b(?:template|layout)\b|\b(?:add|include)\b[^.!?\n]{0,30}\b(?:images|charts|details)\b/i.test(text);
 }
 
 export function parseArtifactOutputExtensions(prompt: string): string[] {

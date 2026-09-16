@@ -1821,26 +1821,33 @@ const SelectedTaskWorkspaceView = memo(
           ?.displayName || selectedModel;
       if (spreadsheetArtifact.kind === "document") {
         return (
-          <DocumentArtifactViewer
-            filePath={spreadsheetArtifact.path}
-            workspacePath={workspace.path}
-            mode="fullscreen"
+          <WorkbenchPreviewErrorBoundary
+            key={`document:${spreadsheetArtifact.path}`}
             onClose={closeSpreadsheetArtifact}
-            onFullscreen={showSpreadsheetFullscreen}
-            onExitFullscreen={showSpreadsheetSidebar}
-            onSendMessage={sendSpreadsheetFullscreenMessage}
-            selectedModelLabel={selectedModelLabel}
-            selectedModel={selectedModel}
-            selectedProvider={selectedProvider}
-            selectedReasoningEffort={selectedReasoningEffort}
-            availableModels={availableModels}
-            availableProviders={availableProviders}
-            workspaceId={workspace.id}
-            onModelChange={onModelChange}
-            onOpenSettings={onOpenSettings}
-            turnContext={spreadsheetTurnContext}
-            refreshKey={artifactRefreshKey}
-          />
+          >
+            <Suspense fallback={<ArtifactSidebarFallback />}>
+              <DocumentArtifactViewer
+                filePath={spreadsheetArtifact.path}
+                workspacePath={workspace.path}
+                mode="fullscreen"
+                onClose={closeSpreadsheetArtifact}
+                onFullscreen={showSpreadsheetFullscreen}
+                onExitFullscreen={showSpreadsheetSidebar}
+                onSendMessage={sendSpreadsheetFullscreenMessage}
+                selectedModelLabel={selectedModelLabel}
+                selectedModel={selectedModel}
+                selectedProvider={selectedProvider}
+                selectedReasoningEffort={selectedReasoningEffort}
+                availableModels={availableModels}
+                availableProviders={availableProviders}
+                workspaceId={workspace.id}
+                onModelChange={onModelChange}
+                onOpenSettings={onOpenSettings}
+                turnContext={spreadsheetTurnContext}
+                refreshKey={artifactRefreshKey}
+              />
+            </Suspense>
+          </WorkbenchPreviewErrorBoundary>
         );
       }
       if (spreadsheetArtifact.kind === "presentation") {

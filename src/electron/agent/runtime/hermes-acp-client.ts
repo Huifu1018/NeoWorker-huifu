@@ -50,7 +50,7 @@ export type HermesAcpMcpServer = {
   args: string[];
   env: Array<{ name: string; value: string }>;
 };
-export interface AcpRequestOptions { timeoutMs?: number; signal?: AbortSignal }
+export interface AcpRequestOptions { timeoutMs?: number; idleTimeoutMs?: number; signal?: AbortSignal }
 export interface AcpRequestContext { signal: AbortSignal }
 
 export class HermesAcpError extends Error {
@@ -203,6 +203,7 @@ export class HermesAcpClient {
       let terminal = false;
       const cleanup = () => {
         clearTimeout(timer);
+        clearTimeout(idleTimer);
         clearTimeout(firstByteTimer);
         opts.signal?.removeEventListener("abort", aborted);
         conn.pending.delete(id);
@@ -245,6 +246,15 @@ export class HermesAcpClient {
       };
       const aborted = () => interrupt("CANCELLED");
       const timer = setTimeout(() => interrupt("REQUEST_TIMEOUT"), timeoutMs);
+      // Activity extends only the idle budget, never the hard task deadline.
+      // Scope is enforced by activitySessionId at the notification handler.
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const refreshIdle = () => {
+        if (!Number.isFinite(opts.idleTimeoutMs) || !opts.idleTimeoutMs || opts.idleTimeoutMs <= 0) return;
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => interrupt("REQUEST_TIMEOUT"), opts.idleTimeoutMs);
+      };
+      refreshIdle();
       const firstByteTimer = setTimeout(() => interrupt("FIRST_BYTE_TIMEOUT"), conn.firstByteTimeoutMs);
       // Register before writing: immediate responses must find their waiter.
       conn.pending.set(id, {
@@ -264,6 +274,7 @@ export class HermesAcpClient {
           reject(error);
         },
         firstByte: () => {
+          refreshIdle();
           if (firstByteSeen) return;
           firstByteSeen = true;
           clearTimeout(firstByteTimer);

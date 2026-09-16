@@ -1,3 +1,4 @@
+import { isArtifactRevisionRequest } from "./artifact-output-intent";
 import {
   AgentConfig,
   Task,
@@ -2193,24 +2194,24 @@ export class TaskExecutor {
   }
 
   private buildFollowUpCompletionContract(message: string): CompletionContract {
+    const userIntent = buildCanonicalTaskIntentQuery({ title: "", prompt: message });
     const followUpContract = buildCompletionContractUtil({
       taskTitle: "",
-      taskPrompt: message,
+      taskPrompt: userIntent,
       requiresDirectAnswer: false,
       requiresDecisionSignal: false,
       isWatchSkipRecommendationTask: false,
     });
-    if (followUpContract.requiresArtifactEvidence) return followUpContract;
+    if (
+      followUpContract.requiredArtifactExtensions.length > 0 ||
+      detectReadOnlyConstraintUtil(userIntent) ||
+      !isArtifactRevisionRequest(userIntent)
+    ) return followUpContract;
 
     // Short repair prompts such as "继续" or "生成得不完整" refer to the
     // original deliverable. Without inheriting that contract, a follow-up can
     // mutate an incomplete HTML file and still be marked completed merely
     // because the latest message did not repeat the word "HTML".
-    const continuesArtifactWork =
-      /\b(?:continue|finish|complete|fix|repair|resume|retry|regenerate|rebuild|redo|rerun)\b|(?:继续|补全|补齐|完善|完成|修复|重试|重新生成|重新制作|重做|再生成|重跑|不完整|没生成完|没有生成完)/i.test(
-        String(message || ""),
-      );
-    if (!continuesArtifactWork) return followUpContract;
 
     // A bare continuation belongs to the immediately preceding follow-up run,
     // not necessarily to the task's original root prompt. Long-lived chats can
@@ -2219,11 +2220,11 @@ export class TaskExecutor {
     const inheritedContract =
       this.activeFollowUpCompletionContract?.requiresArtifactEvidence === true
         ? this.activeFollowUpCompletionContract
-        : this.buildCompletionContract();
+        : this.getPreviousArtifactCompletionContract(userIntent);
     if (!inheritedContract.requiresArtifactEvidence) return followUpContract;
     const allowsExistingArtifactEvidence =
       /^\s*(?:继续(?:处理|完成|吧)?|接着(?:做|处理)?|往下做|continue|resume|go\s+on|carry\s+on|proceed)\s*[!！.。?？]*\s*$/i.test(
-        String(message || ""),
+        userIntent,
       );
     return {
       ...inheritedContract,
@@ -2231,6 +2232,39 @@ export class TaskExecutor {
       requiresDecisionSignal: false,
       allowExistingArtifactEvidence: allowsExistingArtifactEvidence,
     };
+  }
+
+  private getPreviousArtifactCompletionContract(currentIntent: string): CompletionContract {
+    const events = this.daemon?.getTaskEvents?.(this.task.id, {
+      types: ["user_message"], limit: 64,
+    }) || [];
+    // The unified runtime has already persisted the current message; Hermes
+    // has not. Ignore only its trailing echo, then walk actual user turns.
+    let isLatest = true;
+    for (const event of [...events].reverse()) {
+      const eventType = event.legacyType || event.payload?.legacyType || event.type;
+      if (eventType !== "user_message") continue;
+      if (this.activeConversationTurnId && event.payload?.stepId === this.activeConversationTurnId) continue;
+      const intent = buildCanonicalTaskIntentQuery({
+        title: "", prompt: String(event.payload?.message || ""),
+      });
+      if (!intent) continue;
+      if (isLatest && intent === currentIntent) {
+        isLatest = false;
+        continue;
+      }
+      isLatest = false;
+      const contract = buildCompletionContractUtil({
+        taskTitle: "", taskPrompt: intent, requiresDirectAnswer: false,
+        requiresDecisionSignal: false, isWatchSkipRecommendationTask: false,
+      });
+      if (
+        contract.requiredArtifactExtensions.length > 0 ||
+        detectReadOnlyConstraintUtil(intent) ||
+        !isArtifactRevisionRequest(intent)
+      ) return contract;
+    }
+    return this.buildCompletionContract();
   }
 
   private isArtifactFormatSwitchFollowUp(
@@ -16680,6 +16714,7 @@ ${transcript}
     const isUserFacingOutputPath = (relativePath: string): boolean => {
       const normalized = normalizePath(relativePath).replace(/^\.\//, "");
       const basename = path.basename(normalized);
+      if (/(?:^|\/)\.neoworker\/(?:tmp|uploads|memory)(?:\/|$)|(?:^|\/)\.neoworker-translation-|(?:^|\/)(?:node_modules|__pycache__)(?:\/|$)/i.test(normalized)) return false;
       if (/^agent\.md\/soul\.md\/user\.md$/i.test(normalized)) return false;
       if (/^__diag(?:[-_.]|$)/i.test(basename)) return false;
       if (requestedArtifactExtensions.size === 0) return true;
@@ -17387,6 +17422,12 @@ ${transcript}
 
   private async buildHermesContextNotes(): Promise<string[]> {
     const notes = [...(this.taskContextNotes || [])];
+    try {
+      const environment = await this.toolRegistry?.getExecutionEnvironmentGuidance?.();
+      if (environment) notes.push(environment);
+    } catch {
+      notes.push("Before running commands, call shell_environment to inspect the actual execution environment. Do not infer it from the host OS.");
+    }
     const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
     if (translationGuidance) notes.push(translationGuidance);
     const isSubAgentTask =
@@ -17975,9 +18016,9 @@ ${transcript}
       ].filter((file, index, files) => files.indexOf(file) === index);
       if (outputFiles.length > 0) {
         return [
-          "任务已完成。",
+          "本轮已生成以下文件，但此处不能确认任务已完成。请以交付校验结果为准。",
           "",
-          "输出文件：",
+          "过程文件（不代表最终交付）：",
           ...outputFiles.map((file) => `- \`${file}\``),
         ].join("\n");
       }
@@ -43375,6 +43416,8 @@ Return ONLY a JSON object:
     createdFilesBefore: Set<string>;
   } {
     const artifactEvidenceStartedAt = Date.now();
+    // Warm external runtimes must not reuse a completed writer from an older turn.
+    this.toolRegistry?.resetOfficeArtifactRequest?.();
     const createdFilesBefore = new Set(
       (this.fileOperationTracker?.getCreatedFiles?.() || []).map((file) =>
         String(file || "")

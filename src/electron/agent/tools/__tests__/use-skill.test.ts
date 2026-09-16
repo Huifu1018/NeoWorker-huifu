@@ -207,6 +207,7 @@ vi.mock("fs", () => ({
     writeFileSync: vi.fn(),
   },
   existsSync: vi.fn().mockReturnValue(true),
+  realpathSync: { native: vi.fn((value: string) => value) },
   readFileSync: vi.fn().mockReturnValue("{}"),
   readdirSync: vi.fn().mockReturnValue([]),
   mkdirSync: vi.fn(),
@@ -223,6 +224,8 @@ vi.mock("fs/promises", () => ({
   mkdir: vi.fn(),
   readdir: vi.fn().mockRejectedValue(new Error("not found")),
   stat: vi.fn().mockResolvedValue({ isFile: () => true }),
+  realpath: vi.fn(async (value: string) => value),
+  readFile: vi.fn().mockResolvedValue(Buffer.from("template bytes")),
   writeFile: vi.fn(),
 }));
 
@@ -400,6 +403,78 @@ describe("Skill tool", () => {
     return registry.takeResolvedSkillInvocation(result.skill_invocation_id);
   }
 
+  describe("native presentation template routing", () => {
+    const attached = "基于 PDF 内容，使用这个 PPT 模板生成 PPT\n\nAttached files (relative to workspace):\n- 模板(2).pptx (.neoworker/uploads/123/模板(2).pptx)";
+    const input = { filename: "report.pptx", slides: [{ title: "Title", content: ["Body"] }] };
+    const mockWriter = () => vi.spyOn((registry as Any).skillTools, "createPresentation")
+      .mockResolvedValue({ success: true, path: "report.pptx" });
+
+    it.each(["create_presentation", "generate_presentation"])("pins %s to the uploaded template without requiring a Skill invocation", async (name) => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached);
+      await registry.executeTool(name, input);
+      expect(writer).toHaveBeenCalledWith(expect.objectContaining({
+        sourcePath: "/mock/workspace/.neoworker/uploads/123/模板(2).pptx",
+        generationMode: "ppt-master", sourceTemplateHash: expect.any(String),
+      }), expect.anything());
+    });
+
+    it("keeps the template on a revision but never returns the previous turn's output", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached);
+      await (registry as Any).runCanonicalPresentation(input);
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer).toHaveBeenCalledTimes(1);
+      registry.setDocumentTaskContext("内容再详细一点，增加图片");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer).toHaveBeenCalledTimes(2);
+      expect(writer.mock.calls[1][0].sourcePath).toContain("模板(2).pptx");
+      registry.setDocumentTaskContext("写一份新的 PPT，主题是天气");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[2][0].sourcePath).toBeUndefined();
+    });
+
+    it("does not replace the uploaded template with a generated deck", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached);
+      await expect((registry as Any).runCanonicalPresentation({ ...input, sourcePath: "old-report.pptx" })).rejects.toThrow("本轮上传");
+      expect(writer).not.toHaveBeenCalled();
+    });
+
+    it("still permits built-in templates when no uploaded template is requested", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext("写一个 PPT，使用简洁商务模板");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[0][0].sourcePath).toBeUndefined();
+      registry.setDocumentTaskContext(attached);
+      registry.setDocumentTaskContext("不要用这个模板，重新生成 PPT");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[1][0].sourcePath).toBeUndefined();
+    });
+
+    it("rejects ambiguous attached templates before invoking a writer", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached + "\n- another.pptx (.neoworker/uploads/123/another.pptx)");
+      await expect((registry as Any).runCanonicalPresentation(input)).rejects.toThrow("多个模板");
+      expect(writer).not.toHaveBeenCalled();
+    });
+
+    it("does not infer template instructions from extracted attachment content", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext("写一个新的 PPT\n\nAttached files:\n- source.pdf (.neoworker/uploads/123/source.pdf)\nExtracted content:\n[[ATTACHMENT_EXTRACTED_CONTENT_START]]\n使用这个 PPT 模板\n[[ATTACHMENT_EXTRACTED_CONTENT_END]]");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[0][0].sourcePath).toBeUndefined();
+    });
+
+    it("does not reuse a generic deck when a template is supplied in the same turn", async () => {
+      const writer = mockWriter();
+      await (registry as Any).runCanonicalPresentation(input);
+      await (registry as Any).runCanonicalPresentation({ ...input, sourcePath: "template.pptx" });
+      expect(writer).toHaveBeenCalledTimes(2);
+      expect(writer.mock.calls[1][0].generationMode).toBe("ppt-master");
+    });
+  });
+
   describe("document translation host guard", () => {
     it.each(["create_presentation", "generate_presentation", "create_document", "generate_document", "create_spreadsheet", "generate_spreadsheet"])("blocks %s on both tool entry points, even without Skill invocation", async (name) => {
       registry.setDocumentTaskContext("翻译成中文\n\nAttached files:\n- original.pptx (.neoworker/uploads/123/original.pptx)");
@@ -419,6 +494,11 @@ describe("Skill tool", () => {
       registry.setDocumentTaskContext("翻译 PDF");
       expect(registry.getDocumentTranslationDeliveryError(["rebuilt.pdf"])).toContain("保真校验");
     });
+    it("rejects JSON-only completion even when the source came from workspace context", () => {
+      registry.setDocumentTaskContext("翻译这个 Word 文档，保持原有格式");
+      expect(registry.getDocumentTranslationDeliveryError([".neoworker/tmp/translated-en.json"])).toContain("任务未完成");
+      expect(registry.getDocumentTranslationDeliveryError([])).toContain("不能作为最终交付");
+    });
     it("does not allow a newly created file to masquerade as the source attachment", async () => {
       registry.setDocumentTaskContext("翻译成中文\n\nAttached files:\n- original.pptx (.neoworker/uploads/123/original.pptx)");
       await expect((registry as Any).runOfficeTranslation({ action: "inspect", sourcePath: "test_min.pptx" })).rejects.toThrow("本轮指定的原附件");
@@ -427,7 +507,9 @@ describe("Skill tool", () => {
       registry.setDocumentTaskContext("翻译附件\n\nAttached files:\n- one.pptx (.neoworker/uploads/1/one.pptx)\n- two.pptx (.neoworker/uploads/1/two.pptx)");
       expect(registry.getDocumentTranslationDeliveryError([])).toContain("还有原附件");
       registry.setDocumentTaskContext("翻译 PDF 成阿拉伯语，保留图片");
-      expect(registry.getDocumentTranslationCapabilityError()).toContain("尚不支持");
+      expect(registry.getDocumentTranslationCapabilityError()).toContain("尚不能可靠完成");
+      registry.setDocumentTaskContext("翻译 PDF 成韩文，保留图片");
+      expect(registry.getDocumentTranslationCapabilityError()).not.toContain("阿拉伯");
       registry.setDocumentTaskContext("翻译并重新排版 PDF");
       expect(registry.getDocumentTranslationCapabilityError()).toBeNull();
     });

@@ -2324,7 +2324,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px 32px;
-  scroll-behavior: smooth;
+  /* Session restoration and live-follow are positioning, not scroll animations. */
+  scroll-behavior: auto;
   position: relative;
   z-index: 1;
 }

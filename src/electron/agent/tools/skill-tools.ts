@@ -236,6 +236,7 @@ export class SkillTools {
     sourcePath: string,
     artifactRoot: string,
     slides: unknown[],
+    filename: string,
     signal?: AbortSignal,
   ): Promise<{ outputPath: string; size: number }> {
     if (signal?.aborted) {
@@ -277,7 +278,7 @@ export class SkillTools {
     }
 
     const analysisDir = path.join(artifactRoot, "analysis");
-    const outputPath = path.join(artifactRoot, "output", "presentation.pptx");
+    const outputPath = resolveVersionedOutputPath(path.join(artifactRoot, "output", path.basename(filename)));
     const slidesPath = path.join(analysisDir, "neoworker-slides.json");
     await fs.mkdir(analysisDir, { recursive: true });
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -1163,10 +1164,6 @@ export class SkillTools {
       ? input.filename
       : `${input.filename}.pptx`;
 
-    if (input.sourcePath && input.generationMode !== "ppt-master") {
-      throw new Error("普通新建 PPT 工具不能保留 sourcePath 的原模板。翻译现有文件请使用 office_translation，不能忽略原文件并新建模板。");
-    }
-
     if (!Array.isArray(input.slides) || input.slides.length === 0) {
       throw new Error("At least one slide is required.");
     }
@@ -1185,11 +1182,10 @@ export class SkillTools {
     );
     const slides = presentationPlan.value;
     if (
-      input.generationMode === "ppt-master" &&
       typeof input.sourcePath === "string" &&
       input.sourcePath.trim()
     ) {
-      const artifactRoot = path.resolve(
+      let artifactRoot = path.resolve(
         input.workflowArtifactRoot ||
           path.join(
             this.workspace.path,
@@ -1199,6 +1195,10 @@ export class SkillTools {
             "ppt-master",
           ),
       );
+      if (!input.workflowArtifactRoot) {
+        await fs.mkdir(artifactRoot, { recursive: true });
+        artifactRoot = await fs.mkdtemp(path.join(artifactRoot, "request-"));
+      }
       this.reportOfficePublishPhase("pptx", "staging", {
         presentationWorkflow: "ppt-master",
         sourcePath: input.sourcePath,
@@ -1208,6 +1208,7 @@ export class SkillTools {
         input.sourcePath,
         artifactRoot,
         slides,
+        filename,
         execution.signal,
       );
       const outputPath = templateResult.outputPath;

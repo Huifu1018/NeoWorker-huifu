@@ -288,7 +288,9 @@ export class HermesRuntimeAdapter {
         this.sawToolActivity = false;
         this.acceptingUpdates = true;
         const result = await this.client.prompt(checkpoint.sessionId, text, {
-          timeoutMs: this.options.timeoutMs ?? 300_000, signal,
+          timeoutMs: this.options.timeoutMs ?? 30 * 60_000,
+          idleTimeoutMs: Math.min(this.options.timeoutMs ?? 300_000, 300_000),
+          signal,
         });
         const meta = result._meta as { neoworker?: { runtimeError?: { code?: unknown; message?: unknown } } } | undefined;
         const runtimeError = meta?.neoworker?.runtimeError;

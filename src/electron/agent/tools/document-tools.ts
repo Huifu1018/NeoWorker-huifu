@@ -10,6 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { createHash, randomUUID } from "crypto";
 import { marked } from "marked";
 import { LLMTool } from "../llm/types";
 import { generatePDF } from "../../utils/document-generators/pdf-generator";
@@ -173,11 +174,13 @@ export class DocumentTools {
     return [
       {
         name: "office_translation",
-        description: "Translate an existing PPTX, DOCX or XLSX without changing its template or pictures. First inspect sourcePath, read the returned JSON manifest, translate ALL units keeping ids/sourceSha256/schema, save it with write_file, then apply using translationsPath and filename. Keeps formulas, numeric cells, images, layout and package parts unchanged. No Python installation. Does not translate image pixels or verify visual text fit. PDF and legacy formats are unsupported: report the limitation rather than rebuild with a new template.",
+        description: "Translate existing PPTX/DOCX/XLSX in place without Python or shell. Preferred resumable workflow: inspect with targetLanguage, translate nextUnits using the task model, stage each batch using translationsPath and units, repeat until remaining=0, then apply with filename. Do not rewrite the entire manifest or use public translation websites. Cached batches survive interruptions. Keeps pictures, styles, formulas and layouts; image pixels and visual text fit are not checked. PDF/legacy formats require an explicit alternative agreed with the user.",
         input_schema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["inspect", "apply"] },
+            action: { type: "string", enum: ["inspect", "stage", "apply"] },
+            targetLanguage: { type: "string", description: "Target language for resumable inspect, e.g. English or Korean; keep this value consistent on resume" },
+            units: { type: "array", description: "Translated batch for stage, keeping all ids including unchanged names/numbers", items: { type: "object", properties: { id: { type: "string" }, text: { type: "string" } }, required: ["id", "text"] } },
             sourcePath: { type: "string", description: "Workspace path of the ORIGINAL source file" },
             translationsPath: { type: "string", description: "Workspace JSON manifest with translated text units, required for apply" },
             filename: { type: "string", description: "New output filename with same extension as source, required for apply" },
@@ -273,7 +276,7 @@ export class DocumentTools {
               type: "string",
               description: 'Output filename (e.g. "pitch-deck.pptx")',
             },
-            sourcePath: { type: "string", description: "Template input only for the ppt-master workflow. For translation use office_translation; ordinary generation does not preserve a source template." },
+            sourcePath: { type: "string", description: "User-provided PPTX template. The host automatically uses native template filling, preserving the source masters, layouts and artwork. For existing-document translation use office_translation." },
             title: { type: "string", description: "Presentation title" },
             author: { type: "string", description: "Author name (optional)" },
             audience: {
@@ -705,8 +708,55 @@ export class DocumentTools {
       throw new Error("当前原版式翻译工具支持 PPTX、DOCX、XLSX；PDF 和旧版 Office 格式尚不支持，不能擅自更换模板或把图片移到附录。");
     }
     const source = await readContained(input.sourcePath);
+    const validateCheckpoint = (checkpoint: Any, expected: Any) => {
+      const validText = (text: unknown) => typeof text === "string" && Boolean(text.trim()) && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(text);
+      const allowed = new Set(expected.units.map((unit: Any) => unit.id));
+      if (checkpoint?.schema !== expected.schema || checkpoint.sourceSha256 !== expected.sourceSha256
+        || typeof checkpoint.targetLanguage !== "string" || !checkpoint.targetLanguage.trim()
+        || !Array.isArray(checkpoint.units) || checkpoint.units.length !== expected.units.length
+        || checkpoint.units.some((unit: Any, index: number) => unit?.id !== expected.units[index].id || !validText(unit.text))
+        || !Array.isArray(checkpoint.completedUnitIds)
+        || new Set(checkpoint.completedUnitIds).size !== checkpoint.completedUnitIds.length
+        || checkpoint.completedUnitIds.some((id: unknown) => !allowed.has(id))) {
+        throw new Error("翻译进度损坏或与原文件不匹配；旧进度已保留，请修复进度文件后重试。");
+      }
+    };
+    const unitKey = (unit: Any) => JSON.stringify([unit.text, unit.context || ""]);
+    const batchSummary = (checkpoint: Any) => {
+      const completed = new Set(checkpoint.completedUnitIds || []);
+      const pending = checkpoint.units.filter((unit: Any) => !completed.has(unit.id));
+      const seen = new Set<string>();
+      const unique = pending.filter((unit: Any) => {
+        const key = unitKey(unit);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      let characters = 0;
+      const nextUnits = unique.slice(0, 40).filter((unit: Any, index: number) => {
+        characters += unit.text.length + (unit.context?.length || 0);
+        return index === 0 || characters <= 10000;
+      });
+      return { completed: completed.size, total: checkpoint.units.length, remaining: pending.length, uniqueRemaining: unique.length, nextUnits };
+    };
     if (input.action === "inspect") {
       const manifest = await inspectOfficeTranslation(source);
+      if (typeof input.targetLanguage === "string" && input.targetLanguage.trim()) {
+        const language = input.targetLanguage.trim().toLowerCase();
+        const languageKey = createHash("sha256").update(language).digest("hex").slice(0, 16);
+        const checkpointPath = path.join(root, `.neoworker-translation-${manifest.sourceSha256.slice(0, 16)}-${languageKey}.json`);
+        let checkpoint: Any = { ...manifest, targetLanguage: language, completedUnitIds: [] };
+        try {
+          const existing = JSON.parse((await readContained(checkpointPath)).toString("utf8"));
+          validateCheckpoint(existing, manifest);
+          if (existing.targetLanguage === language) checkpoint = existing;
+          else throw new Error("翻译进度与原文件不匹配，请保留旧进度并使用新的目标语言标识。");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          await fs.promises.writeFile(checkpointPath, JSON.stringify(checkpoint), { flag: "wx" });
+        }
+        return { success: true, translationsPath: path.relative(root, checkpointPath), ...batchSummary(checkpoint), guidance: "Translate nextUnits with the current task model, then stage this batch. Include unchanged identifiers. Resume inspect with the same targetLanguage to reuse saved work. Only apply when remaining is zero; the checkpoint is NOT a deliverable." };
+      }
       const manifestPath = resolveVersionedOutputPath(path.join(root, `.neoworker-translation-${manifest.sourceSha256.slice(0, 16)}.json`));
       await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx" });
       return {
@@ -718,15 +768,74 @@ export class DocumentTools {
         guidance: "Read the complete manifest. Translate text units in paragraph order and context, retaining every id, schema and sourceSha256. Keep proper names/identifiers unchanged where appropriate. Save a translated JSON manifest, then call office_translation with action=apply, the ORIGINAL sourcePath, translationsPath and a new filename. Image text is not editable by this tool.",
       };
     }
-    if (input.action !== "apply") throw new Error("action 必须为 inspect 或 apply。");
+    if (input.action === "stage") {
+      const checkpoint = JSON.parse((await readContained(input.translationsPath)).toString("utf8"));
+      const expected = await inspectOfficeTranslation(source);
+      validateCheckpoint(checkpoint, expected);
+      if (!Array.isArray(input.units) || input.units.length === 0 || input.units.length > 40) throw new Error("每批应包含 1 至 40 个文字单元。");
+      const allowed = new Set(expected.units.map((unit) => unit.id));
+      const patch = new Map<string, string>();
+      for (const unit of input.units) {
+        if (!allowed.has(unit?.id) || typeof unit?.text !== "string" || !unit.text.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(unit.text) || patch.has(unit.id)) throw new Error(`无效的翻译单元：${String(unit?.id).slice(0,180)}；仅修复该批次后重试。`);
+        patch.set(unit.id, unit.text);
+      }
+      const previous = new Map<string, string>(checkpoint.units.map((unit: Any) => [unit.id, unit.text]));
+      // Reuse translations only for identical source text AND paragraph context.
+      // Every native text object still retains its own ID and formatting.
+      const reusable = new Map<string, string>();
+      const conflicts = new Set<string>();
+      for (const unit of expected.units) {
+        const text = patch.get(unit.id);
+        if (text === undefined) continue;
+        const key = unitKey(unit);
+        if (reusable.has(key) && reusable.get(key) !== text) conflicts.add(key);
+        reusable.set(key, text);
+      }
+      for (const unit of expected.units) {
+        const key = unitKey(unit);
+        if (!patch.has(unit.id) && !checkpoint.completedUnitIds.includes(unit.id) && !conflicts.has(key) && reusable.has(key)) patch.set(unit.id, reusable.get(key)!);
+      }
+      checkpoint.units = expected.units.map((unit) => ({ ...unit, text: patch.get(unit.id) ?? previous.get(unit.id) ?? unit.text }));
+      checkpoint.completedUnitIds = [...new Set([...checkpoint.completedUnitIds.filter((id: string) => allowed.has(id)), ...patch.keys()])];
+      const destination = await fs.promises.realpath(path.resolve(root, input.translationsPath));
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        await fs.promises.writeFile(temporary, JSON.stringify(checkpoint), { flag: "wx" });
+        await fs.promises.rename(temporary, destination);
+      } finally { await fs.promises.rm(temporary, { force: true }); }
+      const progress = batchSummary(checkpoint);
+      this.reportProgress?.(`翻译进度：${progress.completed}/${progress.total}`, { phase: "translation", completed: progress.completed, total: progress.total });
+      return { success: true, translationsPath: input.translationsPath, ...progress };
+    }
+    if (input.action !== "apply") throw new Error("action 必须为 inspect、stage 或 apply。");
     if (typeof input.filename !== "string" || !input.filename.trim() || path.extname(input.filename).toLowerCase() !== extension) {
       throw new Error("翻译输出必须提供与源文件格式相同的新文件名。");
     }
     const manifest = JSON.parse((await readContained(input.translationsPath)).toString("utf8"));
+    if (manifest?.completedUnitIds !== undefined) validateCheckpoint(manifest, await inspectOfficeTranslation(source));
+    if (Array.isArray(manifest.completedUnitIds) && manifest.units.some((unit: Any) => !manifest.completedUnitIds.includes(unit.id))) throw new Error("翻译批次尚未全部完成，请 inspect 恢复进度并继续 stage；不能交付中间 JSON。");
     const output = await applyOfficeTranslation(source, manifest);
-    const outputPath = resolveVersionedOutputPath(path.join(root, sanitizeFilename(input.filename, 180)));
+    const deliveryKey = createHash("sha256").update(source).update(JSON.stringify(manifest)).update(input.filename).digest("hex");
+    const receiptPath = path.join(root, `.neoworker-translation-delivery-${deliveryKey}.json`);
+    let outputPath: string | undefined;
+    try {
+      const receipt = JSON.parse((await readContained(receiptPath)).toString("utf8"));
+      if (typeof receipt.path === "string" && path.basename(receipt.path) === receipt.path && (await readContained(receipt.path)).equals(output)) outputPath = path.join(root, receipt.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const reusedExistingArtifact = Boolean(outputPath);
+    outputPath ||= resolveVersionedOutputPath(path.join(root, sanitizeFilename(input.filename, 180)));
     if (path.extname(outputPath).toLowerCase() !== extension) throw new Error("输出文件名无效。");
-    await fs.promises.writeFile(outputPath, output, { flag: "wx" });
+    if (!reusedExistingArtifact) {
+      await fs.promises.writeFile(outputPath, output, { flag: "wx" });
+      // Save before registration so retrying a failed durable copy reuses the file.
+      const temporary = `${receiptPath}.${randomUUID()}.tmp`;
+      try {
+        await fs.promises.writeFile(temporary, JSON.stringify({ path: path.basename(outputPath) }), { flag: "wx" });
+        await fs.promises.rename(temporary, receiptPath);
+      } finally { await fs.promises.rm(temporary, { force: true }); }
+    }
     const mimeType = extension === ".pptx"
       ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
       : extension === ".xlsx"
@@ -736,6 +845,7 @@ export class DocumentTools {
     return {
       success: true,
       path: path.relative(root, outputPath),
+      reusedExistingArtifact,
       sourcePath: input.sourcePath,
       size: output.length,
       mimeType,

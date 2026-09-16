@@ -10,7 +10,7 @@ const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
 
 export type OfficeTranslationUnit = { id: string; text: string; context?: string };
 export type OfficeTranslationManifest = {
-  schema: "neoworker.office-translation.v1";
+  schema: "neoworker.office-translation.v1" | "neoworker.office-translation.v2";
   sourceSha256: string;
   units: OfficeTranslationUnit[];
 };
@@ -29,7 +29,7 @@ function isTextPart(name: string): boolean {
     && name.endsWith(".xml");
 }
 
-function textElements(document: Document): Element[] {
+function textElements(document: Document, includeEmpty = false): Element[] {
   return Array.from(document.getElementsByTagName("*")).filter((element) => {
     if (element.localName !== "t") return false;
     if (![DRAWING, WORD, SHEET].includes(element.namespaceURI || "")) return false;
@@ -42,7 +42,7 @@ function textElements(document: Document): Element[] {
         && parent.getElementsByTagNameNS(WORD, "fldChar").length > 0) return false;
       parent = parent.parentNode as Element | null;
     }
-    return Boolean(element.textContent?.trim());
+    return includeEmpty || Boolean(element.textContent?.trim());
   });
 }
 
@@ -84,22 +84,53 @@ function collectParts(data: Map<string, Buffer>) {
   return parts;
 }
 
-export async function inspectOfficeTranslation(bytes: Buffer): Promise<OfficeTranslationManifest> {
+function paragraphOf(element: Element): Element | null {
+  let parent = element.parentNode as Element | null;
+  while (parent?.nodeType === 1 && !["p", "si", "is"].includes(parent.localName)) parent = parent.parentNode as Element | null;
+  return parent?.nodeType === 1 ? parent : null;
+}
+
+function canJoin(left: Element, right: Element): boolean {
+  const a = left.parentNode as Element;
+  const b = right.parentNode as Element;
+  if (a.localName !== "r" || b.localName !== "r" || a === b || a.parentNode !== b.parentNode) return false;
+  const children = (run: Element) => Array.from(run.childNodes).filter((node) => node.nodeType === 1) as Element[];
+  // Do not merge across links, fields, drawings, tabs, breaks or style changes.
+  if ([a, b].some((run) => children(run).some((node) => !["rPr", "t"].includes(node.localName)))) return false;
+  if ([a, b].some((run) => children(run).filter((node) => node.localName === "t").length !== 1)) return false;
+  let next = a.nextSibling;
+  while (next && next.nodeType === 3 && !next.textContent?.trim()) next = next.nextSibling;
+  if (next !== b) return false;
+  const style = (run: Element) => children(run).filter((node) => node.localName === "rPr").map((node) => serializer.serializeToString(node)).join("");
+  return style(a) === style(b);
+}
+
+function translationGroups(elements: Element[], grouped: boolean): Array<{ index: number; elements: Element[] }> {
+  const groups: Array<{ index: number; elements: Element[] }> = [];
+  elements.forEach((element, index) => {
+    const last = groups[groups.length - 1];
+    if (grouped && last && canJoin(last.elements[last.elements.length - 1], element)) last.elements.push(element);
+    else groups.push({ index, elements: [element] });
+  });
+  return groups;
+}
+
+export async function inspectOfficeTranslation(bytes: Buffer, grouped = true): Promise<OfficeTranslationManifest> {
   const { data } = await openPackage(bytes);
   const units: OfficeTranslationUnit[] = [];
   for (const [name, part] of collectParts(data)) {
-    part.elements.forEach((element, index) => {
-      let paragraph = element.parentNode as Element | null;
-      while (paragraph?.nodeType === 1 && !["p", "si", "is"].includes(paragraph.localName)) paragraph = paragraph.parentNode as Element | null;
-      units.push({ id: `${name}#${index}`, text: element.textContent || "", ...(paragraph?.nodeType === 1 ? { context: paragraph.textContent || "" } : {}) });
+    translationGroups(part.elements, grouped).forEach(({ elements, index }) => {
+      const paragraph = paragraphOf(elements[0]);
+      units.push({ id: `${name}#${index}`, text: elements.map((element) => element.textContent || "").join(""), ...(paragraph ? { context: paragraph.textContent || "" } : {}) });
     });
   }
   if (!units.length) throw new Error("源文档没有可编辑文字，可能为扫描件或图片。不能用新模板替代原文件。");
-  return { schema: "neoworker.office-translation.v1", sourceSha256: createHash("sha256").update(bytes).digest("hex"), units };
+  return { schema: grouped ? "neoworker.office-translation.v2" : "neoworker.office-translation.v1", sourceSha256: createHash("sha256").update(bytes).digest("hex"), units };
 }
 
 export async function applyOfficeTranslation(bytes: Buffer, manifest: OfficeTranslationManifest): Promise<Buffer> {
-  const expected = await inspectOfficeTranslation(bytes);
+  const grouped = manifest?.schema === "neoworker.office-translation.v2";
+  const expected = await inspectOfficeTranslation(bytes, grouped);
   if (manifest?.schema !== expected.schema || manifest.sourceSha256 !== expected.sourceSha256) {
     throw new Error("翻译清单与源文件不匹配或原文件已发生变化，请重新读取源文件。");
   }
@@ -110,7 +141,7 @@ export async function applyOfficeTranslation(bytes: Buffer, manifest: OfficeTran
   for (const unit of manifest.units) {
     if (!unit || typeof unit.id !== "string" || typeof unit.text !== "string" || !unit.text.trim()
       || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(unit.text) || translations.has(unit.id)) {
-      throw new Error("翻译清单包含重复 id、空文字或无效字符。");
+      throw new Error(`翻译清单包含重复 id、空文字或无效字符：${String(unit?.id || "missing-id").slice(0,180)}。仅修复此单元后重试 apply；不要重新翻译已完成内容。旧版清单如需合并碎片，请重新 inspect 获取分组清单。`);
     }
     translations.set(unit.id, unit.text);
   }
@@ -119,13 +150,27 @@ export async function applyOfficeTranslation(bytes: Buffer, manifest: OfficeTran
   const { zip, data } = await openPackage(bytes);
   for (const [name, { document, elements }] of collectParts(data)) {
     let changed = false;
-    elements.forEach((element, index) => {
+    translationGroups(elements, grouped).forEach(({ elements: members, index }) => {
       const text = translations.get(`${name}#${index}`)!;
-      if (text === element.textContent) return;
-      element.textContent = text;
+      if (text === members.map((element) => element.textContent || "").join("")) return;
+      // Members have identical formatting. Retain every run and its properties.
+      members.forEach((element, offset) => {
+        element.textContent = offset === 0 ? text : "";
+        element.setAttribute("xml:space", "preserve");
+      });
       changed = true;
     });
-    if (changed) zip.file(name, serializer.serializeToString(document));
+    if (changed) {
+      const entry = zip.file(name)!;
+      // Preserve ZIP metadata so applying the same saved translation later is
+      // byte-stable and a failed publication can reuse its existing output.
+      zip.file(name, serializer.serializeToString(document), {
+        date: entry.date,
+        comment: entry.comment,
+        unixPermissions: entry.unixPermissions,
+        dosPermissions: entry.dosPermissions,
+      });
+    }
   }
   const output = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   await verifyOfficeTranslationFidelity(bytes, output);
@@ -144,10 +189,13 @@ export async function verifyOfficeTranslationFidelity(source: Buffer, output: Bu
     if (!isTextPart(name)) throw new Error(`翻译不允许修改原图片、样式、公式或附件：${name}`);
     const before = parseXml(bytes.toString("utf8"));
     const after = parseXml(result.toString("utf8"));
-    const left = textElements(before);
-    const right = textElements(after);
+    const left = textElements(before, true);
+    const right = textElements(after, true);
     if (left.length !== right.length) throw new Error(`翻译改变了文字对象数量：${name}`);
-    for (const element of [...left, ...right]) element.textContent = "__TRANSLATABLE_TEXT__";
+    for (const element of [...left, ...right]) {
+      element.textContent = "__TRANSLATABLE_TEXT__";
+      element.removeAttribute("xml:space");
+    }
     if (serializer.serializeToString(before) !== serializer.serializeToString(after)) {
       throw new Error(`翻译改变了原版式或非文字数据：${name}`);
     }

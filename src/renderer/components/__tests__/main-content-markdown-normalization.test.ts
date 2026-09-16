@@ -21,6 +21,7 @@ import {
 import { cleanAssistantMessageForDisplay } from "../MainContent/markdown-normalization";
 import { MarkdownRenderer } from "../MarkdownRenderer";
 import { applyPersistedLanguage } from "../../i18n";
+import { normalizeMarkdownForCollab } from "../../utils/markdown-inline-lists";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -47,6 +48,58 @@ function getMarkdownLinkClickHandler(
 }
 
 describe("MainContent markdown normalization helpers", () => {
+  it.each([
+    ["assistant", cleanAssistantMessageForDisplay],
+    ["collaboration", normalizeMarkdownForCollab],
+  ] as const)(
+    "keeps the reported seven-line code outline inside a code block (%s)",
+    (_name, normalize) => {
+      const outline = [
+        "# 1. 常量与边界        Limits（并发/请求/超时上限）",
+        "# 2. 数据模型          LoadConfig、RequestResult（dataclass）",
+        "# 3. 请求与鉴权        build_auth_header / perform_request（只读 GET）",
+        "# 4. 指标统计          percentile / summarize（p50/p90/p95/p99/max）",
+        "# 5. 报表与导出        render_summary / export_csv / fetch_security_headers",
+        "# 6. 配置解析          build_config（支持 CLI 或 JSON 配置）+ validate 安全校验",
+        "# 7. 主体              run_load / main",
+      ];
+      const input = ["**结构（按职责分层）**", "```", ...outline, "```", "", "**相比 v1 的改进**", "- 模块化目录结构"].join("\n");
+      const markup = renderToStaticMarkup(createElement(MarkdownRenderer, {
+        components: buildMarkdownComponents({}),
+        children: normalize(input),
+      }));
+      expect(markup).toContain("<pre");
+      expect(markup).not.toMatch(/<h[1-6](?:\s|>)/);
+      for (const line of outline) {
+        expect(markup.replace(/\s+/g, " ")).toContain(line.replace(/\s+/g, " "));
+      }
+      expect(markup).toContain("<ul>");
+    },
+  );
+
+  it.each(["```", "```python", "~~~", "~~~sh"])(
+    "preserves comment-like headings in closed and streaming %s code blocks",
+    (fence) => {
+      for (const close of ["", `\n${fence.startsWith("~") ? "~~~" : "```"}`]) {
+        const input = `${fence}\n# 1. Limits\n# 2. Configuration${close}`;
+        const markup = renderToStaticMarkup(createElement(MarkdownRenderer, {
+          children: cleanAssistantMessageForDisplay(input),
+        }));
+        expect(markup).toContain("<pre><code");
+        expect(markup).not.toMatch(/<h[1-6](?:\s|>)/);
+      }
+    },
+  );
+
+  it("keeps genuine headings and explicitly labelled Markdown deliverables working", () => {
+    for (const input of ["# Real heading", "```markdown\n# Real heading\n```", "```md\n# Real heading\n```"]){
+      const markup = renderToStaticMarkup(createElement(MarkdownRenderer, {
+        children: cleanAssistantMessageForDisplay(input),
+      }));
+      expect(markup).toContain("<h1>Real heading</h1>");
+    }
+  });
+
   it("uses Office工具 in prose while preserving executable commands", () => {
     applyPersistedLanguage("zh-CN");
     expect(

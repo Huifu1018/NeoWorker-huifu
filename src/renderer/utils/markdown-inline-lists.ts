@@ -30,25 +30,14 @@ export function normalizeInlineLists(text: string): string {
 /**
  * Unwrap fenced code blocks with language "markdown" or "md" so the inner content
  * is parsed as markdown instead of displayed as literal code. LLMs often wrap
- * deliverables in ```markdown blocks. Also unwraps plain ``` blocks when the
- * content contains markdown headings (lines starting with #).
+ * deliverables in ```markdown blocks. Unlabelled fences remain literal: a #
+ * line can be a shell/Python comment or a code outline, not a heading.
  */
 export function unwrapMarkdownCodeBlocks(text: string): string {
-  let result = text;
-  // 1. ```markdown or ```md (case-insensitive) - always unwrap
-  result = result.replace(
+  return text.replace(
     /^[ \t]*```(?:markdown|md)\s*\r?\n([\s\S]*?)\r?\n[ \t]*```(?!\w)/gim,
     "$1",
   );
-  // 2. Plain ``` with content containing # headings - likely a markdown document
-  result = result.replace(
-    /^[ \t]*```(?!\w)\s*\r?\n([\s\S]*?)\r?\n[ \t]*```(?!\w)/gm,
-    (fullMatch, content) =>
-      /\n#{1,6}\s/m.test(content) || /^#{1,6}\s/m.test(content)
-        ? content
-        : fullMatch,
-  );
-  return result;
 }
 
 /**

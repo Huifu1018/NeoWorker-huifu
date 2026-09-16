@@ -70,10 +70,8 @@ export function shouldBypassLiveTaskEventProjection(args: {
   transcriptModeOverride: TranscriptMode | null;
   verboseSteps: boolean;
 }): boolean {
-  return (
-    args.projectionMode === "live" &&
-    args.transcriptModeOverride === "inspect"
-  );
+  // Both views need the conversation history; only execution details differ.
+  return args.projectionMode === "live";
 }
 
 export function shouldShowChatTaskExecutionRows(args: {
@@ -263,19 +261,10 @@ export function getDefaultTranscriptMode(args: {
   isChatTask: boolean;
   taskStatus?: Task["status"] | null;
 }): TranscriptMode {
-  if (args.isReplayMode || args.isChatTask) {
+  if (args.isReplayMode || (args.verboseSteps && !args.isChatTask)) {
     return "inspect";
   }
-  if (args.isTaskWorking) {
-    return "live";
-  }
-  if (args.taskStatus === "completed") {
-    return "delivery";
-  }
-  if (args.verboseSteps) {
-    return "inspect";
-  }
-  return "inspect";
+  return "delivery";
 }
 
 export function selectVisibleCommandOutputSessions(args: {
@@ -574,6 +563,11 @@ export function isDeliveryCriticalEvent(event: TaskEvent): boolean {
     effectiveType === "step_failed" ||
     effectiveType === "verification_failed" ||
     effectiveType === "verification_pending_user_action" ||
+    effectiveType === "input_request_created" ||
+    (effectiveType === "approval_requested" && event.payload?.autoApproved !== true) ||
+    effectiveType === "task_paused" ||
+    effectiveType === "task_cancelled" ||
+    effectiveType === "task_failed" ||
     event.type === "timeline_error"
   );
 }
@@ -677,7 +671,7 @@ export function selectVisibleTaskFeedRows(
     };
 
     for (const [rowIndex, row] of feedRows.entries()) {
-      if (row.kind === "artifact-stack") {
+      if (row.kind === "artifact-stack" || row.kind === "history-control") {
         pushCandidate(rowIndex, row);
         continue;
       }
@@ -685,6 +679,10 @@ export function selectVisibleTaskFeedRows(
       for (const { event, eventIndex, eventOrder } of rowEvents) {
         const order = rowIndex + eventOrder / 1000;
         const effectiveType = getEffectiveTaskEventType(event);
+        if (effectiveType === "llm_streaming") {
+          pushCandidate(order, createDeliveryEventRow(row, event, eventIndex, eventOrder));
+          continue;
+        }
         // Delivery mode hides internal work, not the conversation itself. Keep
         // every follow-up question and one visible reply for each turn.
         if (effectiveType === "user_message") {

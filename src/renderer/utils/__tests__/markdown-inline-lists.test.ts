@@ -106,7 +106,7 @@ describe("unwrapMarkdownCodeBlocks", () => {
     expect(output).toBe(input);
   });
 
-  it("unwraps plain ``` blocks when content starts with #", () => {
+  it("preserves plain ``` blocks even when content starts with #", () => {
     const input = `Here is the deliverable:
 
 \`\`\`
@@ -115,12 +115,10 @@ describe("unwrapMarkdownCodeBlocks", () => {
 NeoWorker should go to market as **the local-first AI agent OS for real work**.
 \`\`\``;
     const output = unwrapMarkdownCodeBlocks(input);
-    expect(output).toContain("# Collab-1773823736382");
-    expect(output).not.toMatch(/^```\s*$/m);
-    expect(output).toContain("**the local-first AI agent OS for real work**");
+    expect(output).toBe(input);
   });
 
-  it("unwraps plain ``` blocks when content has intro before #", () => {
+  it("preserves plain ``` blocks with an intro before #", () => {
     const input = `Intro text
 
 \`\`\`
@@ -130,8 +128,7 @@ Preamble line
 ## Sub
 \`\`\``;
     const output = unwrapMarkdownCodeBlocks(input);
-    expect(output).toContain("# Header");
-    expect(output).toContain("Preamble line");
+    expect(output).toBe(input);
   });
 
   it("unwraps ```Markdown (case-insensitive)", () => {

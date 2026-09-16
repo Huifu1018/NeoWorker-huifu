@@ -1,3 +1,5 @@
+import { parseArtifactOutputExtensions } from "./artifact-output-intent";
+
 const STRATEGY_CONTEXT_BLOCK_PATTERN =
   /\n*\[AGENT_STRATEGY_CONTEXT_V1\][\s\S]*?\[\/AGENT_STRATEGY_CONTEXT_V1\]\n*/gi;
 
@@ -65,13 +67,6 @@ const OFFICE_KIND_MENTION_PATTERNS: Record<OfficeAttachmentKind, RegExp> = {
   xlsx: /\b(?:csv|excel|spreadsheet|workbook|xls|xlsx)\b|(?:电子表格|工作簿|数据表|表格文件|台账)/i,
 };
 
-const OFFICE_OUTPUT_TARGET_PATTERNS = [
-  /(?:转换|转化|转|改|导出|输出|保存)(?:为|成)\s*([^\n，。；;]{1,64})/gi,
-  /(?:生成|创建|制作|产出)\s*([^\n，。；;]{1,64})/gi,
-  /\b(?:convert|transform|turn|export|save)\b[^\n,.;]{0,64}?\b(?:to|into|as)\b\s*([^\n,.;]{1,64})/gi,
-  /\b(?:create|generate|make|produce)\b\s+([^\n,.;]{1,64})/gi,
-];
-
 const ALL_OFFICE_KIND_MENTIONS_PATTERN =
   /\b(?:csv|doc|docx|excel|pdf|powerpoint|ppt|pptx|presentation|slides?|spreadsheet|word|workbook|xls|xlsx|deck)\b|(?:word\s*文档|电子表格|工作簿|数据表|表格文件|台账|演示文稿|演示稿|幻灯片)/gi;
 
@@ -83,14 +78,9 @@ function findOfficeKindsInText(value: string): OfficeAttachmentKind[] {
 
 function extractExplicitOfficeOutputKinds(instruction: string): OfficeAttachmentKind[] {
   const kinds = new Set<OfficeAttachmentKind>();
-  for (const pattern of OFFICE_OUTPUT_TARGET_PATTERNS) {
-    pattern.lastIndex = 0;
-    for (const match of instruction.matchAll(pattern)) {
-      // English creation requests commonly put the source after "from" or
-      // "using". It is input context, not another requested output.
-      const targetSegment = String(match[1] || "").split(/\b(?:from|using|based on)\b/i, 1)[0];
-      for (const kind of findOfficeKindsInText(targetSegment)) kinds.add(kind);
-    }
+  for (const extension of parseArtifactOutputExtensions(instruction)) {
+    const kind = OFFICE_ATTACHMENT_EXTENSION_KIND[extension.slice(1)];
+    if (kind) kinds.add(kind);
   }
   return Array.from(kinds);
 }

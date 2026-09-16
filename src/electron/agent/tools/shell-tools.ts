@@ -9,7 +9,7 @@ import {
   ShellSessionManager,
   isLikelyInteractiveCommand,
 } from "./shell-session-manager";
-import { createSandbox, createProcessOutputDecoder } from "../sandbox/sandbox-factory";
+import { createSandbox, createProcessOutputDecoder, detectAvailableSandbox } from "../sandbox/sandbox-factory";
 import { loadPolicies, type AdminPolicies } from "../../admin/policies";
 import { createLogger } from "../../utils/logger";
 import type { ToolLifecycleEmitter } from "../runtime/ToolInvocationContext";
@@ -646,6 +646,25 @@ function killProcessTree(pid: number, signal: NodeJS.Signals): void {
  * ShellTools implements shell command execution with user approval
  */
 export class ShellTools {
+  private missingExecutables = new Map<string, number>();
+
+  async environmentInfo(): Promise<Record<string, unknown>> {
+    const sandbox = await detectAvailableSandbox();
+    const dockerConfig = (this.workspace.permissions as Any).dockerConfig;
+    return {
+      hostPlatform: process.platform,
+      sandbox,
+      executionPlatform: sandbox === "docker" ? "linux" : process.platform,
+      workspace: sandbox === "docker" ? "/workspace" : this.workspace.path,
+      shell: sandbox === "docker" ? "/bin/sh" : sandbox === "windows-restricted" ? null : process.env.SHELL || "/bin/sh",
+      image: sandbox === "docker" ? dockerConfig?.image || "node:20-alpine" : undefined,
+      guidance: sandbox === "docker"
+        ? "Linux container, not the host OS. Default node:20-alpine has node and BusyBox, not Python/curl/PowerShell. Use http_request for HTTP, office_translation for Office, write_file for scripts. Probe optional executables once with command -v; never use Windows paths or commands. Each command has an isolated /tmp."
+        : sandbox === "windows-restricted"
+          ? "Workspace-restricted direct process runner, NOT OS-level isolation. Use installed executables with argument arrays or workspace Python/Node script files. PowerShell/CMD/Bash and inline -c/-e code are not supported. Use native file/HTTP/Office tools. Do not retry unsupported shell syntax or silently disable sandbox policy."
+          : "Use native file/HTTP/Office tools first; inspect optional dependencies before invoking them.",
+    };
+  }
   private static readonly verificationCommandTtlMs = 120_000;
   private static runningVerificationCommands = new Map<string, { startedAt: number }>();
   private static recentVerificationResults = new Map<string, { completedAt: number; result: RunCommandResult }>();
@@ -675,6 +694,7 @@ export class ShellTools {
    */
   setWorkspace(workspace: Workspace): void {
     this.workspace = workspace;
+    this.missingExecutables.clear();
   }
 
   private getVerificationCommandKey(command: string, cwd: string): string | null {
@@ -824,6 +844,12 @@ export class ShellTools {
         );
       }
 
+      const executable = command.trim().match(/^([\w.-]+)(?:\s|$)/)?.[1];
+      const missingKey = `${sandbox.type}:${executable}`;
+      if (executable && Date.now() - (this.missingExecutables.get(missingKey) || 0) < 60_000) {
+        return { success: false, stdout: "", stderr: `${executable} was already missing in this sandbox. Use shell_environment and an available native tool; retry after installing the dependency in the actual execution environment.`, exitCode: 127, error: "EXECUTABLE_UNAVAILABLE", terminationReason: "error" };
+      }
+      const commandStartedAt = Date.now();
       this.daemon.logEvent(this.taskId, "command_output", {
         command,
         cwd: options.cwd,
@@ -877,6 +903,11 @@ export class ShellTools {
 
       const stdout = this.sanitizeCommandOutput(result.stdout);
       let stderr = this.sanitizeCommandOutput(result.stderr);
+      // A successful command may have installed a previously missing tool.
+      if (result.exitCode === 0) this.missingExecutables.clear();
+      for (const match of `${result.stdout}\n${result.stderr}`.matchAll(/\/bin\/sh:\s*(?:\d+:\s*)?([\w.-]+): not found/g)) {
+        this.missingExecutables.set(`${sandbox.type}:${match[1]}`, Date.now());
+      }
       // MacOSSandbox/Docker can terminate before the child has a chance to
       // write stderr (for example, a sandbox denial or signal). Preserve the
       // runner's error in the tool payload so the model can diagnose and
@@ -930,13 +961,14 @@ export class ShellTools {
           : terminationReason === "user_stopped"
             ? "Command stopped by user"
           : !success
-            ? `Command exited with code ${result.exitCode}`
+            ? `Command exited with code ${result.exitCode}. sandbox=${sandbox.type}; ${sandbox.type === "docker" ? "Linux /bin/sh, not the Windows/macOS host. Use shell_environment; prefer native HTTP/Office tools over missing executables." : "Use shell_environment to inspect the supported execution mode."}`
             : undefined);
 
       this.daemon.logEvent(this.taskId, "command_output", {
         command,
         cwd: options.cwd,
         type: "end",
+        durationMs: Date.now() - commandStartedAt,
         exitCode: result.exitCode,
         success,
         terminationReason,

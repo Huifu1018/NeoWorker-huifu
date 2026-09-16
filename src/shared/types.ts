@@ -1387,6 +1387,7 @@ export type ToolType =
   | "search_files"
   | "run_skill"
   | "run_command"
+  | "shell_environment"
   | "compile_latex"
   | "generate_image"
   | "analyze_image"
@@ -1558,6 +1559,7 @@ export const TOOL_GROUPS = {
     "list_directory",
     "search_files",
     "system_info",
+    "shell_environment",
     "get_env",
     "get_app_paths",
     // Monty transform library (workspace-local scripts)
@@ -1745,6 +1747,7 @@ export const TOOL_RISK_LEVELS: Record<ToolType, ToolRiskLevel> = {
   list_directory: "read",
   search_files: "read",
   system_info: "read",
+  shell_environment: "read",
   get_current_location: "system",
   get_env: "read",
   get_app_paths: "read",

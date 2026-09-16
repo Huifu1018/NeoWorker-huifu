@@ -25,6 +25,7 @@ from template_fill_pptx.applier import apply_plan  # noqa: E402
 from template_fill_pptx.checker import check_plan  # noqa: E402
 from template_fill_pptx.ooxml import _write_json  # noqa: E402
 from template_fill_pptx.validator import validate_project  # noqa: E402
+from neoworker_template_images import embed_slide_images  # noqa: E402
 
 
 def _text(value: Any) -> str:
@@ -50,38 +51,25 @@ def _slide_kind(slide: dict[str, Any]) -> str:
     return "content_candidate"
 
 
-def _source_candidates(
-    library: dict[str, Any],
-    kind: str,
-    used: set[int],
-) -> list[dict[str, Any]]:
-    slides = [
-        slide
-        for slide in library.get("slides", [])
-        if int(slide.get("slide_index", 0)) not in used
-    ]
-    preferred = [slide for slide in slides if slide.get("page_type") == kind]
-    return preferred or slides
-
-
 def _choose_source_slide(
     library: dict[str, Any],
     slide: dict[str, Any],
     used: set[int],
 ) -> dict[str, Any]:
     kind = _slide_kind(slide)
-    candidates = _source_candidates(library, kind, used)
+    all_slides = library.get("slides", [])
+    candidates = [candidate for candidate in all_slides if candidate.get("page_type") == kind]
+    # A short template's last page may be classified as an ending even when
+    # it is the only body layout. Prefer reusable body frames over the cover.
+    if kind == "content_candidate" and not candidates:
+        candidates = [candidate for candidate in all_slides if candidate.get("page_type") != "cover_candidate" and any(
+            slot.get("role") == "body_candidate" for slot in _replacement_slots(candidate)
+        )]
     if not candidates:
-        # Reusing a source shell is preferable to silently falling back to a
-        # completely different renderer when a short template has few pages.
-        candidates = [
-            candidate
-            for candidate in library.get("slides", [])
-            if int(candidate.get("slide_index", 0)) > 0
-        ]
+        candidates = all_slides
     if not candidates:
         raise RuntimeError("The source PPTX contains no usable slides")
-    selected = candidates[0]
+    selected = next((candidate for candidate in candidates if int(candidate["slide_index"]) not in used), candidates[0])
     used.add(int(selected["slide_index"]))
     return selected
 
@@ -114,10 +102,7 @@ def _split_lines(lines: list[str], count: int) -> list[str]:
     return ["\n".join(chunk) for chunk in chunks]
 
 
-def _replacement_plan(
-    source_slide: dict[str, Any],
-    requested_slide: dict[str, Any],
-) -> list[dict[str, Any]]:
+def _replacement_slots(source_slide: dict[str, Any]) -> list[dict[str, Any]]:
     table_slot_ids = {
         str(table.get("table_id", "")).replace("_tbl", "_sh")
         for table in source_slide.get("tables", [])
@@ -129,14 +114,33 @@ def _replacement_plan(
         if chart.get("chart_id")
     }
     slots = [
-        slot
+        dict(slot)
         for slot in source_slide.get("slots", [])
         if _text(slot.get("text"))
         and slot.get("slot_id") not in table_slot_ids
         and slot.get("slot_id") not in chart_slot_ids
     ]
     if not slots:
-        return []
+        raise RuntimeError("The selected template slide has no editable text slots")
+    titles = [slot for slot in slots if slot.get("role") == "title_candidate"]
+    if titles:
+        primary = max(titles, key=lambda slot: (slot.get("text_metrics") or {}).get("font_size_px") or 0)
+        for slot in titles:
+            if slot is not primary:
+                slot["role"] = "subtitle_candidate" if source_slide.get("page_type") == "cover_candidate" else "label_candidate"
+    if source_slide.get("page_type") != "cover_candidate":
+        for slot in slots:
+            geometry = slot.get("geometry") or {}
+            if slot["role"] == "label_candidate" and geometry.get("height", 0) >= 160 and geometry.get("width", 0) >= 240:
+                slot["role"] = "body_candidate"
+    return slots
+
+
+def _replacement_plan(
+    source_slide: dict[str, Any],
+    requested_slide: dict[str, Any],
+) -> list[dict[str, Any]]:
+    slots = _replacement_slots(source_slide)
 
     title = _text(requested_slide.get("title"))
     subtitle = _text(requested_slide.get("subtitle"))
@@ -176,6 +180,18 @@ def _replacement_plan(
                 "text": replacement,
             }
         )
+    # Never silently lose body lines or a subtitle when the template has only
+    # one short label in addition to its title.
+    expected = [title, subtitle, quote, *body]
+    written = "\n".join(item["text"] for item in replacements)
+    missing = [value for value in expected if value and value not in written]
+    if missing:
+        target = next((item for item in replacements if item["slot_id"] in {
+            slot["slot_id"] for slot in slots if slot.get("role") != "title_candidate"
+        }), None)
+        if target is None:
+            raise RuntimeError("The selected template slide has no body slot for the requested content")
+        target["text"] = "\n".join([target["text"], *missing]).strip()
     return replacements
 
 
@@ -326,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
 
     export_path = exports_dir / "presentation.pptx"
     apply_plan(copied_source, plan, export_path)
+    embed_slide_images(export_path, requested_slides, plan, library)
     validation_report = validate_project(project)
     _write_json(validation_dir / "validate_report.json", validation_report)
     if int(validation_report["summary"].get("error", 0)) > 0:

@@ -90,6 +90,35 @@ describe("SkillTools artifact registration", () => {
     tempDir = "";
   });
 
+  it("fills a source template without generationMode and isolates later outputs", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-template-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { read: true, write: true } } as Workspace, daemon as never, "task-template");
+    const fill = vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockImplementation(async (_source: string, root: string, _slides: unknown[], filename: string) => ({ outputPath: path.join(root, "output", filename), size: 200 }));
+    vi.spyOn(tools as Any, "inspectOfficeArtifact").mockResolvedValue({ status: "passed", validation: { passed: true } });
+    const builder = vi.spyOn(tools as Any, "createOfficeArtifactBuilder");
+    const input = { filename: "analysis.pptx", sourcePath: "template(2).pptx", slides: [{ title: "Title", content: ["Body"], imagePath: "figure.png" }] };
+    const first = await tools.createPresentation(input);
+    const second = await tools.createPresentation(input);
+    expect(fill).toHaveBeenCalledTimes(2);
+    expect(fill.mock.calls[0][2]).toEqual(expect.arrayContaining([expect.objectContaining({ imagePath: path.join(tempDir, "figure.png") })]));
+    expect(first.path).toMatch(/analysis\.pptx$/);
+    expect(second.path).not.toBe(first.path);
+    expect(builder).not.toHaveBeenCalled();
+    expect(daemon.registerArtifact).toHaveBeenCalledTimes(2);
+  });
+
+  it("never substitutes a built-in deck after native filling fails", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-template-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { write: true } } as Workspace, daemon as never, "task-template");
+    vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockRejectedValue(new Error("invalid template"));
+    const builder = vi.spyOn(tools as Any, "createOfficeArtifactBuilder");
+    await expect(tools.createPresentation({ filename: "analysis.pptx", sourcePath: "template.pptx", slides: [{ title: "Title" }] })).rejects.toThrow("invalid template");
+    expect(builder).not.toHaveBeenCalled();
+    expect(daemon.registerArtifact).not.toHaveBeenCalled();
+  });
+
   it("preserves managed subdirectories and registers a generated presentation", async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-skill-tools-"));
     const visualEvidencePath = path.join(tempDir, "quality-evidence.png");

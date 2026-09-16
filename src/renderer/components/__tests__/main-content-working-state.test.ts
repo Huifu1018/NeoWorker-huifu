@@ -2321,7 +2321,7 @@ describe("isTaskActivelyWorking", () => {
     ).toBe(true);
   });
 
-  it("defaults transcript mode to live only while a non-chat task is actively working", () => {
+  it("uses the execution record switch consistently for active and completed tasks", () => {
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: true,
@@ -2329,20 +2329,12 @@ describe("isTaskActivelyWorking", () => {
         verboseSteps: false,
         isChatTask: false,
       }),
-    ).toBe("live");
+    ).toBe("delivery");
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: true,
         isReplayMode: false,
         verboseSteps: true,
-        isChatTask: false,
-      }),
-    ).toBe("live");
-    expect(
-      getDefaultTranscriptMode({
-        isTaskWorking: false,
-        isReplayMode: false,
-        verboseSteps: false,
         isChatTask: false,
       }),
     ).toBe("inspect");
@@ -2352,6 +2344,14 @@ describe("isTaskActivelyWorking", () => {
         isReplayMode: false,
         verboseSteps: false,
         isChatTask: false,
+      }),
+    ).toBe("delivery");
+    expect(
+      getDefaultTranscriptMode({
+        isTaskWorking: false,
+        isReplayMode: false,
+        verboseSteps: false,
+        isChatTask: false,
         taskStatus: "completed",
       }),
     ).toBe("delivery");
@@ -2363,7 +2363,7 @@ describe("isTaskActivelyWorking", () => {
         isChatTask: false,
         taskStatus: "completed",
       }),
-    ).toBe("delivery");
+    ).toBe("inspect");
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: false,
@@ -2381,24 +2381,24 @@ describe("isTaskActivelyWorking", () => {
         isChatTask: true,
         taskStatus: "completed",
       }),
-    ).toBe("inspect");
+    ).toBe("delivery");
   });
 
-  it("bypasses the filtered live projection only for explicit inspect mode", () => {
+  it("keeps all conversation turns available regardless of execution record visibility", () => {
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
         transcriptModeOverride: null,
         verboseSteps: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
         transcriptModeOverride: null,
         verboseSteps: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
@@ -3311,6 +3311,30 @@ describe("isTaskActivelyWorking", () => {
       "needs-action",
       "error-1",
     ]);
+  });
+
+  it.each([false, true])("keeps requests and terminal warnings with execution records off (projected=%s)", (projected) => {
+    const events = [
+      makeEvent("input", 100, "input_request_created", { question: "Choose a file" }),
+      makeEvent("approval", 200, "approval_requested", { autoApproved: false }),
+      makeEvent("automatic", 300, "approval_requested", { autoApproved: true }),
+      makeEvent("paused", 400, "task_paused", {}),
+      makeEvent("cancelled", 500, "task_cancelled", {}),
+      makeEvent("failed", 600, "task_failed" as TaskEvent["type"], {}),
+    ];
+    const rows = events.map((event, index) => ({
+      kind: "timeline",
+      key: event.id,
+      estimatedHeight: 100,
+      timelineIndex: index,
+      visiblePerfEventId: event.id,
+      revision: event.id,
+      item: { kind: "event", event: projected
+        ? { ...event, type: "timeline_step_updated", payload: { ...event.payload, legacyType: event.type } }
+        : event },
+    })) as Any[];
+    expect(selectVisibleTaskFeedRows(rows, "delivery").visibleFeedRows.map((row) => row.key))
+      .toEqual(["input", "approval", "paused", "cancelled", "failed"]);
   });
 
   it("keeps collapsed action block estimates compact for virtualized history views", () => {

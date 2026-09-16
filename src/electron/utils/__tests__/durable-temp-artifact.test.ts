@@ -22,6 +22,23 @@ afterEach(() => {
 });
 
 describe("durable temporary-workspace artifacts", () => {
+  it("accepts canonical paths through a workspace alias but rejects nested symlink escapes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "durable-alias-"));
+    cleanupPaths.push(root);
+    const workspace = path.join(root, "workspace");
+    const alias = path.join(root, "alias");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(workspace);
+    fs.mkdirSync(outside);
+    fs.symlinkSync(workspace, alias, "junction");
+    fs.writeFileSync(path.join(workspace, "report.docx"), "document");
+    const options = { userDataPath: path.join(root, "user-data"), workspacePath: alias };
+    const persisted = persistTempWorkspaceArtifactSync({ ...options, artifactPath: fs.realpathSync(path.join(workspace, "report.docx")) });
+    expect(fs.readFileSync(persisted!, "utf8")).toBe("document");
+    fs.writeFileSync(path.join(outside, "secret.docx"), "secret");
+    fs.symlinkSync(outside, path.join(workspace, "escape"), "junction");
+    expect(persistTempWorkspaceArtifactSync({ ...options, artifactPath: "escape/secret.docx" })).toBeNull();
+  });
   it("survives deletion of the source temporary workspace", () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), "durable-artifact-test-"),
@@ -242,6 +259,7 @@ describe("durable temporary-workspace artifacts", () => {
       "Path: .neoworker\\uploads\\456\\other.jpg",
     ].join("\n");
 
+    expect(extractWorkspaceUploadPaths("Attached files:\n- 模板(2)_test.pptx (.neoworker/uploads/123/模板(2)_test.pptx)")).toEqual([".neoworker/uploads/123/模板(2)_test.pptx"]);
     expect(extractWorkspaceUploadPaths(text)).toEqual([
       ".neoworker/uploads/123/截图.png",
       ".neoworker\\uploads\\456\\other.jpg",

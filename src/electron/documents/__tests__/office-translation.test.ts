@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 import ExcelJS from "exceljs";
@@ -22,6 +22,41 @@ async function translated(source: Buffer) {
 }
 
 describe("native Office translation", () => {
+  it("produces identical bytes when retrying a saved translation at a later time", async () => {
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units[0].text = "Translated title";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const first = await applyOfficeTranslation(source, manifest);
+      vi.setSystemTime(new Date("2026-09-16T12:00:00Z"));
+      expect(await applyOfficeTranslation(source, manifest)).toEqual(first);
+    } finally { vi.useRealTimers(); }
+  });
+  it("groups adjacent equally formatted Word fragments without changing runs or styles", async () => {
+    const source = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph({ children: [new TextRun("版"), new TextRun("本"), new TextRun({ text: "说明", bold: true })] })] }] }));
+    const manifest = await inspectOfficeTranslation(source);
+    expect(manifest.schema).toBe("neoworker.office-translation.v2");
+    expect(manifest.units.map((unit) => unit.text)).toEqual(["版本", "说明"]);
+    manifest.units[0].text = "Version";
+    manifest.units[1].text = "Description";
+    const output = await applyOfficeTranslation(source, manifest);
+    await expect(verifyOfficeTranslationFidelity(source, output)).resolves.toBeUndefined();
+    const xml = await (await JSZip.loadAsync(output)).file("word/document.xml")!.async("text");
+    expect(xml).toContain("Version");
+    expect(xml).toContain("Description");
+  });
+
+  it("keeps legacy manifests readable and names the invalid unit instead of silently deleting text", async () => {
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source, false);
+    expect(manifest.schema).toBe("neoworker.office-translation.v1");
+    manifest.units[0].text = " ";
+    await expect(applyOfficeTranslation(source, manifest)).rejects.toThrow(manifest.units[0].id);
+    manifest.units = manifest.units.map((unit) => ({ ...unit, text: "Translated" }));
+    await expect(applyOfficeTranslation(source, manifest)).resolves.toBeInstanceOf(Buffer);
+  });
   it("changes PPT text while preserving original masters, pictures, slide order and geometry", async () => {
     const source = await pptxFixture();
     const output = await translated(source);

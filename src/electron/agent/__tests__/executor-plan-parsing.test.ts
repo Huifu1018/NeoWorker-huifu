@@ -630,6 +630,24 @@ Attached files (relative to workspace):
     expect(JSON.stringify(followUpPlan)).not.toContain(".xlsx");
   });
 
+  it.each(["create_presentation", "generate_presentation"])("allows %s for colloquial creation and a later template revision", (toolName) => {
+    const executor = createPlanExecutor({ content: [] });
+    executor.task.prompt = "分析这个网站";
+    const request = "帮我基于PDF内容，写一个PPT，参考第二个PPT模版，要中文的PPT，要有文字、有图片等等，内容要详尽";
+    executor.daemon.getTaskEvents = () => [
+      { type: "user_message", payload: { message: request } },
+    ];
+    for (const message of [request, "请基于这个PPT模版去写"]) {
+      executor.activeFollowUpCompletionContract = null;
+      const contract = executor.buildFollowUpCompletionContract(message);
+      expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
+      executor.activeFollowUpCompletionContract = contract;
+      const result = executor.applyPreToolUsePolicyHook({ toolName, input: { filename: "result.pptx" }, stepMode: "mutation_required" });
+      expect(result.blockedResult).toBeUndefined();
+      expect(executor.applyPreToolUsePolicyHook({ toolName: "create_document", input: { filename: "wrong.docx", format: "docx" }, stepMode: "mutation_required" }).blockedResult?.error).toContain("requires .pptx");
+    }
+  });
+
   it("blocks a spreadsheet generator when the active follow-up requires PPTX", () => {
     const executor = createPlanExecutor({ content: [] });
     executor.activeFollowUpCompletionContract = {

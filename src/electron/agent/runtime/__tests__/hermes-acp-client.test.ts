@@ -25,6 +25,18 @@ function runtime(extra: Partial<ConstructorParameters<typeof HermesRuntimeAdapte
 }
 
 describe("Hermes ACP subprocess transport", () => {
+  it("keeps progressing prompts alive within the hard deadline", async () => {
+    const c = await client();
+    await c.initialize();
+    const session = await c.newSession(__dirname);
+    await expect(c.prompt(String(session.sessionId), "progress-until-done", { timeoutMs: 2000, idleTimeoutMs: 150 })).resolves.toMatchObject({ stopReason: "end_turn" });
+  });
+  it("does not let progress extend the hard deadline indefinitely", async () => {
+    const c = await client();
+    await c.initialize();
+    const session = await c.newSession(__dirname);
+    await expect(c.prompt(String(session.sessionId), "progress-never-done", { timeoutMs: 250, idleTimeoutMs: 150 })).rejects.toMatchObject({ code: "REQUEST_TIMEOUT" });
+  });
   it("drains stderr while performing a real stdio handshake", async () => {
     const c = await client();
     expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { parseArtifactOutputExtensions } from "../artifact-output-intent";
 import {
   buildCanonicalTaskIntentQuery,
   buildTaskOutputLanguageDirective,
@@ -9,6 +10,15 @@ import {
 } from "../task-intent-query";
 
 describe("task intent routing query", () => {
+  it.each([
+    ["帮我基于PDF内容，写一个PPT，参考第二个PPT模版", [".pptx"]],
+    ["不要生成PPT，只做Word报告", [".docx"]],
+    ["写一个Word报告，参考这个PPT模板", [".docx"]],
+    ["基于PDF，写一份Word并导出PDF", [".docx", ".pdf"]],
+  ] as Array<[string, string[]]>)("keeps routing and completion requirements consistent: %s", (prompt, expected) => {
+    const query = buildCanonicalTaskIntentQuery({ prompt });
+    expect(parseArtifactOutputExtensions(query).sort()).toEqual([...expected].sort());
+  });
   it("keeps attachment paths but removes repeated extracted bodies", () => {
     const prompt = `生成excel台账
 

@@ -23,6 +23,7 @@ import {
 import {
   humanizeTimelineMessage,
   condenseStepText,
+  normalizeInitialPromptText,
 } from "./task-event-presentation";
 import {
   shouldRenderOpenArtifactCardAtEvent,
@@ -1244,7 +1245,7 @@ export function renderEventTitle(
     case "follow_up_completed": {
       const followUpMessage =
         typeof event.payload?.followUpMessage === "string"
-          ? event.payload.followUpMessage.trim()
+          ? normalizeInitialPromptText(event.payload.followUpMessage)
           : "";
       return followUpMessage
         ? localizeProgressText(`Follow-up: ${followUpMessage}`)
@@ -2284,7 +2285,7 @@ export function renderEventDetails(
     case "follow_up_completed": {
       const followUpMessage =
         typeof event.payload?.followUpMessage === "string"
-          ? event.payload.followUpMessage.trim()
+          ? normalizeInitialPromptText(event.payload.followUpMessage)
           : "";
       return (
         <div className="event-details follow-up-completed-details">
