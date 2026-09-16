@@ -282,12 +282,13 @@ describe("SearchProviderFactory", () => {
         tavily: { apiKey: "tavily" },
         brave: { apiKey: "brave" },
         serpapi: { apiKey: "serpapi" },
+        serper: { apiKey: "serper" },
         google: { apiKey: "google", searchEngineId: "id" },
       } as Any;
 
       const order = (SearchProviderFactory as Any).getProviderExecutionOrder(settings);
 
-      expect(order).toEqual(["tavily", "google", "brave", "serpapi"]);
+      expect(order).toEqual(["tavily", "google", "brave", "serpapi", "serper"]);
     });
 
     it("should not change order when Brave is not configured", () => {
@@ -369,6 +370,22 @@ describe("SearchProviderFactory", () => {
       const order = (SearchProviderFactory as Any).getProviderExecutionOrder(settings);
 
       expect(order).toEqual(["duckduckgo"]);
+    });
+
+    it("includes Serper as a configurable paid provider", () => {
+      vi.spyOn(SearchProviderFactory, "loadSettings").mockReturnValue({
+        primaryProvider: null,
+        fallbackProvider: null,
+        serper: { apiKey: "serper" },
+      } as Any);
+
+      const providers = SearchProviderFactory.getAvailableProviders();
+
+      expect(providers.find((provider) => provider.type === "serper")).toMatchObject({
+        name: "Serper",
+        configured: true,
+        supportedTypes: ["web", "news", "images"],
+      });
     });
   });
 

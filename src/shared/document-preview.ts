@@ -9,6 +9,7 @@ export interface DocumentPreview {
   title?: string;
   text: string;
   htmlContent?: string;
+  docxDataBase64?: string;
   blocks?: DocumentEditorDocxBlock[];
   canEdit: boolean;
   conversionStatus?: DocumentPreviewConversionStatus;

@@ -1433,6 +1433,7 @@ async function routeLocalDeviceProxyRequest(method: string, params?: unknown): P
         limit,
         taskRepo,
         eventRepo,
+        workspaceRepo,
       }).map((event) => serializeTaskEventForTransport(event, sanitizeForBroadcast));
       return { events };
     }
@@ -1442,6 +1443,7 @@ async function routeLocalDeviceProxyRequest(method: string, params?: unknown): P
         request,
         taskRepo,
         eventRepo,
+        workspaceRepo,
         sanitizeValue: sanitizeForBroadcast,
       });
     }
@@ -3277,6 +3279,7 @@ function registerTaskAndWorkspaceMethods(
       limit,
       taskRepo,
       eventRepo,
+      workspaceRepo,
     }).map((event) => serializeTaskEventForTransport(event, sanitizeForBroadcast));
     return { events };
   });
@@ -3288,6 +3291,7 @@ function registerTaskAndWorkspaceMethods(
       request,
       taskRepo,
       eventRepo,
+      workspaceRepo,
       sanitizeValue: sanitizeForBroadcast,
     });
   });

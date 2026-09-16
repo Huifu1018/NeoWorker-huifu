@@ -326,6 +326,39 @@ image_generation_contract:
 
     expect(prompt).not.toContain("required_input_contract:");
   });
+
+  it("adds structured answer guidance for Chinese search result lookups", () => {
+    const route = makeRoute({
+      intent: "execution",
+      domain: "general",
+      signals: ["needs-tool-inspection"],
+    });
+    const strategy = TaskStrategyService.derive(route);
+    const prompt = TaskStrategyService.decoratePrompt(
+      "semiAnalysis最近有哪些关于DeepSeek的报道",
+      route,
+      strategy,
+      "",
+    );
+
+    expect(prompt).toContain("structured_search_answer_contract:");
+    expect(prompt).toContain("compact Markdown table");
+    expect(prompt).toContain("Date | Title/source | Why it matters");
+    expect(prompt).toContain("Avoid long numbered sections");
+  });
+
+  it("does not force table formatting for ordinary implementation tasks", () => {
+    const route = makeRoute({ intent: "execution", domain: "code" });
+    const strategy = TaskStrategyService.derive(route);
+    const prompt = TaskStrategyService.decoratePrompt(
+      "Fix the HTML preview iframe bug.",
+      route,
+      strategy,
+      "",
+    );
+
+    expect(prompt).not.toContain("structured_search_answer_contract:");
+  });
 });
 
 describe("TaskStrategyService applyToAgentConfig", () => {

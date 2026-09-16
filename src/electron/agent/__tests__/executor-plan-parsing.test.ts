@@ -630,6 +630,47 @@ Attached files (relative to workspace):
     expect(JSON.stringify(followUpPlan)).not.toContain(".xlsx");
   });
 
+  it("blocks a spreadsheet generator when the active follow-up requires PPTX", () => {
+    const executor = createPlanExecutor({ content: [] });
+    executor.activeFollowUpCompletionContract = {
+      requiredArtifactExtensions: [".pptx"],
+      requiresArtifactEvidence: true,
+    };
+
+    const blocked = executor.applyPreToolUsePolicyHook({
+      toolName: "generate_spreadsheet",
+      input: { filename: "wrong.xlsx", sheets: [] },
+      stepMode: "mutation_required",
+    });
+
+    expect(blocked.blockedResult?.error).toContain(
+      "Office output format mismatch",
+    );
+    expect(blocked.blockedResult?.error).toContain("requires .pptx");
+    expect(blocked.blockedResult?.error).toContain("create_presentation");
+  });
+
+  it.each(["转型", "转成", "转为"])("allows Word generation from a PPT source using %s", (verb) => {
+    const executor = createPlanExecutor({ content: [] });
+    executor.task.rawPrompt = `基于PPT内容，${verb}word，进行详细分析`;
+    executor.task.prompt = executor.task.rawPrompt;
+    const contract = executor.buildCompletionContract();
+    expect(contract.requiredArtifactExtensions).toEqual([".docx"]);
+    expect(executor.applyPreToolUsePolicyHook({
+      toolName: "create_document", input: { filename: "analysis.docx", format: "docx", title: "Analysis", sections: [] },
+      stepMode: "mutation_required",
+    }).blockedResult).toBeUndefined();
+    expect(executor.applyPreToolUsePolicyHook({
+      toolName: "create_presentation", input: { filename: "wrong.pptx" }, stepMode: "mutation_required",
+    }).blockedResult?.error).toContain("DOCX");
+    const steps = executor.filterPlanStepsByCanonicalOutputIntent([
+      { id: "read", description: "读取 input.pptx", status: "pending" },
+      { id: "write", description: "基于 PPT 生成 Word 报告", status: "pending" },
+      { id: "wrong", description: "生成新的 PPT 文件", status: "pending" },
+    ]);
+    expect(steps.map((step: Any) => step.id)).toEqual(["read", "write"]);
+  });
+
   it("rejects a recovery revision that adds PowerPoint to an Excel task", () => {
     const executor = createPlanExecutor({ content: [] });
     executor.task.title = "生成excel台账";

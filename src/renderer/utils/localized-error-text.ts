@@ -25,6 +25,10 @@ const ZH_EXACT_ERROR_KEYS: Record<string, [key: string, fallback: string]> = {
     "error.taskEncountered",
     "Task encountered an error",
   ],
+  "tool execution failed": [
+    "error.tool.executionFailed",
+    "Tool execution failed",
+  ],
   "timeline error": ["error.timeline", "Timeline error"],
   "verification evidence missing": [
     "error.verificationEvidenceMissing",
@@ -87,20 +91,67 @@ const ZH_EXACT_ERROR_KEYS: Record<string, [key: string, fallback: string]> = {
     "error.project.noArchiveTarget",
     "No project is available to archive.",
   ],
+  "at least one worksheet is required": [
+    "error.office.worksheetRequired",
+    "At least one worksheet is required.",
+  ],
+  "at least one slide is required": [
+    "error.office.slideRequired",
+    "At least one slide is required.",
+  ],
+  "multi-format office requests require one shared contentsnapshot before generating docx pptx or xlsx":
+    [
+      "error.office.sharedContentSnapshotRequired",
+      "Multi-format Office requests require one shared contentSnapshot before generating DOCX, PPTX, or XLSX.",
+    ],
+  "preferred execution service unavailable automatic fallback is unavailable": [
+    "error.executionService.preferredUnavailableNoFallback",
+    "Preferred execution service unavailable; automatic fallback is unavailable.",
+  ],
+  "preferred execution service unavailable continuing with available execution":
+    [
+      "error.executionService.preferredUnavailableFallback",
+      "Preferred execution service unavailable; continuing with available execution.",
+    ],
+  "preferred execution service unavailable for follow-up continuing with available execution":
+    [
+      "error.executionService.preferredUnavailableFallback",
+      "Preferred execution service unavailable; continuing with available execution.",
+    ],
+  "task completed without a final response": [
+    "error.taskCompletedWithoutFinalResponse",
+    "Task completed without a final response.",
+  ],
+  "task execution service unavailable automatic fallback is disabled for this task":
+    [
+      "error.executionService.unavailableNoFallback",
+      "Task execution service unavailable. Automatic fallback is disabled for this task.",
+    ],
+  "task execution service unavailable for follow-up automatic fallback is disabled for this task":
+    [
+      "error.executionService.unavailableNoFallback",
+      "Task execution service unavailable. Automatic fallback is disabled for this task.",
+    ],
+  "the task execution service encountered an error this turn has ended and your context was preserved please try again":
+    [
+      "error.executionService.turnFailed",
+      "The task execution service encountered an error. This turn has ended and your context was preserved. Please try again.",
+    ],
 };
 
 function canonicalizeErrorText(text: string): string {
   return text
     .trim()
-    .replace(/[.。]+/g, "")
+    .replace(/[.。,:;；，!?！？]+/g, " ")
     .replace(/\s+/g, " ")
-    .toLowerCase();
+    .toLowerCase()
+    .trim();
 }
 
 /**
- * Localize stable, app-authored error messages while leaving provider and tool
- * diagnostics untouched. Keeping this at the presentation boundary also means
- * persisted task errors update immediately when the user changes UI language.
+ * Localize stable, app-authored errors and common tool validation failures.
+ * Unknown provider diagnostics remain untouched, while persisted task errors
+ * update immediately when the user changes UI language.
  */
 export function localizeErrorText(text: string): string {
   if (getCurrentLanguage() !== "zh-CN") return text;
@@ -108,10 +159,23 @@ export function localizeErrorText(text: string): string {
   const trimmed = String(text || "").trim();
   if (!trimmed) return text;
 
+  if (/^\[object Object\]$/i.test(trimmed)) {
+    return translate("error.tool.executionFailed", "Tool execution failed.");
+  }
+
   const exact = ZH_EXACT_ERROR_KEYS[canonicalizeErrorText(trimmed)];
   if (exact) return translate(exact[0], exact[1]);
 
-  let match = trimmed.match(
+  let match = trimmed.match(/^Command exited with code\s+(\d+)\.?$/i);
+  if (match) {
+    return translate(
+      "error.tool.commandExitCode",
+      "Command exited with code {code}.",
+      { code: match[1] },
+    );
+  }
+
+  match = trimmed.match(
     /^Iteration limit exceeded:\s*([\d,]+)\/([\d,]+) iterations?\.\s*Task stopped to prevent runaway execution\.?$/i,
   );
   if (match) {
@@ -181,6 +245,59 @@ export function localizeErrorText(text: string): string {
   }
   if (/^Rate limit exceeded\. Wait a minute and try again\b/i.test(trimmed)) {
     return translate("error.rateLimit.tryAgain", trimmed);
+  }
+
+  if (/^net::ERR_CONNECTION_CLOSED$/i.test(trimmed)) {
+    return translate("error.web.connectionClosed", trimmed);
+  }
+
+  match = trimmed.match(/^HTTP\s+(\d{3})(?::.*)?$/i);
+  if (match) {
+    return translate("error.web.httpStatus", trimmed, {
+      status: match[1],
+    });
+  }
+
+  match = trimmed.match(
+    /^Tool\s+["']?([^"']+?)["']?\s+blocked by policy:\s*Workspace shell capability is disabled\.?$/i,
+  );
+  if (match) {
+    return translate("error.tool.workspaceShellDisabled", trimmed, {
+      tool: match[1].trim(),
+    });
+  }
+
+  match = trimmed.match(
+    /^Tool\s+["']?([^"']+?)["']?\s+timed out after\s*([\d.]+)\s*(ms|s|seconds?|minutes?)\.?$/i,
+  );
+  if (match) {
+    const unit = match[3].toLowerCase();
+    const duration =
+      unit === "ms"
+        ? `${match[2]} 毫秒`
+        : unit.startsWith("minute")
+          ? `${match[2]} 分钟`
+          : `${match[2]} 秒`;
+    return translate("error.tool.timedOut", trimmed, {
+      tool: match[1].trim(),
+      duration,
+    });
+  }
+
+  match = trimmed.match(/^Unsupported presentation field at\s+(.+)\.?$/i);
+  if (match) {
+    return translate("error.office.unsupportedPresentationField", trimmed, {
+      field: match[1].replace(/\.$/, ""),
+    });
+  }
+
+  match = trimmed.match(
+    /^Completion blocked:\s*requested output was not generated\s*\(([^)]+)\)\.?$/i,
+  );
+  if (match) {
+    return translate("error.output.requestedFormatMissing", trimmed, {
+      formats: match[1],
+    });
   }
 
   match = trimmed.match(/^WeChat attachment exceeds the (\d+)MB limit\.?$/i);

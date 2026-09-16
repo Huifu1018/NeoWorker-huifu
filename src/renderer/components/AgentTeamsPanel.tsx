@@ -10,6 +10,7 @@ import type {
   Task,
 } from "../../shared/types";
 import { translate, useLanguage } from "../i18n";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 import "./team-workspace.css";
 
 type AgentRole = AgentRoleData;
@@ -1723,7 +1724,7 @@ export function AgentTeamsPanel({
                               </div>
                               {it.resultSummary && (
                                 <div className="mc-row-summary">
-                                  {it.resultSummary}
+                                  {sanitizeHermesText(it.resultSummary)}
                                 </div>
                               )}
                             </div>

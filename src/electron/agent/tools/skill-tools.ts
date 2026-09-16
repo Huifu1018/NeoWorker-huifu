@@ -1163,6 +1163,10 @@ export class SkillTools {
       ? input.filename
       : `${input.filename}.pptx`;
 
+    if (input.sourcePath && input.generationMode !== "ppt-master") {
+      throw new Error("普通新建 PPT 工具不能保留 sourcePath 的原模板。翻译现有文件请使用 office_translation，不能忽略原文件并新建模板。");
+    }
+
     if (!Array.isArray(input.slides) || input.slides.length === 0) {
       throw new Error("At least one slide is required.");
     }

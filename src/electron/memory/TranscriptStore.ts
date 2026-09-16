@@ -187,6 +187,28 @@ export class TranscriptStore {
   }
 
   static async ensureLayout(workspacePath: string): Promise<void> {
+    let workspaceStats;
+    try {
+      workspaceStats = await fs.stat(workspacePath);
+    } catch {
+      throw new Error(
+        `Cannot persist transcript because the workspace folder does not exist: ${workspacePath}`,
+      );
+    }
+    if (!workspaceStats.isDirectory()) {
+      throw new Error(
+        `Cannot persist transcript because the workspace path is not a folder: ${workspacePath}`,
+      );
+    }
+    try {
+      await fs.mkdir(path.join(workspacePath, ".neoworker"));
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String(error.code)
+          : "";
+      if (code !== "EEXIST") throw error;
+    }
     await Promise.all([
       fs.mkdir(spansDir(workspacePath), { recursive: true }),
       fs.mkdir(checkpointsDir(workspacePath), { recursive: true }),

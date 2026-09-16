@@ -36,6 +36,10 @@ import {
 import { WebArtifactCard } from "./WebArtifactCard";
 import { DocumentZoomControls } from "./DocumentZoomControls";
 import { isBootstrapHtmlPlaceholder } from "./InlineHtmlPreview";
+import {
+  HTML_PREVIEW_SRCDOC_SANDBOX,
+  HTML_PREVIEW_URL_SANDBOX,
+} from "./htmlPreviewSandbox";
 import "./artifact-viewers.css";
 
 type WebArtifactViewerMode = "sidebar" | "fullscreen";
@@ -154,6 +158,8 @@ export function WebArtifactViewer({
   const frameWheelCleanupRef = useRef<(() => void) | null>(null);
   const fileName = fileData?.fileName || getFileName(filePath);
   const preview = fileData?.webPreview;
+  const previewUrl =
+    preview?.canPreview && preview.previewUrl ? preview.previewUrl : undefined;
   const htmlContent = preview?.htmlContent || fileData?.htmlContent || "";
   const visibleHtmlContent = useMemo(
     () => repairHiddenHtmlContent(htmlContent).content,
@@ -476,9 +482,11 @@ export function WebArtifactViewer({
         <iframe
           className="web-artifact-frame"
           title={fileName}
-          src={preview?.previewUrl}
-          srcDoc={preview?.previewUrl ? undefined : visibleHtmlContent}
-          sandbox="allow-scripts allow-forms allow-pointer-lock allow-same-origin"
+          src={previewUrl}
+          srcDoc={previewUrl ? undefined : visibleHtmlContent}
+          sandbox={
+            previewUrl ? HTML_PREVIEW_URL_SANDBOX : HTML_PREVIEW_SRCDOC_SANDBOX
+          }
           onLoad={handleFrameLoad}
         />
       </div>

@@ -41,6 +41,13 @@ describe("document preview extraction", () => {
     expect(preview.htmlContent).toContain("Sample Document");
     expect(preview.canEdit).toBe(true);
     expect(preview.blocks?.some((block) => block.type === "table")).toBe(true);
+    expect(preview.docxDataBase64).toBeUndefined();
+
+    const original = await fs.readFile(outPath);
+    const layoutPreview = await buildDocumentPreviewFromFile(outPath, { includeDocxBase64: true });
+    expect(Buffer.from(layoutPreview.docxDataBase64!, "base64")).toEqual(original);
+    expect(await fs.readFile(outPath)).toEqual(original);
+    expect(layoutPreview.blocks).toEqual(preview.blocks);
   });
 
   it("extracts readable text from RTF", async () => {

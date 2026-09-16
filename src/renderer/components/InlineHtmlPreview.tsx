@@ -12,6 +12,10 @@ import {
   repairHiddenHtmlContent,
 } from "../../shared/html-content-visibility";
 import { translate, useLanguage } from "../i18n";
+import {
+  HTML_PREVIEW_SRCDOC_SANDBOX,
+  HTML_PREVIEW_URL_SANDBOX,
+} from "./htmlPreviewSandbox";
 
 type InlineHtmlPreviewVariant = "default" | "frame";
 
@@ -248,7 +252,7 @@ export function InlineHtmlSourcePreview({
           <iframe
             className="inline-html-frame"
             srcDoc={previewHtmlContent}
-            sandbox="allow-scripts allow-forms"
+            sandbox={HTML_PREVIEW_SRCDOC_SANDBOX}
             title={displayTitle}
           />
         </div>
@@ -296,6 +300,10 @@ export function InlineHtmlPreview({
     result?.htmlContent || "",
   );
   const htmlProblem = getHtmlContentPreviewProblem(result?.htmlContent || "");
+  const previewUrl =
+    result?.webPreview?.canPreview && result.webPreview.previewUrl
+      ? result.webPreview.previewUrl
+      : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -431,8 +439,13 @@ export function InlineHtmlPreview({
           <div className="inline-html-frame-wrap">
             <iframe
               className="inline-html-frame"
-              srcDoc={previewHtmlContent}
-              sandbox="allow-scripts allow-forms"
+              src={previewUrl}
+              srcDoc={previewUrl ? undefined : previewHtmlContent}
+              sandbox={
+                previewUrl
+                  ? HTML_PREVIEW_URL_SANDBOX
+                  : HTML_PREVIEW_SRCDOC_SANDBOX
+              }
               title={displayTitle}
             />
           </div>

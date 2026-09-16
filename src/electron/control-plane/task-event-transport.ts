@@ -1,3 +1,4 @@
+import { recoverVerifiedDeliveryEvents } from "../agent/verified-delivery-artifacts";
 import type {
   Task,
   TaskEvent,
@@ -10,6 +11,10 @@ import type {
 type TaskRepoLike = {
   findById(taskId: string): Task | null | undefined;
   findByParent(taskId: string): Task[];
+};
+
+type WorkspaceRepoLike = {
+  findById(workspaceId: string): { path: string } | null | undefined;
 };
 
 type TaskEventRepoLike = {
@@ -91,6 +96,7 @@ export function buildTaskEventHistoryForTransport(params: {
   limit: number;
   taskRepo: TaskRepoLike;
   eventRepo: TaskEventRepoLike;
+  workspaceRepo?: WorkspaceRepoLike;
 }): TaskEvent[] {
   const { taskId, limit, taskRepo, eventRepo } = params;
   const safeLimit =
@@ -111,7 +117,11 @@ export function buildTaskEventHistoryForTransport(params: {
     }
   }
 
-  return events.length > safeLimit ? events.slice(-safeLimit) : events;
+  return recoverVerifiedDeliveryEvents(
+    events.length > safeLimit ? events.slice(-safeLimit) : events,
+    taskId,
+    task ? params.workspaceRepo?.findById(task.workspaceId)?.path : undefined,
+  );
 }
 
 export function serializeTaskEventForTransport(
@@ -129,6 +139,7 @@ export function buildTaskTimelinePageForTransport(params: {
   taskRepo: TaskRepoLike;
   eventRepo: TaskTimelineEventRepoLike;
   sanitizeValue: (value: unknown) => unknown;
+  workspaceRepo?: WorkspaceRepoLike;
 }): TaskTimelinePageResult {
   const { request, taskRepo, eventRepo, sanitizeValue } = params;
   const task = taskRepo.findById(request.taskId);
@@ -147,7 +158,11 @@ export function buildTaskTimelinePageForTransport(params: {
   });
   return {
     ...page,
-    events: page.events.map((event) => serializeTaskEventForTransport(event, sanitizeValue)),
+    events: recoverVerifiedDeliveryEvents(
+      page.events,
+      request.taskId,
+      task ? params.workspaceRepo?.findById(task.workspaceId)?.path : undefined,
+    ).map((event) => serializeTaskEventForTransport(event, sanitizeValue)),
   };
 }
 

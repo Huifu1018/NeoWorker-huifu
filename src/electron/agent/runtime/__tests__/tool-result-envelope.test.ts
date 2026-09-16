@@ -130,6 +130,24 @@ describe("buildToolResultEnvelope", () => {
     expect(envelope.modelPayload.length).toBeLessThanOrEqual(200_000);
   });
 
+  it("serializes structured errors without leaking object coercion text", () => {
+    const envelope = buildToolResultEnvelope({
+      toolUseId: "structured-error",
+      toolName: "monty_run",
+      status: "error",
+      error: {
+        kind: "runtime",
+        message: "Variable x is not defined",
+        display: "Traceback...",
+      },
+    });
+
+    expect(JSON.parse(envelope.modelPayload)).toEqual({
+      error: "Variable x is not defined",
+    });
+    expect(envelope.modelPayload).not.toContain("[object Object]");
+  });
+
   it('bounds non-shell structured previews after JSON escaping', () => {
     const envelope = buildToolResultEnvelope({
       toolUseId:'json',toolName:'read_file',status:'success',

@@ -17,8 +17,16 @@ interface CityAlias {
 // Keep this table deliberately small and explicit. It is used only to build
 // search queries, never to invent a flight, time, seat or price.
 const CITY_ALIASES: CityAlias[] = [
-  { city: "北京", code: "PEK", aliases: ["北京", "beijing", "pek", "首都机场"] },
-  { city: "上海", code: "SHA", aliases: ["上海", "shanghai", "sha", "虹桥", "浦东"] },
+  {
+    city: "北京",
+    code: "PEK",
+    aliases: ["北京", "beijing", "pek", "首都机场"],
+  },
+  {
+    city: "上海",
+    code: "SHA",
+    aliases: ["上海", "shanghai", "sha", "虹桥", "浦东"],
+  },
   { city: "广州", code: "CAN", aliases: ["广州", "guangzhou", "can"] },
   { city: "深圳", code: "SZX", aliases: ["深圳", "shenzhen", "szx"] },
   { city: "成都", code: "CTU", aliases: ["成都", "chengdu", "ctu", "天府"] },
@@ -73,9 +81,17 @@ const CITY_ALIASES: CityAlias[] = [
   { city: "绵阳", code: "MIG", aliases: ["绵阳", "mianyang", "mig"] },
   { city: "黄山", code: "TXN", aliases: ["黄山", "huangshan", "txn"] },
   { city: "赣州", code: "KOW", aliases: ["赣州", "ganzhou", "kow"] },
-  { city: "东京", code: "TYO", aliases: ["东京", "tokyo", "tyo", "成田", "羽田"] },
+  {
+    city: "东京",
+    code: "TYO",
+    aliases: ["东京", "tokyo", "tyo", "成田", "羽田"],
+  },
   { city: "大阪", code: "OSA", aliases: ["大阪", "osaka", "osa", "关西"] },
-  { city: "香港", code: "HKG", aliases: ["香港", "hong kong", "hongkong", "hkg"] },
+  {
+    city: "香港",
+    code: "HKG",
+    aliases: ["香港", "hong kong", "hongkong", "hkg"],
+  },
   { city: "台北", code: "TPE", aliases: ["台北", "taipei", "tpe", "桃园"] },
   { city: "新加坡", code: "SIN", aliases: ["新加坡", "singapore", "sin"] },
   { city: "首尔", code: "SEL", aliases: ["首尔", "seoul", "sel", "仁川"] },
@@ -103,7 +119,11 @@ function findCityMentions(query: string): Array<{ city: CityAlias; index: number
     if (!match || match.index < 0) continue;
     const aliasOffset = match[0].toLowerCase().indexOf(alias.toLowerCase());
     const index = match.index + Math.max(0, aliasOffset);
-    if (mentions.some((item) => item.city.code === city.code && Math.abs(item.index - index) < alias.length)) {
+    if (
+      mentions.some(
+        (item) => item.city.code === city.code && Math.abs(item.index - index) < alias.length,
+      )
+    ) {
       continue;
     }
     mentions.push({ city, index });
@@ -127,9 +147,10 @@ export function extractFlightRoute(query: string): FlightRoute | null {
     return null;
   }
 
-  const codeRoute = query.match(
-    /(?:^|[^A-Za-z])([A-Za-z]{3})\s*(?:-|→|>|至|到|to)\s*([A-Za-z]{3})(?:$|[^A-Za-z])/i,
-  ) || query.match(/(?:^|[^A-Za-z])([A-Za-z]{3})\s+([A-Za-z]{3})(?:$|[^A-Za-z])/i);
+  const codeRoute =
+    query.match(
+      /(?:^|[^A-Za-z])([A-Za-z]{3})\s*(?:-|→|>|至|到|to)\s*([A-Za-z]{3})(?:$|[^A-Za-z])/i,
+    ) || query.match(/(?:^|[^A-Za-z])([A-Za-z]{3})\s+([A-Za-z]{3})(?:$|[^A-Za-z])/i);
   if (codeRoute) {
     const from = CITY_ALIASES.find((city) => city.code === codeRoute[1].toUpperCase());
     const to = CITY_ALIASES.find((city) => city.code === codeRoute[2].toUpperCase());
@@ -162,13 +183,53 @@ export function buildFlightQueryVariants(query: string): string[] {
   if (!route) return [query.trim()];
 
   const date = route.date ? ` ${route.date}` : "";
+  const fromCodes = getAirportQueryCodes(route.fromCode).join(" OR ");
+  const toCodes = getAirportQueryCodes(route.toCode).join(" OR ");
   const variants = [
     query.trim(),
-    `${route.fromCode} ${route.toCode} flight schedule${date}`,
+    `${fromCodes} to ${toCodes} flight schedule${date}`,
     `${route.fromCity} ${route.toCity} 航班时刻表${date}`,
-    `site:trip.com ${route.fromCode} ${route.toCode} flights${date}`,
+    `${route.fromCode} ${route.toCode} flight schedule${date} official airline`,
   ];
   return Array.from(new Set(variants.filter(Boolean))).slice(0, 4);
+}
+
+function getAirportQueryCodes(code: string): string[] {
+  const aliases: Record<string, string[]> = {
+    SHA: ["SHA", "PVG"],
+    PEK: ["PEK", "PKX"],
+    CTU: ["CTU", "TFU"],
+    TYO: ["HND", "NRT"],
+    OSA: ["KIX", "ITM"],
+    NYC: ["JFK", "LGA", "EWR"],
+    LON: ["LHR", "LGW", "LCY", "LTN", "STN"],
+    PAR: ["CDG", "ORY"],
+    SEL: ["ICN", "GMP"],
+  };
+  return aliases[code.toUpperCase()] || [code.toUpperCase()];
+}
+
+const FLIGHT_NUMBER_PATTERN = /\b(?:[A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{3,4}\b/gi;
+const FLIGHT_TIME_PATTERN = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g;
+
+export function getFlightScheduleEvidenceScore(result: SearchResult): number {
+  const text = `${result.title} ${result.snippet}`;
+  const flightNumbers = new Set(
+    Array.from(text.matchAll(FLIGHT_NUMBER_PATTERN), (match) =>
+      match[0].replace(/\s+/g, "").toUpperCase(),
+    ),
+  );
+  const times = new Set(Array.from(text.matchAll(FLIGHT_TIME_PATTERN), (match) => match[0]));
+  const hasSchedulePair = flightNumbers.size > 0 && times.size > 0;
+  return flightNumbers.size * 2 + times.size + (hasSchedulePair ? 5 : 0);
+}
+
+export function hasFlightScheduleDetails(result: SearchResult): boolean {
+  const text = `${result.title} ${result.snippet}`;
+  return (
+    /\b(?:[A-Z]{2}|[A-Z]\d|\d[A-Z])\s?\d{3,4}\b/i.test(text) &&
+    /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/.test(text)
+  );
 }
 
 function containsOrderedSignalPair(
@@ -188,29 +249,67 @@ function containsOrderedSignalPair(
   return false;
 }
 
+function getAirportCodeSignals(code: string): string[] {
+  const aliases: Record<string, string[]> = {
+    SHA: ["SHA", "PVG"],
+    PEK: ["PEK", "PKX", "BJS"],
+    CTU: ["CTU", "TFU"],
+    TYO: ["TYO", "HND", "NRT"],
+    OSA: ["OSA", "KIX", "ITM"],
+    NYC: ["NYC", "JFK", "LGA", "EWR"],
+    LON: ["LON", "LHR", "LGW", "LCY", "LTN", "STN"],
+    PAR: ["PAR", "CDG", "ORY"],
+    SEL: ["SEL", "ICN", "GMP"],
+  };
+  return aliases[code.toUpperCase()] || [code.toUpperCase()];
+}
+
+function containsOrderedRoute(value: string, route: FlightRoute): boolean {
+  // Do not mix a city name from one side with an airport code from the other.
+  // Reverse-route snippets commonly contain both forms and otherwise produce
+  // false positives, e.g. "北京到上海（PEK-PVG）" for 上海 -> 北京.
+  return (
+    containsOrderedSignalPair(value, [route.fromCity], [route.toCity]) ||
+    containsOrderedSignalPair(
+      value,
+      getAirportCodeSignals(route.fromCode),
+      getAirportCodeSignals(route.toCode),
+    )
+  );
+}
+
+function containsRouteSignals(value: string, route: FlightRoute): boolean {
+  const lowered = value.toLowerCase();
+  const containsBoth = (fromSignals: string[], toSignals: string[]) =>
+    fromSignals.some((signal) => lowered.includes(signal.toLowerCase())) &&
+    toSignals.some((signal) => lowered.includes(signal.toLowerCase()));
+
+  return (
+    containsBoth([route.fromCity], [route.toCity]) ||
+    containsBoth(getAirportCodeSignals(route.fromCode), getAirportCodeSignals(route.toCode))
+  );
+}
+
+export function matchesFlightRouteDirection(result: SearchResult, route: FlightRoute): boolean {
+  return [result.title, result.url, result.snippet].some((field) =>
+    containsOrderedRoute(field, route),
+  );
+}
+
 export function filterFlightResults(
   results: SearchResult[],
   route: FlightRoute,
 ): { results: SearchResult[]; matchedCount: number } {
-  const fromSignals = [route.fromCode, route.fromCity];
-  const toSignals = [route.toCode, route.toCity];
-  const filtered = results.filter((result) => {
-    return [result.title, result.url, result.snippet].some((field) =>
-      containsOrderedSignalPair(field, fromSignals, toSignals),
-    );
-  });
+  const filtered = results.filter((result) => matchesFlightRouteDirection(result, route));
 
   const unorderedRouteMatches = results.filter((result) => {
     const haystack = `${result.title} ${result.url} ${result.snippet}`;
-    const lowered = haystack.toLowerCase();
-    return fromSignals.some((signal) => lowered.includes(signal.toLowerCase())) &&
-      toSignals.some((signal) => lowered.includes(signal.toLowerCase()));
+    return containsRouteSignals(haystack, route);
   });
 
-  // A provider may omit city/IATA tokens from otherwise relevant snippets.
-  // Keep the original response in that case rather than turning a valid
-  // search into an empty answer; the caller still exposes the policy metadata
-  // so the model knows that the evidence was not route-confirmed.
+  // Drop results that mention both endpoints only in the wrong direction.
+  // When a provider omits route tokens entirely, keep its response and expose
+  // matchedCount=0 so callers can treat it as unconfirmed discovery evidence.
   return {
     results: filtered.length > 0 ? filtered : unorderedRouteMatches.length > 0 ? [] : results,
     matchedCount: filtered.length,

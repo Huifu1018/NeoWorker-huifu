@@ -97,6 +97,55 @@ describe("ToolCallDeduplicator read-history invalidation", () => {
     expect(duplicate.reason || "").toContain("semantically similar");
   });
 
+  it("blocks an unchanged invalid Office payload even when the model switches aliases", () => {
+    const dedupe = new ToolCallDeduplicator(2, 60_000, 4, 20);
+    const input = {
+      filename: "analysis.pptx",
+      slides: ['[{"title":"Overview"}]'],
+    };
+
+    dedupe.recordCall(
+      "create_presentation",
+      input,
+      JSON.stringify({
+        success: false,
+        error: "Unsupported presentation field at slides[0].0",
+      }),
+    );
+
+    const duplicate = dedupe.checkDuplicate("generate_presentation", input);
+    expect(duplicate.isDuplicate).toBe(true);
+    expect(duplicate.reason || "").toContain("Correct the input structure");
+  });
+
+  it("blocks empty-workbook retries across aliases and filename variants", () => {
+    const dedupe = new ToolCallDeduplicator(2, 60_000, 4, 20);
+
+    dedupe.recordCall(
+      "generate_spreadsheet",
+      { filename: "analysis.xlsx", sheets: [] },
+      JSON.stringify({
+        success: false,
+        error: "At least one worksheet is required.",
+      }),
+    );
+
+    const duplicate = dedupe.checkDuplicate("create_spreadsheet", {
+      filename: "analysis_v2.xlsx",
+      sheets: [],
+    });
+    expect(duplicate.isDuplicate).toBe(true);
+    expect(duplicate.reason || "").toContain(
+      "At least one worksheet is required",
+    );
+
+    const corrected = dedupe.checkDuplicate("create_spreadsheet", {
+      filename: "analysis_v2.xlsx",
+      sheets: [{ name: "Summary", rows: [["Ready"]] }],
+    });
+    expect(corrected.isDuplicate).toBe(false);
+  });
+
   it("allows higher per-minute throughput for read-only cloud action pagination", () => {
     const dedupe = new ToolCallDeduplicator(2, 60_000, 2, 20);
 

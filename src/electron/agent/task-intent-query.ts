@@ -36,13 +36,13 @@ const EXPLICIT_OFFICE_KIND_PATTERN =
   /\b(?:csv|docx?|excel|pdf|powerpoint|pptx?|presentation|slides?|deck|spreadsheet|word|xlsx?|workbook)\b|(?:电子表格|工作簿|数据表|表格文件|演示文稿|演示稿|幻灯片|台账|讲稿|简报)/i;
 
 const IMPLICIT_ATTACHMENT_REFERENCE_PATTERN =
-  /\b(?:attached|attachment|current file|existing file|this (?:file|document|attachment|presentation|deck|spreadsheet|workbook|pdf)|these (?:files|documents|attachments)|uploaded file|continue)\b|(?:附件|这个文件|这个附件|这个文档|这些文件|这份文件|这份文档|当前文件|现有文件|原文件|原稿|按这个|按原版|继续|再改|再调整|再更新)/i;
+  /\b(?:attached|attachment|current file|existing file|this (?:file|document|attachment|presentation|deck|spreadsheet|workbook|pdf)|these (?:files|documents|attachments|presentations|decks)|uploaded file|continue)\b|(?:附件|这个文件|这个附件|这个文档|这些文件|这几个文件|这几个附件|这几个\s*(?:pptx?|演示文稿|幻灯片)|这几份\s*(?:pptx?|演示文稿|幻灯片)|这份文件|这份文档|当前文件|现有文件|原文件|原稿|按这个|按原版|继续|再改|再调整|再更新)/i;
 
 const TRAILING_IMPLICIT_ATTACHMENT_REFERENCE_PATTERN =
   /(?:\b(?:edit|fix|modify|polish|revise|update)\s+it|(?:修改|编辑|更新|调整|修复|完善|润色|美化)(?:一下)?(?:这个|这份|它))\s*$/i;
 
 const SAME_FILE_MUTATION_PATTERN =
-  /\b(?:add|change|continue|edit|fix|format|merge|modify|polish|remove|replace|restyle|revise|update)\b|(?:修改|编辑|更新|调整|修复|再改|改一下|改动|完善|润色|排版|美化|继续|替换|补充|删除|添加|合并)/i;
+  /\b(?:add|change|continue|edit|fix|format|locali[sz]e|merge|modify|polish|remove|replace|restyle|revise|translate|translation|update)\b|(?:修改|编辑|更新|调整|修复|再改|改一下|改动|完善|润色|排版|美化|继续|替换|补充|删除|添加|合并|翻译|汉化|本地化|译成|译为)/i;
 
 const OFFICE_ATTACHMENT_ROUTING_HINTS: Record<OfficeAttachmentKind, string> = {
   docx: "Requested operation: edit the attached Word document (.doc/.docx).",
@@ -240,6 +240,7 @@ export function buildCanonicalTaskIntentQuery(input: {
   }
   const hasImplicitAttachmentReference =
     IMPLICIT_ATTACHMENT_REFERENCE_PATTERN.test(instruction) ||
+    /\b(?:translate|translation|locali[sz]e)\b|(?:翻译|译成|译为|汉化|本地化)/i.test(instruction) ||
     TRAILING_IMPLICIT_ATTACHMENT_REFERENCE_PATTERN.test(instruction);
   if (!hasImplicitAttachmentReference || !SAME_FILE_MUTATION_PATTERN.test(instruction)) {
     return instruction;

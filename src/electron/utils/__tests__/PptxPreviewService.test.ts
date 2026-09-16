@@ -51,6 +51,77 @@ async function createDeck(filePath: string): Promise<void> {
 }
 
 describe("PptxPreviewService", () => {
+  it("uses the bundled renderer without external dependencies, deduplicates requests and caches every slide", async () => {
+    const deckPath = path.join(tempRoot, "deck.pptx");
+    await createDeck(deckPath);
+    const source = await fs.readFile(deckPath);
+    let calls = 0;
+    const service = new PptxPreviewService({
+      cacheRoot: path.join(tempRoot, "cache"),
+      officeCliRunner: async ({ outputDir }) => {
+        calls++;
+        await fs.writeFile(path.join(outputDir, "slide-1.png"), PNG_BYTES);
+        await fs.writeFile(path.join(outputDir, "slide-2.png"), Buffer.from("second-slide"));
+      },
+      commandRunner: async () => { throw new Error("External renderer must not run"); },
+      artifactToolRunner: async () => { throw new Error("External renderer must not run"); },
+    });
+    const [preview, concurrent] = await Promise.all([
+      service.buildPreview({ filePath: deckPath, renderMode: "full" }),
+      service.buildPreview({ filePath: deckPath, renderMode: "full" }),
+    ]);
+    expect(calls).toBe(1);
+    expect(preview.renderStatus).toBe("rendered");
+    expect(preview.renderer).toBe("officecli");
+    expect(concurrent.slides).toEqual(preview.slides);
+    expect(preview.slides.every((slide) => slide.imageDataUrl)).toBe(true);
+    expect(preview.slides[0].imageDataUrl).not.toBe(preview.slides[1].imageDataUrl);
+    const cached = await service.buildPreview({ filePath: deckPath, renderMode: "fast" });
+    expect(cached.renderStatus).toBe("cached");
+    expect(cached.renderer).toBe("officecli");
+    expect(calls).toBe(1);
+    expect(await fs.readFile(deckPath)).toEqual(source);
+    expect((await fs.readdir(path.join(tempRoot, "cache"))).some((name) => name.startsWith("officecli-"))).toBe(false);
+  });
+
+  it("discards partial bundled output before trying another renderer", async () => {
+    const deckPath = path.join(tempRoot, "deck.pptx");
+    await createDeck(deckPath);
+    const service = new PptxPreviewService({
+      cacheRoot: path.join(tempRoot, "cache"),
+      officeCliRunner: async ({ outputDir }) => {
+        await fs.writeFile(path.join(outputDir, "slide-9.png"), PNG_BYTES);
+        throw new Error("Native render interrupted");
+      },
+      commandRunner: async () => { throw new Error("soffice unavailable"); },
+      artifactToolRunner: async ({ outputDir }) => {
+        await fs.writeFile(path.join(outputDir, "slide-1.png"), PNG_BYTES);
+        await fs.writeFile(path.join(outputDir, "slide-2.png"), PNG_BYTES);
+      },
+    });
+    const preview = await service.buildPreview({ filePath: deckPath, renderMode: "full" });
+    expect(preview.renderStatus).toBe("rendered");
+    expect(preview.slides).toHaveLength(2);
+    expect(preview.slides.every((slide) => slide.imageDataUrl)).toBe(true);
+  });
+
+  it.each([0, 1])("rejects incomplete bundled output containing %s slides", async (count) => {
+    const deckPath = path.join(tempRoot, "deck.pptx");
+    await createDeck(deckPath);
+    const service = new PptxPreviewService({
+      cacheRoot: path.join(tempRoot, "cache"),
+      officeCliRunner: async ({ outputDir }) => {
+        if (count) await fs.writeFile(path.join(outputDir, "slide-1.png"), PNG_BYTES);
+      },
+      commandRunner: async () => { throw new Error("soffice unavailable"); },
+      artifactToolRunner: null,
+    });
+    const preview = await service.buildPreview({ filePath: deckPath, renderMode: "full" });
+    expect(preview.renderStatus).toBe("text_only");
+    expect(preview.renderMessage).toContain(count ? "Incomplete slide preview" : "No slide images were produced");
+    expect((await service.buildPreview({ filePath: deckPath, renderMode: "fast" })).renderStatus).toBe("rendering");
+  });
+
   it("renders non-PPTX PowerPoint files through the image fallback", async () => {
     const workspace = path.join(tempRoot, "workspace");
     await fs.mkdir(workspace, { recursive: true });

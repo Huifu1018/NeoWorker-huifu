@@ -81,6 +81,7 @@ import {
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
+import { verifyDeliveredArtifactSummary } from "./verified-delivery-artifacts";
 import * as os from "os";
 import { createHash, randomUUID } from "crypto";
 import { resolveVersionedOutputPath } from "../utils/versioned-output-path";
@@ -103,7 +104,10 @@ import {
 import { ToolExecutionCoordinator } from "./runtime/ToolExecutionCoordinator";
 import { StreamingToolExecutor } from "./runtime/StreamingToolExecutor";
 import { DeferredToolCatalog } from "./runtime/DeferredToolCatalog";
-import { shouldDeferOfficeArtifactGeneration } from "./runtime/office-artifact-step-policy";
+import {
+  getOfficeArtifactFormatForToolCall,
+  shouldDeferOfficeArtifactGeneration,
+} from "./runtime/office-artifact-step-policy";
 import { ToolSearchService } from "./runtime/ToolSearchService";
 import { createToolBatchSummaryGenerator } from "./runtime/ToolBatchSummaryGenerator";
 import { resolveDefaultRuntimeToolSchedulerSpec } from "./runtime/runtime-tool-scheduler-spec";
@@ -149,12 +153,17 @@ import {
 } from "./runtime/worker-role-registry";
 import { enrichToolEventPayload } from "./runtime/tool-event-enrichment";
 import {
+  buildToolResultEnvelope,
+  getToolErrorMessage,
+} from "./runtime/tool-result-envelope";
+import {
   NeoWorkerToolHost,
   createToolHostRequest,
   type PersistedToolHostRecord,
   type ToolHostResponse,
 } from "./runtime/tool-host-protocol";
 import { resolveSkillSlashAlias } from "./skill-slash-aliases";
+import { buildDocumentTaskMessage } from "./document-translation-contract";
 import {
   buildCanonicalTaskIntentQuery,
   buildTaskOutputLanguageDirective,
@@ -344,7 +353,7 @@ function isBenignNoChangeToolResult(toolName: string, result: Any): boolean {
   if (!result || typeof result !== "object") return false;
   if (result.no_change === true) return true;
   return /old_string and new_string are identical/i.test(
-    String(result.error || ""),
+    getToolErrorMessage(result.error, ""),
   );
 }
 
@@ -1244,7 +1253,12 @@ export class TaskExecutor {
   private isProgressOnlyFollowUpText(text: string): boolean {
     const normalized = String(text || "").trim();
     if (!normalized) return false;
-    if (/^(?:规划模式\s*(?:[（(]planning mode[）)])?\s*已确认[，,。]?\s*跳过本步骤的工具调用|planning mode acknowledged[,.]?\s*skipping tool calls)[。.!]?$/i.test(normalized)) return true;
+    if (
+      /^(?:规划模式\s*(?:[（(]planning mode[）)])?\s*已确认[，,。]?\s*跳过本步骤的工具调用|planning mode acknowledged[,.]?\s*skipping tool calls)[。.!]?$/i.test(
+        normalized,
+      )
+    )
+      return true;
     // Fetching evidence is not delivering an answer. Match whole status
     // sentences, not substrings, so an actual answer following the status
     // (including a concise answer or an explicit blocker) remains valid.
@@ -1253,11 +1267,20 @@ export class TaskExecutor {
       .split(/[。！？!?\n]|\.(?:\s|$)/)
       .map((sentence) => sentence.trim())
       .filter(Boolean);
-    const acquisitionOnly = sentences.length > 0 && sentences.every((sentence) =>
-      /^(?:(?:我|我们)\s*)?(?:已(?:经)?\s*)?(?:拿到|获取|读取|读到|找到|查到|收集)(?:了)?\s*(?:完整的?|全部的?|相关的?|权威的?|所需的?)*\s*(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:了)?$/.test(sentence) ||
-      /^(?:(?:今天|明天|后天)\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2})?\s*的)?(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:已经|已)(?:读到|读取|获取|找到|查到|收集)(?:完成|成功|了)?$/.test(sentence) ||
-      /^(?:(?:i|we)\s+(?:have\s+)?|i've\s+|we've\s+)?(?:found|fetched|read|collected|retrieved|loaded)\s+(?:the\s+)?(?:(?:requested|relevant|official|weather|forecast)\s+)*(?:data|information|results|forecast|page|file|content)(?:\s+successfully)?$/i.test(sentence),
-    );
+    const acquisitionOnly =
+      sentences.length > 0 &&
+      sentences.every(
+        (sentence) =>
+          /^(?:(?:我|我们)\s*)?(?:已(?:经)?\s*)?(?:拿到|获取|读取|读到|找到|查到|收集)(?:了)?\s*(?:完整的?|全部的?|相关的?|权威的?|所需的?)*\s*(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:了)?$/.test(
+            sentence,
+          ) ||
+          /^(?:(?:今天|明天|后天)\s*(?:\d{4}[-/]\d{1,2}[-/]\d{1,2})?\s*的)?(?:数据|资料|信息|结果|预报|天气预报|文件|页面|内容)(?:已经|已)(?:读到|读取|获取|找到|查到|收集)(?:完成|成功|了)?$/.test(
+            sentence,
+          ) ||
+          /^(?:(?:i|we)\s+(?:have\s+)?|i've\s+|we've\s+)?(?:found|fetched|read|collected|retrieved|loaded)\s+(?:the\s+)?(?:(?:requested|relevant|official|weather|forecast)\s+)*(?:data|information|results|forecast|page|file|content)(?:\s+successfully)?$/i.test(
+            sentence,
+          ),
+      );
     if (acquisitionOnly) return true;
     return /(?:^|[。.!?！\n]\s*)(?:(?:now|next|then|after that|i(?:'ll| will)|we(?:'ll| will))\b|(?:现在|接下来|下一步|随后|然后|再试|继续))(?![^。.!?！\n]{0,12}(?:you can|你可以))[^。.!?！\n]*(?:check|verify|inspect|render|try|run|launch|open|read|检查|验证|校验|渲染|尝试|运行|启动|打开|读取)[^。.!?！\n]*[。.!?！]?\s*$/i.test(
       normalized,
@@ -1269,7 +1292,10 @@ export class TaskExecutor {
     hasTextAfterLatestToolResults: boolean,
     latestText = "",
   ): boolean {
-    return (hadToolCalls && !hasTextAfterLatestToolResults) || this.isProgressOnlyFollowUpText(latestText);
+    return (
+      (hadToolCalls && !hasTextAfterLatestToolResults) ||
+      this.isProgressOnlyFollowUpText(latestText)
+    );
   }
 
   /** One bounded answer-only recovery, using this turn's tool results. */
@@ -1283,15 +1309,18 @@ export class TaskExecutor {
   }): Promise<LLMMessage[]> {
     const instruction = this.sanitizeFallbackInstruction(
       `${opts.outputLanguageDirective}\n` +
-      "Tool execution has ended. Answer the latest user request now using the available tool results. " +
-      "This is an answer to the latest user, not an acknowledgement of planning mode. Previous turns are context only. " +
-      "Give the actual findings, not just a statement that you read or found them. " +
-      "If the requested facts are absent or unverified, state the exact blocker; never invent them. " +
-      "Do not announce another action, retry, check, or tool call. " +
-      "For verification requests, give the requested verdict (including exactly OK when required) only if the evidence supports it.",
+        "Tool execution has ended. Answer the latest user request now using the available tool results. " +
+        "This is an answer to the latest user, not an acknowledgement of planning mode. Previous turns are context only. " +
+        "Give the actual findings, not just a statement that you read or found them. " +
+        "If the requested facts are absent or unverified, state the exact blocker; never invent them. " +
+        "Do not announce another action, retry, check, or tool call. " +
+        "For verification requests, give the requested verdict (including exactly OK when required) only if the evidence supports it.",
     );
     const turn = await this.runTextTurnKernel({
-      messages: [...opts.messages, { role: "user", content: [{ type: "text", text: instruction }] }],
+      messages: [
+        ...opts.messages,
+        { role: "user", content: [{ type: "text", text: instruction }] },
+      ],
       systemPrompt: this.systemPrompt,
       initialMaxTokens: POST_TOOL_FINALIZATION_INITIAL_MAX_TOKENS,
       continuationMaxTokens: POST_TOOL_FINALIZATION_CONTINUATION_MAX_TOKENS,
@@ -1313,12 +1342,20 @@ export class TaskExecutor {
       if (
         !opts.contract.requiresArtifactEvidence ||
         opts.contract.requiredArtifactExtensions.length === 0 ||
-        this.getFollowUpArtifactGuardError(opts.contract, opts.evidenceStartedAt, opts.createdFilesBefore)
+        this.getFollowUpArtifactGuardError(
+          opts.contract,
+          opts.evidenceStartedAt,
+          opts.createdFilesBefore,
+        )
       ) {
-        throw new Error("Follow-up tool execution ended without a conclusive final response.");
+        throw new Error(
+          "Follow-up tool execution ended without a conclusive final response.",
+        );
       }
       const outputLabel = opts.contract.requiredArtifactExtensions
-        .map((extension) => extension.replace(/^\./, "")).join(" / ").toUpperCase();
+        .map((extension) => extension.replace(/^\./, ""))
+        .join(" / ")
+        .toUpperCase();
       finalText = opts.requiresSimplifiedChinese
         ? `本轮已完成：已生成并通过完整性校验的 ${outputLabel} 文件。`
         : `Completed: the ${outputLabel} output was generated and passed integrity checks.`;
@@ -1328,7 +1365,10 @@ export class TaskExecutor {
         requiredArtifactExtensions: opts.contract.requiredArtifactExtensions,
         turnId: this.activeConversationTurnId || undefined,
       });
-      messages = [...messages, { role: "assistant", content: [{ type: "text", text: finalText }] }];
+      messages = [
+        ...messages,
+        { role: "assistant", content: [{ type: "text", text: finalText }] },
+      ];
     } else {
       const lastMessage = messages[messages.length - 1];
       if (lastMessage?.role === "assistant") {
@@ -1769,6 +1809,7 @@ export class TaskExecutor {
     }
     const outputSummary = this.buildTaskOutputSummary(
       opts?.outputEvidenceStartedAt,
+      trimmedSummary,
     ) || {
       created: [],
       outputCount: 0,
@@ -1812,9 +1853,16 @@ export class TaskExecutor {
   private buildFollowUpResultSummary(): string {
     // A direct answer such as "42" is valid. The task-summary length floor
     // must not replace a concise current answer with an older verbose result.
-    for (const candidate of [this.getLatestAssistantConversationText(), this.lastAssistantText]) {
+    for (const candidate of [
+      this.getLatestAssistantConversationText(),
+      this.lastAssistantText,
+    ]) {
       const text = String(candidate || "").trim();
-      if (text && !TaskExecutor.RESULT_SUMMARY_PLACEHOLDERS.has(text.toLowerCase()) && !this.isProgressOnlyFollowUpText(text)) {
+      if (
+        text &&
+        !TaskExecutor.RESULT_SUMMARY_PLACEHOLDERS.has(text.toLowerCase()) &&
+        !this.isProgressOnlyFollowUpText(text)
+      ) {
         return text.length > 4000 ? `${text.slice(0, 4000)}...` : text;
       }
     }
@@ -1986,7 +2034,10 @@ export class TaskExecutor {
       /artifact is incomplete|failed structural validation|completion guard rejected/i.test(
         errorMessage,
       );
-    const userFacingMessage = detectedButIncomplete
+    const translationFailure = /翻译产物尚未通过原文件保真校验|PDF 原版式翻译尚不支持/.test(errorMessage);
+    const userFacingMessage = translationFailure
+      ? errorMessage
+      : detectedButIncomplete
       ? `这次已经生成${outputLabel}草稿，但文件不完整或未通过完整性校验，因此没有标记为成功。` +
         "草稿、之前的回答和现有文件都已保留；继续重试时会从当前进度补全。"
       : `这次尚未检测到要求的${outputLabel}文件。` +
@@ -2161,14 +2212,21 @@ export class TaskExecutor {
       );
     if (!continuesArtifactWork) return followUpContract;
 
-    const taskContract = this.buildCompletionContract();
-    if (!taskContract.requiresArtifactEvidence) return followUpContract;
+    // A bare continuation belongs to the immediately preceding follow-up run,
+    // not necessarily to the task's original root prompt. Long-lived chats can
+    // begin as a search and later become a PPT translation; falling back only
+    // to the root contract drops the PPT requirement on the next "继续".
+    const inheritedContract =
+      this.activeFollowUpCompletionContract?.requiresArtifactEvidence === true
+        ? this.activeFollowUpCompletionContract
+        : this.buildCompletionContract();
+    if (!inheritedContract.requiresArtifactEvidence) return followUpContract;
     const allowsExistingArtifactEvidence =
       /^\s*(?:继续(?:处理|完成|吧)?|接着(?:做|处理)?|往下做|continue|resume|go\s+on|carry\s+on|proceed)\s*[!！.。?？]*\s*$/i.test(
         String(message || ""),
       );
     return {
-      ...taskContract,
+      ...inheritedContract,
       requiresDirectAnswer: false,
       requiresDecisionSignal: false,
       allowExistingArtifactEvidence: allowsExistingArtifactEvidence,
@@ -2283,9 +2341,123 @@ export class TaskExecutor {
     return true;
   }
 
+  /**
+   * Recover deliverables written indirectly by shell/Python commands. Those
+   * tools can create a valid Office or web artifact without going through a
+   * NeoWorker file tool, so no file lifecycle event is emitted automatically.
+   */
+  private discoverWorkspaceArtifactsModifiedSince(
+    startedAt: number,
+    requiredExtensions: string[] = [],
+  ): string[] {
+    if (!Number.isFinite(startedAt) || startedAt <= 0) return [];
+
+    const supportedExtensions = new Set([
+      ".html",
+      ".htm",
+      ".pdf",
+      ".docx",
+      ".docm",
+      ".doc",
+      ".rtf",
+      ".odt",
+      ".md",
+      ".markdown",
+      ".pptx",
+      ".pptm",
+      ".ppt",
+      ".xlsx",
+      ".xlsm",
+      ".xls",
+      ".csv",
+      ".tsv",
+      ".ods",
+    ]);
+    const requestedExtensions = new Set(
+      requiredExtensions
+        .map((extension) =>
+          String(extension || "")
+            .trim()
+            .toLowerCase(),
+        )
+        .filter((extension) => supportedExtensions.has(extension)),
+    );
+    const acceptedExtensions =
+      requestedExtensions.size > 0 ? requestedExtensions : supportedExtensions;
+    const workspaceRoot = path.resolve(this.workspace.path);
+    const ignoredDirectories = new Set([
+      ".git",
+      ".neoworker",
+      ".next",
+      "node_modules",
+      "build",
+      "dist",
+      "release",
+      "coverage",
+    ]);
+    const discovered: Array<{ path: string; mtimeMs: number }> = [];
+    const threshold = Math.max(0, startedAt - 2_000);
+    let visitedEntries = 0;
+    const maxEntries = 5_000;
+
+    const visit = (directory: string, depth: number): void => {
+      if (depth > 8 || visitedEntries >= maxEntries) return;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (visitedEntries >= maxEntries) break;
+        visitedEntries += 1;
+        if (entry.isSymbolicLink()) continue;
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (
+            ignoredDirectories.has(entry.name) ||
+            entry.name.startsWith(".")
+          ) {
+            continue;
+          }
+          visit(entryPath, depth + 1);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        const extension = path.extname(entry.name).toLowerCase();
+        if (!acceptedExtensions.has(extension)) continue;
+        try {
+          const stats = fs.statSync(entryPath);
+          if (!stats.isFile() || stats.mtimeMs < threshold) continue;
+          const relativePath = path.relative(workspaceRoot, entryPath);
+          if (
+            !relativePath ||
+            relativePath.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativePath)
+          ) {
+            continue;
+          }
+          discovered.push({
+            path: relativePath.replace(/\\/g, "/"),
+            mtimeMs: stats.mtimeMs,
+          });
+        } catch {
+          // A file can disappear between directory enumeration and stat.
+        }
+      }
+    };
+
+    visit(workspaceRoot, 0);
+    return discovered
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+      .map((entry) => entry.path);
+  }
+
   private getFollowUpArtifactEvidencePaths(
     startedAt: number,
     createdFilesBefore: Set<string>,
+    requiredExtensions: string[] = [],
   ): string[] {
     const normalize = (value: unknown): string =>
       String(value || "")
@@ -2312,8 +2484,19 @@ export class TaskExecutor {
         ),
       )
       .filter((file) => file.length > 0);
+    const discoveredWorkspaceArtifacts =
+      this.discoverWorkspaceArtifactsModifiedSince(
+        startedAt,
+        requiredExtensions,
+      );
 
-    return Array.from(new Set([...currentCreatedFiles, ...currentTurnEvents]));
+    return Array.from(
+      new Set([
+        ...currentCreatedFiles,
+        ...currentTurnEvents,
+        ...discoveredWorkspaceArtifacts,
+      ]),
+    );
   }
 
   private getAllArtifactEvidencePaths(): string[] {
@@ -2357,6 +2540,7 @@ export class TaskExecutor {
     const currentTurnPaths = this.getFollowUpArtifactEvidencePaths(
       startedAt,
       createdFilesBefore,
+      contract.requiredArtifactExtensions,
     );
     if (!contract.allowExistingArtifactEvidence) return currentTurnPaths;
     return Array.from(
@@ -2619,6 +2803,8 @@ export class TaskExecutor {
     createdFilesBefore: Set<string>,
   ): string | null {
     if (!contract.requiresArtifactEvidence) return null;
+    const capabilityError = this.toolRegistry?.getDocumentTranslationCapabilityError?.();
+    if (capabilityError) return capabilityError;
     const evidenceFiles = this.getArtifactEvidencePathsForFollowUpContract(
       contract,
       startedAt,
@@ -2628,6 +2814,8 @@ export class TaskExecutor {
       contract,
       evidenceFiles,
     );
+    const translationError = this.toolRegistry?.getDocumentTranslationDeliveryError?.(usableEvidenceFiles);
+    if (translationError) return translationError;
     if (
       hasArtifactEvidenceUtil({
         contract,
@@ -2655,7 +2843,35 @@ export class TaskExecutor {
   private buildFollowUpArtifactRetryInstruction(
     contract: CompletionContract,
   ): string {
+    const capabilityError = this.toolRegistry?.getDocumentTranslationCapabilityError?.();
+    if (capabilityError) return `Stop artifact generation and explain this capability limit to the user without claiming completion or retrying new templates: ${capabilityError}`;
     const requested = contract.requiredArtifactExtensions.join(", ") || "file";
+    const formatInstructions =
+      this.buildArtifactFormatToolInstructions(contract);
+    return (
+      `The follow-up explicitly requests a ${requested} artifact, but no matching file has been created or updated during this turn. ` +
+      `Do not claim completion. Create the requested artifact now, verify that the tool succeeded, and only then provide the final response.${formatInstructions}`
+    );
+  }
+
+  private buildInitialArtifactContractInstruction(
+    contract: CompletionContract,
+  ): string {
+    const requested = contract.requiredArtifactExtensions.join(", ") || "file";
+    return (
+      `The task has a hard deliverable requirement: create a valid ${requested} artifact in the visible workspace. ` +
+      "Research, analysis, extraction, or a text-only answer does not complete the task. " +
+      "Use the appropriate artifact tool before the final response, verify that the tool succeeded, and mention only files that actually exist. " +
+      "If essential source information is genuinely unavailable, ask one concrete question instead of claiming completion." +
+      this.buildArtifactFormatToolInstructions(contract)
+    );
+  }
+
+  private buildArtifactFormatToolInstructions(
+    contract: CompletionContract,
+  ): string {
+    const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
+    if (translationGuidance) return `\n${translationGuidance}`;
     const documentInstruction = contract.requiredArtifactExtensions.includes(
       ".docx",
     )
@@ -2673,10 +2889,7 @@ export class TaskExecutor {
     const pdfInstruction = contract.requiredArtifactExtensions.includes(".pdf")
       ? ' Use create_document with format="pdf" to create the real PDF before performing any unrelated validation. Reuse the conversation\'s existing source material; do not spend this turn rechecking an older Excel, Word, or PPT artifact.'
       : "";
-    return (
-      `The follow-up explicitly requests a ${requested} artifact, but no matching file has been created or updated during this turn. ` +
-      `Do not claim completion. Create the requested artifact now, verify that the tool succeeded, and only then provide the final response.${documentInstruction}${presentationInstruction}${htmlInstruction}${pdfInstruction}`
-    );
+    return `${documentInstruction}${presentationInstruction}${htmlInstruction}${pdfInstruction}`;
   }
 
   private async summarizeToolBatch(
@@ -2841,7 +3054,7 @@ export class TaskExecutor {
     const result = rawOutcome.result;
     const resultMessage =
       result && typeof result === "object"
-        ? String(result.error || result.message || "").toLowerCase()
+        ? getToolErrorMessage(result.error ?? result.message, "").toLowerCase()
         : String(result || "").toLowerCase();
     return (
       error?.name === "AbortError" ||
@@ -3854,7 +4067,10 @@ export class TaskExecutor {
         const boundaryRecovery = await this.tryWorkspaceBoundaryRecovery({
           toolName: content.name,
           input: content.input,
-          errorMessage: String(result?.error || result?.message || ""),
+          errorMessage: getToolErrorMessage(
+            result?.error ?? result?.message,
+            "",
+          ),
           toolTimeoutMs,
           ...(params.phase === "step"
             ? {
@@ -4075,7 +4291,7 @@ export class TaskExecutor {
                       disabledScope:
                         failureTracking.shouldDisable &&
                         toolName === "web_search" &&
-                        /tavily|brave|serpapi|google|duckduckgo/i.test(
+                        /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
                           failureMessage,
                         )
                           ? "provider"
@@ -4227,7 +4443,9 @@ export class TaskExecutor {
                         disabledScope:
                           failureTracking.shouldDisable &&
                           toolName === "web_search" &&
-                          /tavily|brave|serpapi|google|duckduckgo/i.test(reason)
+                          /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
+                            reason,
+                          )
                             ? "provider"
                             : "global",
                       },
@@ -4624,9 +4842,37 @@ export class TaskExecutor {
   ): string {
     const suffix = scope === "follow_up" ? " for follow-up" : "";
     if (this.isHermesExternalRuntimeTask()) {
-      return `${runtimeAgentName} acpx runtime unavailable${suffix}. This task uses NeoWorker's embedded Hermes Harness; a separate Hermes Agent installation is not required. Check the packaged Hermes ACP Host and application logs.`;
+      return `Task execution service unavailable${suffix}. Automatic fallback is disabled for this task.`;
     }
     return `${runtimeAgentName} acpx runtime unavailable${suffix}. This task explicitly requires ACP, so NeoWorker did not fall back. Ensure \`acpx\` is installed or that \`npx acpx@latest\` can run in this environment.`;
+  }
+
+  private getExternalRuntimeStatusMessage(
+    runtimeAgentName: string,
+    fallbackAllowed: boolean,
+  ): string {
+    if (this.isHermesExternalRuntimeTask()) {
+      return fallbackAllowed
+        ? "Preferred execution service unavailable; continuing with available execution."
+        : "Preferred execution service unavailable; automatic fallback is unavailable.";
+    }
+    return fallbackAllowed
+      ? `${runtimeAgentName} ACP runtime unavailable; falling back to NeoWorker native execution`
+      : `${runtimeAgentName} ACP runtime unavailable; forced runtime cannot fall back`;
+  }
+
+  private getExternalRuntimeFallbackLogMessage(
+    runtimeAgentName: string,
+    scope: "initial" | "follow_up",
+  ): string {
+    if (this.isHermesExternalRuntimeTask()) {
+      return scope === "follow_up"
+        ? "Preferred execution service unavailable for follow-up; continuing with available execution."
+        : "Preferred execution service unavailable; continuing with available execution.";
+    }
+    return scope === "follow_up"
+      ? `${runtimeAgentName} acpx runtime unavailable for follow-up. Falling back to NeoWorker native execution path.`
+      : `${runtimeAgentName} acpx runtime unavailable. Falling back to NeoWorker native execution path.`;
   }
 
   private emitRuntimeStatus(
@@ -4851,7 +5097,9 @@ export class TaskExecutor {
         : {};
     const code = typeof record.code === "string" ? record.code : "";
     const data =
-      record.data && typeof record.data === "object" && !Array.isArray(record.data)
+      record.data &&
+      typeof record.data === "object" &&
+      !Array.isArray(record.data)
         ? (record.data as { retryable?: unknown })
         : undefined;
     if (data?.retryable === false) return false;
@@ -4876,7 +5124,9 @@ export class TaskExecutor {
     );
   }
 
-  private hasUnresolvedHermesToolProgress(runtime: HermesRuntimeAdapter): boolean {
+  private hasUnresolvedHermesToolProgress(
+    runtime: HermesRuntimeAdapter,
+  ): boolean {
     const progress = runtime.getCheckpoint()?.toolProgress;
     // Completed and failed host calls are already represented in the Hermes
     // session history. Only active/unknown calls can make an automatic retry
@@ -4926,7 +5176,9 @@ export class TaskExecutor {
 
         const delayMs = Math.min(2_000, 500 * 2 ** attempt);
         const reason = String(
-          (error as { message?: unknown })?.message || error || "Hermes provider transient failure",
+          (error as { message?: unknown })?.message ||
+            error ||
+            "Hermes provider transient failure",
         ).slice(0, 400);
         this.emitEvent("progress_update", {
           phase: "hermes_runtime",
@@ -4934,7 +5186,7 @@ export class TaskExecutor {
           attempt: attempt + 1,
           maxAttempts,
           delayMs,
-          message: `Hermes provider transient failure; retrying in ${delayMs}ms`,
+          message: `Temporary service issue; retrying in ${delayMs}ms`,
         });
         this.emitEvent("log", {
           metric: "hermes_runtime_retry",
@@ -4956,7 +5208,13 @@ export class TaskExecutor {
     result: Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>,
   ): boolean {
     const stopReason = String(result.stopReason || "");
-    if (stopReason === "cancelled") return false;
+    // Hermes can end a long tool-heavy turn with stopReason=cancelled even
+    // though NeoWorker and the user did not cancel the task. Treat that as an
+    // interrupted turn and ask the persisted session to finish from the tool
+    // evidence it already has. Explicit pause/cancel remains terminal.
+    if (stopReason === "cancelled") {
+      return !this.cancelled && !this.paused;
+    }
     if (stopReason && stopReason !== "end_turn") return true;
 
     const text = String(result.assistantText || "").trim();
@@ -4980,16 +5238,27 @@ export class TaskExecutor {
   private buildHermesCompletionContinuationPrompt(
     previousText: string,
     turnKind: "initial" | "follow_up" | "resume",
+    stopReason = "",
   ): string {
-    const excerpt = String(previousText || "").trim().slice(0, 2_000);
+    const excerpt = String(previousText || "")
+      .trim()
+      .slice(0, 2_000);
+    const interruptedWithoutAnswer =
+      !excerpt || String(stopReason || "").trim() === "cancelled";
     return [
       "<neoworker_completion_guard_v1>",
-      `The previous Hermes ${turnKind} response looked like an in-progress note, not a final answer.`,
+      interruptedWithoutAnswer
+        ? `The previous ${turnKind} turn ended after tool activity without a final answer.`
+        : `The previous ${turnKind} response looked like an in-progress note, not a final answer.`,
       excerpt ? `Previous response:\n${excerpt}` : "",
       "Continue the same user request now. Do not start a different task and do not answer with another plan.",
-      "Use the NeoWorker tools if more evidence is needed. Finish only when you can provide the requested final answer, or when you can state a concrete blocker for the current request.",
+      interruptedWithoutAnswer
+        ? "Do not call any more tools in this completion pass. Use the successful tool results already present in this session and give the user a concise best-effort answer now. If those results are insufficient, state the exact blocker instead of ending silently."
+        : "Use the available tools only if essential. Finish with the requested final answer, or state a concrete blocker for the current request.",
       "</neoworker_completion_guard_v1>",
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   private async runHermesPromptToCompletion(
@@ -5012,6 +5281,7 @@ export class TaskExecutor {
       const continuationPrompt = this.buildHermesCompletionContinuationPrompt(
         result.assistantText,
         turnKind,
+        result.stopReason,
       );
       this.emitEvent("progress_update", {
         phase: "hermes_runtime",
@@ -5019,7 +5289,8 @@ export class TaskExecutor {
         attempt: attempt + 1,
         maxAttempts: maxContinuations,
         stopReason: result.stopReason,
-        message: "Hermes returned an in-progress note; continuing the current turn before queued messages.",
+        message:
+          "The response is still in progress; continuing before queued messages.",
       });
       this.emitEvent("log", {
         metric: "hermes_runtime_completion_guard",
@@ -5028,6 +5299,7 @@ export class TaskExecutor {
         attempt: attempt + 1,
         maxAttempts: maxContinuations,
         stopReason: result.stopReason,
+        assistantTextLength: String(result.assistantText || "").length,
       });
 
       result = await this.runHermesPromptWithTransientRetry(
@@ -5045,7 +5317,10 @@ export class TaskExecutor {
    * after the provider error but before the bounded retry delay elapses; in
    * that window no follow-up request should be sent.
    */
-  private async waitForHermesRetryDelay(delayMs: number, originalError: unknown): Promise<void> {
+  private async waitForHermesRetryDelay(
+    delayMs: number,
+    originalError: unknown,
+  ): Promise<void> {
     if (this.cancelled || this.paused) throw originalError;
     const signal = this.abortController?.signal;
     await new Promise<void>((resolve) => {
@@ -5109,6 +5384,12 @@ export class TaskExecutor {
         message: `acpx runtime completed with stop reason: ${result.stopReason}`,
       });
     }
+    if (!assistantText && this.isHermesExternalRuntimeTask()) {
+      throw new HermesAcpError(
+        "Task execution ended before a final response could be produced.",
+        "HERMES_EMPTY_FINAL_RESPONSE",
+      );
+    }
     this.finalizeTaskBestEffort(
       assistantText ||
         `${runtimeAgentName} via ACP completed without a final assistant message.`,
@@ -5121,18 +5402,15 @@ export class TaskExecutor {
     this.activateHermesRuntime(runtime);
     this.daemon.updateTaskStatus(this.task.id, "executing");
     this.emitEvent("executing", {
-      message: "Delegating task to Hermes Agent Runtime",
+      message: "Working on your request",
       runtime: "acpx",
       runtimeAgent: "hermes",
       runtimeState: "active",
       harness: "hermes",
     });
-    this.emitRuntimeStatus(
-      "hermes",
-      "active",
-      "Running with Hermes Harness via ACP",
-      { harness: "hermes" },
-    );
+    this.emitRuntimeStatus("hermes", "active", "Working on your request", {
+      harness: "hermes",
+    });
     let keepWarm = false;
     try {
       // A pause can race with runtime construction. Mark the adapter before
@@ -5144,17 +5422,32 @@ export class TaskExecutor {
         isResuming || !this.workspace?.id
           ? this.taskContextNotes
           : await this.buildHermesContextNotes();
+      const completionContract = this.buildCompletionContract();
+      const artifactEvidenceStartedAt = Date.now();
+      const createdFilesBefore = new Set(
+        (this.fileOperationTracker?.getCreatedFiles?.() || []).map((file) =>
+          String(file || "")
+            .replace(/\\/g, "/")
+            .replace(/^\.\//, "")
+            .trim(),
+        ),
+      );
+      const deliverableContract = completionContract.requiresArtifactEvidence
+        ? this.buildInitialArtifactContractInstruction(completionContract)
+        : "";
       const prompt = isResuming
         ? buildHermesRecoveryPrompt({
             taskPrompt: this.getContractPrompt() || initialPrompt || "",
             workspacePath: this.workspace.path,
             appliedSkillContext: this.buildAppliedSkillContext(),
+            deliverableContract,
           })
         : buildHermesInitialPrompt({
             taskPrompt: this.getContractPrompt() || initialPrompt || "",
             workspacePath: this.workspace.path,
             contextNotes,
             appliedSkillContext: this.buildAppliedSkillContext(),
+            deliverableContract,
           });
       this.emitEvent("log", {
         message: isResuming
@@ -5163,25 +5456,92 @@ export class TaskExecutor {
         mode: isResuming ? "checkpoint_retry" : "initial_prompt",
         checkpointSessionId: checkpoint?.sessionId,
       });
-      const result = await this.runHermesPromptToCompletion(
+      let result = await this.runHermesPromptToCompletion(
         runtime,
         prompt,
         isResuming,
         "initial",
       );
       this.hermesCheckpoint = runtime.getCheckpoint();
-      if (this.paused && result.stopReason === "cancelled") {
-        this.daemon.updateTaskStatus(this.task.id, "paused");
-        this.emitEvent("task_paused", { message: "Paused - Hermes session checkpoint saved" });
+      let assistantText = this.enforceTaskOutputLanguageForDisplay(
+        result.assistantText,
+        { finalResponse: true },
+      );
+      if (
+        result.stopReason === "cancelled" &&
+        (this.cancelled || this.paused)
+      ) {
+        if (this.paused) {
+          this.daemon.updateTaskStatus(this.task.id, "paused");
+          this.emitEvent("task_paused", { message: "Paused - progress saved" });
+        }
         return;
       }
-      const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
+      if (
+        completionContract.requiresArtifactEvidence &&
+        !this.cancelled &&
+        !this.paused &&
+        !this.toolRegistry?.getDocumentTranslationCapabilityError?.() &&
+        this.getFollowUpArtifactGuardError(
+          completionContract,
+          artifactEvidenceStartedAt,
+          createdFilesBefore,
+        )
+      ) {
+        this.emitEvent("progress_update", {
+          phase: "hermes_runtime",
+          state: "repairing_artifact",
+          message:
+            "The requested output file is still missing; creating it before completion.",
+          requiredArtifactExtensions:
+            completionContract.requiredArtifactExtensions,
+        });
+        this.emitEvent("log", {
+          metric: "hermes_initial_artifact_repair",
+          taskId: this.task.id,
+          requiredArtifactExtensions:
+            completionContract.requiredArtifactExtensions,
+        });
+        result = await this.runHermesPromptToCompletion(
+          runtime,
+          buildHermesFollowUpPrompt({
+            message:
+              this.buildFollowUpArtifactRetryInstruction(completionContract),
+            workspacePath: this.workspace.path,
+          }),
+          false,
+          "initial",
+        );
+        this.hermesCheckpoint = runtime.getCheckpoint();
+        assistantText = this.enforceTaskOutputLanguageForDisplay(
+          result.assistantText,
+          { finalResponse: true },
+        );
+        if (
+          result.stopReason === "cancelled" &&
+          (this.cancelled || this.paused)
+        ) {
+          if (this.paused) {
+            this.daemon.updateTaskStatus(this.task.id, "paused");
+            this.emitEvent("task_paused", {
+              message: "Paused - progress saved",
+            });
+          }
+          return;
+        }
+      }
+      if (!assistantText) {
+        throw new HermesAcpError(
+          "Task execution ended before a final response could be produced.",
+          "HERMES_EMPTY_FINAL_RESPONSE",
+        );
+      }
       if (assistantText) {
         this.lastAssistantOutput = assistantText;
         this.lastAssistantText = assistantText;
         this.lastNonVerificationOutput = assistantText;
       }
-      this.finalizeTaskBestEffort(assistantText || "Hermes Agent completed without a final assistant message.", "hermes runtime completed");
+      this.finalizeTaskBestEffort(assistantText, "hermes runtime completed");
       keepWarm = true;
     } finally {
       await this.finishHermesRuntimeTurn(
@@ -5196,20 +5556,45 @@ export class TaskExecutor {
     message: string,
     _images?: ImageAttachment[],
     quotedAssistantMessage?: QuotedAssistantMessage,
+    followUpContext?:
+      | number
+      | {
+          outputEvidenceStartedAt: number;
+          previousStatus?: Task["status"];
+          previousCompletedAt?: number;
+          createdFilesBefore: Set<string>;
+        },
   ): Promise<void> {
+    const outputEvidenceStartedAt =
+      typeof followUpContext === "number"
+        ? followUpContext
+        : followUpContext?.outputEvidenceStartedAt;
     if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
       const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
       this.activateHermesRuntime(runtime);
+      const followUpCompletionContract = this.activeFollowUpCompletionContract;
+      let runtimeMessage = this.buildQuotedAssistantContextMessage(
+        message,
+        quotedAssistantMessage,
+      );
+      if (followUpCompletionContract?.requiresArtifactEvidence) {
+        runtimeMessage +=
+          "\n\nFOLLOW-UP DELIVERABLE CONTRACT (HARD REQUIREMENT):\n" +
+          this.buildFollowUpArtifactRetryInstruction(
+            followUpCompletionContract,
+          );
+      }
       const followUp = buildHermesFollowUpPrompt({
-        message: this.buildQuotedAssistantContextMessage(
-          message,
-          quotedAssistantMessage,
-        ),
+        message: runtimeMessage,
         workspacePath: this.workspace.path,
       });
       this.daemon.updateTaskStatus(this.task.id, "executing");
-      this.emitEvent("executing", { message: "Processing follow-up via Hermes Agent Runtime" });
-      this.emitEvent("user_message", { message, ...this.buildIntegrationMentionEventPayload(), ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}) });
+      this.emitEvent("executing", { message: "Processing follow-up message" });
+      this.emitEvent("user_message", {
+        message,
+        ...this.buildIntegrationMentionEventPayload(),
+        ...(quotedAssistantMessage ? { quotedAssistantMessage } : {}),
+      });
       let keepWarm = false;
       try {
         const toolProgress = runtime.getCheckpoint()?.toolProgress;
@@ -5224,19 +5609,87 @@ export class TaskExecutor {
           "follow_up",
         );
         this.hermesCheckpoint = runtime.getCheckpoint();
-        const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true, requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({ rawPrompt: message }) });
-        if (assistantText) {
-          this.lastAssistantOutput = assistantText;
-          this.lastAssistantText = assistantText;
-          this.lastNonVerificationOutput = assistantText;
-          this.emitEvent("assistant_message", { message: assistantText });
-        }
-        if (result.stopReason === "cancelled" || this.cancelled) return;
-        this.finalizeTaskBestEffort(
-          assistantText ||
-            "Hermes Agent follow-up completed without a final assistant message.",
-          "hermes follow-up completed",
+        const assistantText = this.enforceTaskOutputLanguageForDisplay(
+          result.assistantText,
+          {
+            finalResponse: true,
+            requiresSimplifiedChinese: taskRequiresSimplifiedChineseOutput({
+              rawPrompt: message,
+            }),
+          },
         );
+        if (this.cancelled || this.paused) {
+          return;
+        }
+        if (!assistantText) {
+          throw new HermesAcpError(
+            "Task execution ended before a final response could be produced.",
+            "HERMES_EMPTY_FINAL_RESPONSE",
+          );
+        }
+        if (
+          followUpCompletionContract?.requiresArtifactEvidence &&
+          typeof outputEvidenceStartedAt === "number"
+        ) {
+          const createdFilesBefore =
+            typeof followUpContext === "object"
+              ? followUpContext.createdFilesBefore
+              : new Set<string>();
+          const artifactGuardError = this.getFollowUpArtifactGuardError(
+            followUpCompletionContract,
+            outputEvidenceStartedAt,
+            createdFilesBefore,
+          );
+          if (artifactGuardError) {
+            const evidenceFiles =
+              this.getArtifactEvidencePathsForFollowUpContract(
+                followUpCompletionContract,
+                outputEvidenceStartedAt,
+                createdFilesBefore,
+              );
+            const missingExtensions = this.getMissingArtifactExtensions(
+              followUpCompletionContract,
+              evidenceFiles,
+            );
+            keepWarm = true;
+            this.finalizeArtifactFollowUpFailure(
+              artifactGuardError,
+              typeof followUpContext === "object"
+                ? followUpContext.previousStatus
+                : undefined,
+              missingExtensions.length > 0
+                ? missingExtensions
+                : followUpCompletionContract.requiredArtifactExtensions,
+              typeof followUpContext === "object"
+                ? followUpContext.previousCompletedAt
+                : undefined,
+            );
+            return;
+          }
+        }
+        this.lastAssistantOutput = assistantText;
+        this.lastAssistantText = assistantText;
+        this.lastNonVerificationOutput = assistantText;
+        this.emitEvent("assistant_message", { message: assistantText });
+        this.emitEvent("follow_up_completed", {
+          message: "Follow-up message processed",
+          followUpMessage: message,
+          turnId: this.activeConversationTurnId || undefined,
+          requiredArtifactExtensions:
+            followUpCompletionContract?.requiredArtifactExtensions || [],
+        });
+        if (outputEvidenceStartedAt === undefined) {
+          this.finalizeTaskBestEffort(
+            assistantText,
+            "hermes follow-up completed",
+          );
+        } else {
+          this.finalizeTaskBestEffort(
+            assistantText,
+            "hermes follow-up completed",
+            { outputEvidenceStartedAt },
+          );
+        }
         keepWarm = true;
       } finally {
         await this.finishHermesRuntimeTurn(
@@ -5278,11 +5731,27 @@ export class TaskExecutor {
       this.lastAssistantText = assistantText;
       this.lastNonVerificationOutput = assistantText;
     }
-    this.finalizeTaskBestEffort(
+    if (!assistantText && this.isHermesExternalRuntimeTask()) {
+      throw new HermesAcpError(
+        "Task execution ended before a final response could be produced.",
+        "HERMES_EMPTY_FINAL_RESPONSE",
+      );
+    }
+    const completionSummary =
       assistantText ||
-        `${runtimeAgentName} via ACP follow-up completed without a final assistant message.`,
-      "acpx follow-up completed",
-    );
+      `${runtimeAgentName} via ACP follow-up completed without a final assistant message.`;
+    if (outputEvidenceStartedAt === undefined) {
+      this.finalizeTaskBestEffort(
+        completionSummary,
+        "acpx follow-up completed",
+      );
+    } else {
+      this.finalizeTaskBestEffort(
+        completionSummary,
+        "acpx follow-up completed",
+        { outputEvidenceStartedAt },
+      );
+    }
   }
 
   private async closeAcpxRuntimeSession(reason: string): Promise<void> {
@@ -6491,9 +6960,7 @@ export class TaskExecutor {
   private getPlanningStepProfile(): "compact" | "standard" | "workflow" {
     const executionMode = this.getEffectiveExecutionMode();
     const task = (this as Any).task || {};
-    const taskIntent = String(
-      task.agentConfig?.taskIntent || "",
-    ).toLowerCase();
+    const taskIntent = String(task.agentConfig?.taskIntent || "").toLowerCase();
     const taskPrompt = String(
       this.getExecutionTaskPrompt() || this.getContractPrompt() || "",
     );
@@ -6568,8 +7035,7 @@ export class TaskExecutor {
         return this.planContainsDocxArtifactStep([step]);
       if (extension === ".xlsx")
         return this.planContainsXlsxArtifactStep([step]);
-      if (extension === ".pdf")
-        return this.planContainsPdfArtifactStep([step]);
+      if (extension === ".pdf") return this.planContainsPdfArtifactStep([step]);
       if (extension === ".pptx")
         return this.planContainsPptxArtifactStep([step]);
       if (extension === ".mp4")
@@ -6613,9 +7079,7 @@ export class TaskExecutor {
                 Math.max(0, ordinaryWorkSlotLimit - 1),
               ),
               this.compactPlanStepGroup(
-                ordinaryWorkSteps.slice(
-                  Math.max(0, ordinaryWorkSlotLimit - 1),
-                ),
+                ordinaryWorkSteps.slice(Math.max(0, ordinaryWorkSlotLimit - 1)),
                 ordinaryWorkSteps.every((step) => step.kind === "recovery")
                   ? "recovery"
                   : "primary",
@@ -6712,6 +7176,7 @@ export class TaskExecutor {
   }
 
   private filterToolsByCanonicalOfficeOutputIntent(tools: Any[]): Any[] {
+    if (this.getActivePresentationWorkflow() === "ppt-master") return tools;
     if (this.taskAllowsOfficeArtifactExtension(".pptx")) return tools;
 
     return tools.filter((tool) => {
@@ -8419,6 +8884,10 @@ ${transcript}
       this.task.agentConfig?.gatewayContext,
       toolRestrictions,
     );
+    registry.setDocumentTaskContext(buildDocumentTaskMessage(this.task));
+    const previousDocumentContext = this.toolRegistry?.getDocumentTaskContext?.();
+    if (previousDocumentContext) registry.setDocumentTaskContext(previousDocumentContext);
+    if (this.lastUserMessage && this.lastUserMessage !== this.getContractPrompt()) registry.setDocumentTaskContext(this.lastUserMessage);
     registry.setActiveVisionRouteResolver(() => ({
       provider: this.provider,
       modelId: this.modelId,
@@ -9969,30 +10438,44 @@ ${transcript}
   }
 
   /** Construct the explicitly opted-in Hermes ACP runtime for this task. */
-  createHermesRuntimeAdapter(checkpoint?: HermesSessionCheckpoint): HermesRuntimeAdapter {
+  createHermesRuntimeAdapter(
+    checkpoint?: HermesSessionCheckpoint,
+  ): HermesRuntimeAdapter {
     // Recover the handle even when the previous executor/process failed before
     // prompt() returned. Never create a fresh conversation over an invalid
     // persisted checkpoint: the old session may already have run tools.
-    const savedCheckpoint = checkpoint ?? this.hermesCheckpoint ?? this.daemon
-      .getTaskEvents(this.task.id, { types: ["hermes_runtime_checkpoint"], limit: 1 })
-      .at(-1)?.payload;
+    const savedCheckpoint =
+      checkpoint ??
+      this.hermesCheckpoint ??
+      this.daemon
+        .getTaskEvents(this.task.id, {
+          types: ["hermes_runtime_checkpoint"],
+          limit: 1,
+        })
+        .at(-1)?.payload;
     if (savedCheckpoint !== undefined) {
       if (
         !savedCheckpoint ||
         savedCheckpoint.schema !== "neoworker_hermes_acp_v1" ||
-        typeof savedCheckpoint.sessionId !== "string" || !savedCheckpoint.sessionId.trim() ||
+        typeof savedCheckpoint.sessionId !== "string" ||
+        !savedCheckpoint.sessionId.trim() ||
         savedCheckpoint.cwd !== this.workspace.path ||
         typeof savedCheckpoint.agentVersion !== "string" ||
-        (savedCheckpoint.toolOwnership !== undefined && savedCheckpoint.toolOwnership !== "neoworker" && savedCheckpoint.toolOwnership !== "hermes")
+        (savedCheckpoint.toolOwnership !== undefined &&
+          savedCheckpoint.toolOwnership !== "neoworker" &&
+          savedCheckpoint.toolOwnership !== "hermes")
       ) {
-        throw new Error("Cannot restore Hermes: invalid checkpoint or workspace mismatch");
+        throw new Error(
+          "Cannot restore task progress: invalid checkpoint or workspace mismatch",
+        );
       }
       this.hermesCheckpoint = {
         schema: "neoworker_hermes_acp_v1",
         sessionId: savedCheckpoint.sessionId,
         cwd: savedCheckpoint.cwd,
         agentVersion: savedCheckpoint.agentVersion,
-        ...(savedCheckpoint.toolOwnership === "neoworker" || savedCheckpoint.toolOwnership === "hermes"
+        ...(savedCheckpoint.toolOwnership === "neoworker" ||
+        savedCheckpoint.toolOwnership === "hermes"
           ? { toolOwnership: savedCheckpoint.toolOwnership }
           : {}),
         ...(savedCheckpoint.toolProgress &&
@@ -10000,26 +10483,60 @@ ${transcript}
         !Array.isArray(savedCheckpoint.toolProgress)
           ? {
               toolProgress: {
-                activeToolCallIds: Array.isArray(savedCheckpoint.toolProgress.activeToolCallIds)
-                  ? savedCheckpoint.toolProgress.activeToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                activeToolCallIds: Array.isArray(
+                  savedCheckpoint.toolProgress.activeToolCallIds,
+                )
+                  ? savedCheckpoint.toolProgress.activeToolCallIds
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" && value.trim().length > 0,
+                      )
+                      .slice(-256)
                   : [],
-                completedToolCallIds: Array.isArray(savedCheckpoint.toolProgress.completedToolCallIds)
-                  ? savedCheckpoint.toolProgress.completedToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                completedToolCallIds: Array.isArray(
+                  savedCheckpoint.toolProgress.completedToolCallIds,
+                )
+                  ? savedCheckpoint.toolProgress.completedToolCallIds
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" && value.trim().length > 0,
+                      )
+                      .slice(-256)
                   : [],
-                failedToolCallIds: Array.isArray(savedCheckpoint.toolProgress.failedToolCallIds)
-                  ? savedCheckpoint.toolProgress.failedToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                failedToolCallIds: Array.isArray(
+                  savedCheckpoint.toolProgress.failedToolCallIds,
+                )
+                  ? savedCheckpoint.toolProgress.failedToolCallIds
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" && value.trim().length > 0,
+                      )
+                      .slice(-256)
                   : [],
-                unknownToolCallIds: Array.isArray(savedCheckpoint.toolProgress.unknownToolCallIds)
-                  ? savedCheckpoint.toolProgress.unknownToolCallIds.filter((value: unknown): value is string => typeof value === "string" && value.trim().length > 0).slice(-256)
+                unknownToolCallIds: Array.isArray(
+                  savedCheckpoint.toolProgress.unknownToolCallIds,
+                )
+                  ? savedCheckpoint.toolProgress.unknownToolCallIds
+                      .filter(
+                        (value: unknown): value is string =>
+                          typeof value === "string" && value.trim().length > 0,
+                      )
+                      .slice(-256)
                   : [],
-                ...(typeof savedCheckpoint.toolProgress.lastToolCallId === "string" && savedCheckpoint.toolProgress.lastToolCallId.trim()
-                  ? { lastToolCallId: savedCheckpoint.toolProgress.lastToolCallId.trim() }
+                ...(typeof savedCheckpoint.toolProgress.lastToolCallId ===
+                  "string" && savedCheckpoint.toolProgress.lastToolCallId.trim()
+                  ? {
+                      lastToolCallId:
+                        savedCheckpoint.toolProgress.lastToolCallId.trim(),
+                    }
                   : {}),
               },
             }
           : {}),
         ...(Number.isFinite(savedCheckpoint.logSequence)
-          ? { logSequence: Math.max(0, Math.floor(savedCheckpoint.logSequence)) }
+          ? {
+              logSequence: Math.max(0, Math.floor(savedCheckpoint.logSequence)),
+            }
           : {}),
       };
     }
@@ -10035,7 +10552,9 @@ ${transcript}
     // New Hermes tasks use NeoWorker's Tool Host. Retain the ownership of a
     // saved legacy session; silently switching an existing native-tool
     // transcript would make side-effect recovery ambiguous.
-    const hostOwned = !this.hermesCheckpoint || this.hermesCheckpoint.toolOwnership === "neoworker";
+    const hostOwned =
+      !this.hermesCheckpoint ||
+      this.hermesCheckpoint.toolOwnership === "neoworker";
     const hermesSettings =
       this.cachedLlmSettings ?? LLMProviderFactory.loadSettings();
     const hermesProviderBridge = resolveHermesProviderBridge(
@@ -10063,49 +10582,212 @@ ${transcript}
         const sequence = Number(lastEvent?.seq ?? lastEvent?.ts);
         return Number.isFinite(sequence) ? sequence : 0;
       },
-      ...(hostOwned ? {
-        ...resolveHermesHostLauncher(),
-        hostToolBridge: {
-          taskId: this.task.id,
-          requestTimeoutMs: 300_000,
-          getTools: () => this.getAvailableTools(),
-          execute: async ({ toolName, toolCallId, input, signal, checkpoint }) => {
-            this.enforceToolBudget(toolName);
-            this.totalToolCallCount++;
-            const correlation = { tool: toolName, toolUseId: toolCallId, toolCallId, runtime: "hermes" };
-            this.emitEvent("tool_call", { ...correlation, input });
-            try {
-              const outcome = await this.executeToolWithHeartbeat(
+      ...(hostOwned
+        ? {
+            ...resolveHermesHostLauncher(),
+            hostToolBridge: {
+              taskId: this.task.id,
+              requestTimeoutMs: 300_000,
+              getTools: () => this.getHermesHostTools(),
+              execute: async ({
                 toolName,
-                input,
-                this.getToolTimeoutMs(toolName, input),
                 toolCallId,
+                input,
                 signal,
                 checkpoint,
-              );
-              this.emitEvent("tool_result", {
-                ...correlation, result: outcome.result, durationMs: outcome.durationMs,
-                envelope: outcome.envelope, policyTrace: outcome.policyTrace,
-              });
-              const hermesResult = this.enrichHermesSkillToolResult(
-                toolName,
-                input,
-                outcome.result,
-              );
-              if (hermesResult === outcome.result) {
-                return outcome.toolHostResponse;
-              }
-              return {
-                ...outcome.toolHostResponse,
-                result: hermesResult,
-              };
-            } catch (error) {
-              this.emitEvent("tool_error", { ...correlation, error: error instanceof Error ? error.message : String(error) });
-              throw error;
-            }
-          },
-        },
-      } : {}),
+              }) => {
+                const canonicalToolName = canonicalizeToolNameUtil(toolName);
+                let effectiveInput = input;
+                if (canonicalToolName === "web_search") {
+                  const prepared = this.prepareWebSearchInputForBudget(
+                    input,
+                    this.webSearchToolCallCount,
+                    this.currentStepId || `runtime:${this.task.id}`,
+                  );
+                  if (prepared.policy.blocked) {
+                    throw new Error(
+                      prepared.policy.reason ||
+                        "Web search is disabled by policy.",
+                    );
+                  }
+                  effectiveInput = prepared.input;
+                }
+                const correlation = {
+                  tool: toolName,
+                  toolUseId: toolCallId,
+                  toolCallId,
+                  runtime: "hermes",
+                };
+                this.emitEvent("tool_call", {
+                  ...correlation,
+                  input: effectiveInput,
+                });
+                let callRecorded = false;
+                try {
+                  const policyDecision = this.applyPreToolUsePolicyHook({
+                    toolName,
+                    input: effectiveInput as Any,
+                    stepMode: undefined,
+                  });
+                  if (policyDecision.blockedResult) {
+                    throw new Error(policyDecision.blockedResult.error);
+                  }
+
+                  const duplicateCheck =
+                    this.toolCallDeduplicator?.checkDuplicate?.(
+                      toolName,
+                      effectiveInput as Any,
+                    );
+                  if (duplicateCheck?.isDuplicate) {
+                    throw new Error(
+                      duplicateCheck.reason ||
+                        `Duplicate ${canonicalToolName} call blocked.`,
+                    );
+                  }
+
+                  this.enforceToolBudget(toolName);
+                  this.totalToolCallCount++;
+                  if (canonicalToolName === "web_search") {
+                    this.recordWebSearchDispatch(effectiveInput);
+                  }
+                  const outcome = await this.executeToolWithHeartbeat(
+                    toolName,
+                    effectiveInput,
+                    this.getToolTimeoutMs(toolName, effectiveInput),
+                    toolCallId,
+                    signal,
+                    checkpoint,
+                  );
+                  const trackedResult =
+                    outcome.result ??
+                    outcome.toolHostResponse.result ??
+                    (outcome.toolHostResponse.error
+                      ? { error: outcome.toolHostResponse.error.message }
+                      : undefined);
+                  let trackedResultJson: string;
+                  try {
+                    trackedResultJson = JSON.stringify(trackedResult);
+                  } catch {
+                    trackedResultJson = String(trackedResult);
+                  }
+                  this.toolCallDeduplicator?.recordCall?.(
+                    toolName,
+                    effectiveInput as Any,
+                    trackedResultJson,
+                  );
+                  callRecorded = true;
+
+                  const resultFailed =
+                    !isAdvisoryToolFailureResultUtil(trackedResult) &&
+                    (outcome.toolHostResponse.status !== "success" ||
+                      (!!trackedResult &&
+                        typeof trackedResult === "object" &&
+                        (trackedResult as Any).success === false));
+                  if (isAdvisoryToolFailureResultUtil(trackedResult)) {
+                    const failureMessage = this.getToolFailureReason(
+                      trackedResult,
+                      "The requested operation was skipped; use the suggested fallback.",
+                    );
+                    this.emitEvent("tool_warning", {
+                      ...correlation,
+                      error: failureMessage,
+                      advisory: true,
+                      recoverableFallback: true,
+                      failureKind:
+                        typeof (trackedResult as Any)?.failureKind === "string"
+                          ? (trackedResult as Any).failureKind
+                          : "source_unavailable",
+                    });
+                    this.emitEvent("tool_result", {
+                      ...correlation,
+                      result: trackedResult,
+                      durationMs: outcome.durationMs,
+                      envelope: outcome.envelope,
+                      policyTrace: outcome.policyTrace,
+                    });
+                    return {
+                      ...outcome.toolHostResponse,
+                      status: "success",
+                      result: trackedResult,
+                      error: undefined,
+                    };
+                  }
+                  if (!resultFailed) {
+                    this.toolFailureTracker?.recordSuccess?.(toolName);
+                    this.taskHadAnyToolSuccess = true;
+                    this.recordToolUsage(toolName);
+                    this.recordToolResult(
+                      toolName,
+                      outcome.result,
+                      effectiveInput,
+                    );
+                  } else {
+                    const failureMessage = outcome.toolHostResponse.error?.message
+                      ? String(outcome.toolHostResponse.error.message)
+                      : this.getToolFailureReason(
+                          trackedResult,
+                          "Tool execution failed",
+                        );
+                    this.toolFailureTracker?.recordFailure?.(
+                      toolName,
+                      failureMessage,
+                    );
+                    this.emitEvent("tool_error", {
+                      ...correlation,
+                      error: failureMessage,
+                    });
+                    return {
+                      ...outcome.toolHostResponse,
+                      status: "error",
+                      result: trackedResult,
+                      error: outcome.toolHostResponse.error || {
+                        message: failureMessage,
+                      },
+                    };
+                  }
+                  this.emitEvent("tool_result", {
+                    ...correlation,
+                    result: outcome.result,
+                    durationMs: outcome.durationMs,
+                    envelope: outcome.envelope,
+                    policyTrace: outcome.policyTrace,
+                  });
+                  const hermesResult = this.enrichHermesSkillToolResult(
+                    toolName,
+                    effectiveInput,
+                    outcome.result,
+                  );
+                  if (hermesResult === outcome.result) {
+                    return outcome.toolHostResponse;
+                  }
+                  return {
+                    ...outcome.toolHostResponse,
+                    result: hermesResult,
+                  };
+                } catch (error) {
+                  const errorMessage =
+                    error instanceof Error ? error.message : String(error);
+                  if (!callRecorded) {
+                    this.toolCallDeduplicator?.recordCall?.(
+                      toolName,
+                      effectiveInput as Any,
+                      JSON.stringify({ success: false, error: errorMessage }),
+                    );
+                    this.toolFailureTracker?.recordFailure?.(
+                      toolName,
+                      errorMessage,
+                    );
+                  }
+                  this.emitEvent("tool_error", {
+                    ...correlation,
+                    error: errorMessage,
+                  });
+                  throw error;
+                }
+              },
+            },
+          }
+        : {}),
       onCheckpoint: async (saved) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_checkpoint", saved);
         this.hermesCheckpoint = { ...saved };
@@ -10114,7 +10796,7 @@ ${transcript}
         const approved = await this.daemon.requestApproval(
           this.task.id,
           "risk_gate",
-          "Hermes 重试前需要确认：上一次工具调用的副作用结果未知。",
+          "重试前需要确认：上一次操作的结果未知。",
           {
             tool: "hermes_retry",
             hermesSessionId: request.sessionId,
@@ -10127,9 +10809,7 @@ ${transcript}
       },
       onUpdate: (update) => {
         const sessionUpdate =
-          typeof update.sessionUpdate === "string"
-            ? update.sessionUpdate
-            : "";
+          typeof update.sessionUpdate === "string" ? update.sessionUpdate : "";
         const content =
           update.content &&
           typeof update.content === "object" &&
@@ -10166,7 +10846,9 @@ ${transcript}
       onTransportEvent: (event) => {
         this.daemon.logEvent(this.task.id, "hermes_runtime_transport", event);
       },
-      onPermissionRequest: this.daemon.createHermesPermissionHandler(this.task.id),
+      onPermissionRequest: this.daemon.createHermesPermissionHandler(
+        this.task.id,
+      ),
     };
     return new HermesRuntimeAdapter(options);
   }
@@ -13017,11 +13699,50 @@ ${transcript}
       stepId?: string;
       targetPaths?: string[];
     },
-  ): Promise<Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>> & { toolHostResponse: ToolHostResponse }> {
+  ): Promise<
+    Awaited<ReturnType<ToolExecutionCoordinator["executeTool"]>> & {
+      toolHostResponse: ToolHostResponse;
+    }
+  > {
     const effectiveInput = this.preparePresentationWorkflowToolInput(
       toolName,
       input,
     );
+    const toolHostRequest = createToolHostRequest({
+      taskId: this.task.id,
+      toolName,
+      ...(toolCallId ? { toolCallId } : {}),
+      input: effectiveInput as Any,
+      ...(checkpoint ? { checkpoint } : {}),
+    });
+    const dependencyRedirect = this.getBundledOfficeDependencyRedirect(
+      toolName,
+      effectiveInput,
+    );
+    if (dependencyRedirect) {
+      const envelope = buildToolResultEnvelope({
+        toolUseId: toolHostRequest.toolCallId,
+        toolName,
+        status: "success",
+        result: dependencyRedirect,
+        modelReminder: String(dependencyRedirect.immediateReminder || ""),
+        userSummary: `${toolName} redirected to bundled Office tooling`,
+      });
+      return {
+        result: dependencyRedirect,
+        durationMs: 0,
+        resultJson: envelope.modelPayload,
+        envelope,
+        toolHostResponse: {
+          requestId: toolHostRequest.requestId,
+          toolCallId: toolHostRequest.toolCallId,
+          schemaVersion: toolHostRequest.schemaVersion,
+          status: "success",
+          result: dependencyRedirect,
+          ...(checkpoint ? { checkpoint } : {}),
+        },
+      };
+    }
     const schedulerSpec = this.getSchedulerSpecForTool(
       toolName,
       effectiveInput as Any,
@@ -13044,18 +13765,16 @@ ${transcript}
     }
 
     try {
-      const toolHostRequest = createToolHostRequest({
-        taskId: this.task.id,
-        toolName,
-        ...(toolCallId ? { toolCallId } : {}),
-        input: effectiveInput as Any,
-        ...(checkpoint ? { checkpoint } : {}),
-      });
       const toolHost = this.getToolHost();
+      // The tool implementation owns the user-visible deadline and may need a
+      // brief tick to convert its AbortError into a structured, recoverable
+      // result. Giving the outer host boundary the exact same deadline races
+      // that conversion and turns an ordinary unavailable web source into a
+      // hard "Tool ... timed out" error with an unknown checkpoint outcome.
+      const hostBoundaryTimeoutMs = toolTimeoutMs + 2_000;
       const coordinated = await withTimeout(
-        toolHost.execute(
-          toolHostRequest,
-          {
+        toolHost
+          .execute(toolHostRequest, {
             taskId: this.task.id,
             stepId: executionContext?.stepId || this.currentStepId || undefined,
             phase: executionContext?.phase || "step",
@@ -13080,9 +13799,12 @@ ${transcript}
                 ...(args.targetPaths ? { targetPaths: args.targetPaths } : {}),
                 ...(args.followUp ? { followUp: args.followUp } : {}),
               }),
-          },
-        ).then((execution) => ({ ...execution.outcome, toolHostResponse: execution.response })),
-        toolTimeoutMs,
+          })
+          .then((execution) => ({
+            ...execution.outcome,
+            toolHostResponse: execution.response,
+          })),
+        hostBoundaryTimeoutMs,
         `Tool ${toolName}`,
         () => toolAbort.abort(),
       );
@@ -13104,10 +13826,14 @@ ${transcript}
   private getToolHost(): NeoWorkerToolHost {
     if (this.toolHost) return this.toolHost;
     if (!this.toolRegistry) {
-      throw new Error("NeoWorker Tool Host is unavailable before ToolRegistry initialization");
+      throw new Error(
+        "NeoWorker Tool Host is unavailable before ToolRegistry initialization",
+      );
     }
     if (!this.toolExecutionCoordinator) {
-      this.toolExecutionCoordinator = new ToolExecutionCoordinator(this.toolRegistry);
+      this.toolExecutionCoordinator = new ToolExecutionCoordinator(
+        this.toolRegistry,
+      );
     }
     this.toolHost = new NeoWorkerToolHost(this.toolExecutionCoordinator);
     return this.toolHost;
@@ -13151,7 +13877,9 @@ ${transcript}
     return {
       status,
       fingerprint,
-      ...(status === "response" && latest.outcome && typeof latest.outcome === "object"
+      ...(status === "response" &&
+      latest.outcome &&
+      typeof latest.outcome === "object"
         ? { outcome: latest.outcome as PersistedToolHostRecord["outcome"] }
         : {}),
     };
@@ -13408,7 +14136,10 @@ ${transcript}
         succeeded: toolSucceeded,
         error: toolSucceeded
           ? undefined
-          : String(result?.error || result?.message || "").slice(0, 200),
+          : getToolErrorMessage(
+              result?.error ?? result?.message,
+              "",
+            ).slice(0, 200),
       });
     }
     if (
@@ -14219,7 +14950,9 @@ ${transcript}
       // separate PDF delivery step. Only retain code spans that are themselves
       // PDF targets before applying the semantic PDF wording checks below.
       const semanticDesc = desc.replace(/`([^`]+)`/g, (span, value) => {
-        const extension = path.extname(String(value || "").trim()).toLowerCase();
+        const extension = path
+          .extname(String(value || "").trim())
+          .toLowerCase();
         return extension && extension !== ".pdf" ? "" : span;
       });
       const hasPdfTarget =
@@ -14507,12 +15240,18 @@ ${transcript}
 
   private buildArtifactRecoveryStepDescription(extension: string): string {
     const normalized = String(extension || "").toLowerCase();
-    if (normalized === ".docx") return this.buildDocxArtifactPlanStepDescription();
-    if (normalized === ".xlsx") return this.buildXlsxArtifactPlanStepDescription();
-    if (normalized === ".pdf") return this.buildPdfArtifactPlanStepDescription();
-    if (normalized === ".pptx") return this.buildPptxArtifactPlanStepDescription();
-    if (normalized === ".mp4") return this.buildVideoArtifactPlanStepDescription();
-    if (normalized === ".html") return this.buildHtmlArtifactPlanStepDescription();
+    if (normalized === ".docx")
+      return this.buildDocxArtifactPlanStepDescription();
+    if (normalized === ".xlsx")
+      return this.buildXlsxArtifactPlanStepDescription();
+    if (normalized === ".pdf")
+      return this.buildPdfArtifactPlanStepDescription();
+    if (normalized === ".pptx")
+      return this.buildPptxArtifactPlanStepDescription();
+    if (normalized === ".mp4")
+      return this.buildVideoArtifactPlanStepDescription();
+    if (normalized === ".html")
+      return this.buildHtmlArtifactPlanStepDescription();
     const filename = this.buildTaskArtifactFilename(normalized || ".output");
     return `Create the missing required output artifact \`${filename}\`, verify that it is non-empty and usable, and do not report completion before the file exists.`;
   }
@@ -14537,7 +15276,8 @@ ${transcript}
    * of discovering the omission only inside the terminal completion guard.
    */
   private appendMissingArtifactRecoveryStepsIfNeeded(): boolean {
-    if (!this.plan || this.cancelled || this.softDeadlineTriggered) return false;
+    if (!this.plan || this.cancelled || this.softDeadlineTriggered)
+      return false;
     // A provider/model timeout is a terminal execution failure for this turn,
     // not proof that the requested artifact was omitted. Do not append a
     // generic recovery step after a timed-out mutation: that would re-run the
@@ -14563,10 +15303,11 @@ ${transcript}
       contract,
       evidenceFiles,
     );
-    const htmlIntegrityError =
-      contract.requiredArtifactExtensions.includes(".html")
-        ? this.getHtmlArtifactIntegrityError(contract, evidenceFiles)
-        : null;
+    const htmlIntegrityError = contract.requiredArtifactExtensions.includes(
+      ".html",
+    )
+      ? this.getHtmlArtifactIntegrityError(contract, evidenceFiles)
+      : null;
     if (missingExtensions.length === 0 && !htmlIntegrityError) return false;
 
     // A few isolated tests and migration paths hydrate an executor from its
@@ -14580,14 +15321,19 @@ ${transcript}
       this.activeConversationTurnId || `task:${this.task.id}:initial`;
     const invalidHtmlPaths = htmlIntegrityError
       ? evidenceFiles
-          .filter((candidate) => path.extname(String(candidate || "")).toLowerCase() === ".html")
+          .filter(
+            (candidate) =>
+              path.extname(String(candidate || "")).toLowerCase() === ".html",
+          )
           .slice(-3)
           .join(",")
       : "";
     const signature = `${recoveryScope}:${[...missingExtensions]
       .map((extension) => String(extension).toLowerCase())
       .sort()
-      .join(",")}:html-integrity:${invalidHtmlPaths}:${htmlIntegrityError || ""}`;
+      .join(
+        ",",
+      )}:html-integrity:${invalidHtmlPaths}:${htmlIntegrityError || ""}`;
     if (this.artifactCompletionRecoverySignatures.has(signature)) return false;
     this.artifactCompletionRecoverySignatures.add(signature);
 
@@ -15913,10 +16659,11 @@ ${transcript}
 
   private buildTaskOutputSummary(
     evidenceStartedAt?: number,
+    deliverySummary?: string,
   ): TaskOutputSummary | undefined {
     const normalizePath = (raw: string): string =>
       raw.trim().replace(/\\/g, "/");
-    const requestedOfficeExtensions = (() => {
+    const requestedArtifactExtensions = (() => {
       try {
         const contract =
           this.activeFollowUpCompletionContract ||
@@ -15924,9 +16671,7 @@ ${transcript}
         return new Set(
           (contract.requiredArtifactExtensions || [])
             .map((extension) => String(extension || "").toLowerCase())
-            .filter((extension) =>
-              [".docx", ".pdf", ".pptx", ".xlsx", ".csv"].includes(extension),
-            ),
+            .filter((extension) => /^\.[a-z0-9]+$/i.test(extension)),
         );
       } catch {
         return new Set<string>();
@@ -15937,8 +16682,8 @@ ${transcript}
       const basename = path.basename(normalized);
       if (/^agent\.md\/soul\.md\/user\.md$/i.test(normalized)) return false;
       if (/^__diag(?:[-_.]|$)/i.test(basename)) return false;
-      if (requestedOfficeExtensions.size === 0) return true;
-      return requestedOfficeExtensions.has(
+      if (requestedArtifactExtensions.size === 0) return true;
+      return requestedArtifactExtensions.has(
         path.extname(basename).toLowerCase(),
       );
     };
@@ -16010,6 +16755,32 @@ ${transcript}
       }
     }
 
+    const workspaceScanStartedAt =
+      evidenceStartedAt ??
+      (typeof this.task.createdAt === "number" &&
+      Number.isFinite(this.task.createdAt)
+        ? this.task.createdAt
+        : undefined);
+    if (workspaceScanStartedAt !== undefined) {
+      const discoveredPaths = this.discoverWorkspaceArtifactsModifiedSince(
+        workspaceScanStartedAt,
+        Array.from(requestedArtifactExtensions),
+      );
+      for (const discoveredPath of discoveredPaths) {
+        const normalized = resolveRelativePath(discoveredPath);
+        if (!normalized || createdMap.has(normalized)) continue;
+        let modifiedAt = workspaceScanStartedAt;
+        try {
+          modifiedAt = fs.statSync(
+            path.resolve(this.workspace.path, normalized),
+          ).mtimeMs;
+        } catch {
+          // keep the discovery threshold for deterministic ordering
+        }
+        addPath(modifiedMap, normalized, modifiedAt);
+      }
+    }
+
     const keepExistingFiles = (target: Map<string, number>): void => {
       for (const relativePath of target.keys()) {
         if (!isUserFacingOutputPath(relativePath)) {
@@ -16035,7 +16806,11 @@ ${transcript}
     const created = toSortedPaths(createdMap);
     const modifiedFallback = toSortedPaths(modifiedMap);
     const effective = created.length > 0 ? created : modifiedFallback;
-    if (effective.length === 0) return undefined;
+    if (effective.length === 0) {
+      return deliverySummary
+        ? verifyDeliveredArtifactSummary(deliverySummary, this.workspace.path)
+        : undefined;
+    }
 
     const folders = Array.from(
       new Set(
@@ -16058,18 +16833,12 @@ ${transcript}
 
   private promptRequiresDirectAnswer(): boolean {
     const task = (this as Any).task || {};
-    return promptRequiresDirectAnswerUtil(
-      task.title,
-      this.getContractPrompt(),
-    );
+    return promptRequiresDirectAnswerUtil(task.title, this.getContractPrompt());
   }
 
   private promptRequestsDecision(): boolean {
     const task = (this as Any).task || {};
-    return promptRequestsDecisionUtil(
-      task.title,
-      this.getContractPrompt(),
-    );
+    return promptRequestsDecisionUtil(task.title, this.getContractPrompt());
   }
 
   private promptIsWatchSkipRecommendationTask(): boolean {
@@ -16514,6 +17283,9 @@ ${transcript}
   }
 
   private inferRequiredArtifactExtensions(): string[] {
+    if (this.activeFollowUpCompletionContract) {
+      return [...this.activeFollowUpCompletionContract.requiredArtifactExtensions];
+    }
     const canonicalIntent = this.getCanonicalTaskIntentQuery();
     return inferRequiredArtifactExtensionsUtil(
       "",
@@ -16578,9 +17350,7 @@ ${transcript}
       this.emitEvent("log", {
         message:
           "MCP catalog initialization failed; continuing with currently available NeoWorker tools.",
-        error: String(
-          (mcpResult.reason as Any)?.message || mcpResult.reason,
-        ),
+        error: String((mcpResult.reason as Any)?.message || mcpResult.reason),
       });
     }
   }
@@ -16617,10 +17387,11 @@ ${transcript}
 
   private async buildHermesContextNotes(): Promise<string[]> {
     const notes = [...(this.taskContextNotes || [])];
+    const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
+    if (translationGuidance) notes.push(translationGuidance);
     const isSubAgentTask =
       (this.task.agentType ?? "main") === "sub" || !!this.task.parentTaskId;
-    const retainMemory =
-      this.task.agentConfig?.retainMemory ?? !isSubAgentTask;
+    const retainMemory = this.task.agentConfig?.retainMemory ?? !isSubAgentTask;
     const gatewayContext = this.task.agentConfig?.gatewayContext ?? "private";
     const memoryFeatures = this.loadExecutionPromptMemoryFeatures();
     const allowTrustedSharedMemory =
@@ -16663,7 +17434,8 @@ ${transcript}
       }
     } catch (error) {
       this.emitEvent("log", {
-        message: "Failed to synthesize NeoWorker memory for Hermes prompt.",
+        message:
+          "Failed to synthesize NeoWorker memory for the execution prompt.",
         error: String((error as Any)?.message || error),
       });
     }
@@ -16696,6 +17468,8 @@ ${transcript}
         ? compactGeneratedAttachmentContent(contractPrompt)
         : contractPrompt;
     const sections = [executionContractPrompt];
+    const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
+    if (translationGuidance) sections.push(translationGuidance);
     const contextNotes = this.taskContextNotes || [];
     if (contextNotes.length > 0) {
       sections.push(contextNotes.join("\n\n"));
@@ -17058,7 +17832,10 @@ ${transcript}
       return context;
     }
     const marker = "\n[NeoWorker skill context truncated]\n";
-    const retained = Math.max(0, HERMES_SKILL_CONTEXT_MAX_CHARS - marker.length);
+    const retained = Math.max(
+      0,
+      HERMES_SKILL_CONTEXT_MAX_CHARS - marker.length,
+    );
     return `${context.slice(0, retained)}${marker}`;
   }
 
@@ -17096,8 +17873,7 @@ ${transcript}
       false,
     );
     const application =
-      resolvedApplication ||
-      this.getAppliedSkillApplication(requestedSkillId);
+      resolvedApplication || this.getAppliedSkillApplication(requestedSkillId);
     if (!application) {
       return result;
     }
@@ -17763,6 +18539,8 @@ ${transcript}
   }
 
   private getFinalOutcomeGuardError(): string | null {
+    const capabilityError = this.toolRegistry?.getDocumentTranslationCapabilityError?.();
+    if (capabilityError) return capabilityError;
     const contract = this.buildCompletionContract();
     const bestCandidate = this.getBestFinalResponseCandidate();
     const artifactEvidenceFiles = this.getAllArtifactEvidencePaths();
@@ -17770,6 +18548,8 @@ ${transcript}
       contract,
       artifactEvidenceFiles,
     );
+    const translationError = this.toolRegistry?.getDocumentTranslationDeliveryError?.(usableArtifactEvidenceFiles);
+    if (translationError) return translationError;
     const missingArtifactExtensions = this.getMissingArtifactExtensions(
       contract,
       artifactEvidenceFiles,
@@ -17984,7 +18764,7 @@ ${transcript}
     this.task.resultSummary = mutationFooter
       ? `${summary}\n\n${mutationFooter}`
       : summary;
-    const outputSummary = this.buildTaskOutputSummary() || {
+    const outputSummary = this.buildTaskOutputSummary(undefined, this.task.resultSummary) || {
       created: [],
       outputCount: 0,
       folders: [],
@@ -18072,6 +18852,7 @@ ${transcript}
     metadata?: {
       terminalStatus?: Task["terminalStatus"];
       failureClass?: Task["failureClass"];
+      outputEvidenceStartedAt?: number;
     } & Partial<TerminalState>,
   ): void {
     if (this.getEffectiveExecutionMode() === "chat") {
@@ -18167,7 +18948,10 @@ ${transcript}
     this.task.failureDomains = reliabilityOutcomes.failureDomains;
     this.task.stopReasons = reliabilityOutcomes.stopReasons;
     this.task.resultSummary = summary;
-    const outputSummary = this.buildTaskOutputSummary() || {
+    const outputSummary = this.buildTaskOutputSummary(
+      metadata?.outputEvidenceStartedAt,
+      summary,
+    ) || {
       created: [],
       outputCount: 0,
       folders: [],
@@ -19632,16 +20416,65 @@ ${transcript}
     forcedInput?: Any;
   } {
     const canonicalToolName = canonicalizeToolNameUtil(opts.toolName);
+    const officeGenerationTools = new Set([
+      "create_document",
+      "create_spreadsheet",
+      "create_presentation",
+    ]);
+    const requestedExtensions = officeGenerationTools.has(canonicalToolName)
+      ? (
+          this.activeFollowUpCompletionContract ||
+          this.buildCompletionContract()
+        ).requiredArtifactExtensions.map((extension) =>
+          String(extension || "").toLowerCase(),
+        )
+      : [];
+    const controlledOfficeExtensions = new Set([
+      ".docx",
+      ".pdf",
+      ".pptx",
+      ".xlsx",
+    ]);
+    const requestedOfficeExtensions = requestedExtensions.filter((extension) =>
+      controlledOfficeExtensions.has(extension),
+    );
+    const officeOutputFormat = getOfficeArtifactFormatForToolCall(
+      opts.toolName,
+      opts.input,
+    );
+    if (
+      requestedOfficeExtensions.length > 0 &&
+      officeGenerationTools.has(canonicalToolName) &&
+      canonicalToolName !== "create_presentation"
+    ) {
+      const actualExtension = officeOutputFormat
+        ? `.${officeOutputFormat}`
+        : "";
+      if (
+        !actualExtension ||
+        !requestedOfficeExtensions.includes(actualExtension)
+      ) {
+        const requestedLabel = requestedOfficeExtensions.join(", ");
+        const actualLabel = actualExtension || canonicalToolName;
+        const requiredTool = requestedOfficeExtensions.includes(".pptx")
+          ? "create_presentation"
+          : requestedOfficeExtensions.includes(".xlsx")
+            ? "create_spreadsheet"
+            : "create_document";
+        return {
+          blockedResult: {
+            error:
+              `Office output format mismatch: the current user request requires ${requestedLabel}, ` +
+              `but ${opts.toolName} would create ${actualLabel}. Use ${requiredTool} with a complete, valid payload and do not generate a different Office format.`,
+          },
+        };
+      }
+    }
     if (
       (canonicalToolName === "create_presentation" ||
         canonicalToolName === "generate_presentation") &&
       !this.taskAllowsOfficeArtifactExtension(".pptx")
     ) {
-      const requestedExtensions = (
-        this.activeFollowUpCompletionContract || this.buildCompletionContract()
-      ).requiredArtifactExtensions.map((extension) =>
-        String(extension || "").toLowerCase(),
-      );
       const recoveryInstruction = requestedExtensions.includes(".pdf")
         ? 'The requested deliverable is PDF. Immediately call create_document with format="pdf" and the complete content; do not use copy_file or count_text as a substitute for the final PDF.'
         : requestedExtensions.includes(".docx")
@@ -20695,6 +21528,46 @@ ${transcript}
   }
 
   /**
+   * Hermes keeps one MCP client warm across follow-up turns and may cache the
+   * first tools/list response. Keep the Office creator surface stable so a
+   * later request can switch from analysis/XLSX to PPTX without losing the
+   * required tool. Execution-time policy still enforces the current request.
+   */
+  private getHermesHostTools() {
+    const availableTools = this.getAvailableTools();
+    const registryTools = this.toolRegistry?.getTools?.();
+    if (!Array.isArray(registryTools) || registryTools.length === 0) {
+      return availableTools;
+    }
+
+    const stableOfficeTools = new Set([
+      "create_document",
+      "generate_document",
+      "create_spreadsheet",
+      "generate_spreadsheet",
+      "create_presentation",
+      "generate_presentation",
+    ]);
+    const supplementalTools = this.applyAgentPolicyToolFilter(
+      registryTools.filter((tool) => {
+        const name = String(tool?.name || "");
+        return (
+          stableOfficeTools.has(name) && !this.isToolRestrictedByPolicy(name)
+        );
+      }),
+    );
+    const merged = new Map(
+      availableTools.map((tool) => [String(tool.name), tool] as const),
+    );
+    for (const tool of supplementalTools) {
+      if (!merged.has(String(tool.name))) {
+        merged.set(String(tool.name), tool);
+      }
+    }
+    return Array.from(merged.values());
+  }
+
+  /**
    * Tool-count caps offered to the LLM per call.
    * Each tool definition consumes ~200-500 tokens of context. At 197 tools
    * that's 40-100K tokens just for schemas. We use an adaptive cap:
@@ -20888,7 +21761,8 @@ ${transcript}
       this.task?.prompt || "",
       this.lastUserMessage || "",
       this.currentStepId && Array.isArray(this.plan?.steps)
-        ? this.plan.steps.find((step) => step.id === this.currentStepId)?.description || ""
+        ? this.plan.steps.find((step) => step.id === this.currentStepId)
+            ?.description || ""
         : "",
     ]
       .filter(Boolean)
@@ -20909,6 +21783,53 @@ ${transcript}
     return /(?:\b(?:playwright|puppeteer)\b[^\n;&|]*\binstall\b|\b(?:npm|npx|pnpm|yarn|bun)\b[^\n;&|]*(?:install|add)\b[^\n;&|]*\b(?:playwright|puppeteer|chrom(?:e|ium)|browser\s*driver)\b|\b(?:brew|apt(?:-get)?|yum|dnf|pacman)\b[^\n;&|]*(?:install|--cask)\b[^\n;&|]*\b(?:google-chrome|chrom(?:e|ium)|playwright|browser)\b)/i.test(
       normalizedCommand,
     );
+  }
+
+  private getBundledOfficeDependencyRedirect(
+    toolName: string,
+    input: unknown,
+  ): Record<string, unknown> | null {
+    if (canonicalizeToolNameUtil(toolName) !== "run_command") return null;
+    const command = String((input as Any)?.command || "").trim();
+    const installsPythonPptx =
+      /(?:\bpython(?:3(?:\.\d+)*)?\s+-m\s+pip|\bpip3?)\s+install\b[^\n;&|]*\bpython[-_]?pptx\b/i.test(
+        command,
+      );
+    // Native editing/read-only inspection must not be redirected to a blank
+    // presentation generator. Only intercept unnecessary dependency installs.
+    if (!installsPythonPptx) return null;
+
+    const userIntent = [
+      this.lastUserMessage || "",
+      this.task?.rawPrompt || "",
+      this.task?.userPrompt || "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const explicitlyRequestsPythonPptx =
+      /(?:\binstall\b|安装)[^\n]{0,100}\bpython[-_]?pptx\b/i.test(userIntent);
+    const explicitlyRequestsPresentationScript =
+      /(?:\bpython\b|python3|脚本|编写代码|写代码)[^\n]{0,120}(?:pptx|powerpoint|演示文稿|幻灯片)/i.test(
+        userIntent,
+      ) ||
+      /(?:pptx|powerpoint|演示文稿|幻灯片)[^\n]{0,120}(?:\bpython\b|python3|脚本|编写代码|写代码)/i.test(
+        userIntent,
+      );
+    if (
+      explicitlyRequestsPythonPptx || explicitlyRequestsPresentationScript
+    ) {
+      return null;
+    }
+
+    const message = "请使用内置 office_translation 工具读取并替换原文件中的文字，无需临时安装 python-pptx。不要将翻译任务改为新建 PPT；必须保留原模板和图片。";
+    return {
+      success: false,
+      error: message,
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "bundled_office_dependency_redirect",
+      immediateReminder: message,
+    };
   }
 
   private filterToolsForBuiltInBrowserVerification<T extends { name?: string }>(
@@ -23315,6 +24236,24 @@ You are continuing a previous conversation. The context from the previous conver
         };
       }
       if (activePresentationWorkflow === "presentation-studio") {
+        if (this.isNativePresentationTranslationWorkflow()) {
+          return {
+            templateId: "write_recovery:presentation_studio_native_translation",
+            steps: [
+              {
+                description:
+                  `Write-recovery (required): resume the native PPTX translation for "${step.description}" with run_command. ` +
+                  "Copy each source deck to an independent output and edit text inside that copied native package. Preserve its masters, layouts, theme, media, charts, tables, notes, transitions, slide count, and slide order. Do not bootstrap or compile a replacement deck.",
+                kind: "recovery",
+              },
+              {
+                description:
+                  "After every translated copy exists, validate each PPTX package and render it for text-fit review. Never replace a failed native edit with a generic template.",
+                kind: "recovery",
+              },
+            ],
+          };
+        }
         return {
           templateId: "write_recovery:presentation_studio",
           steps: [
@@ -23727,10 +24666,7 @@ You are continuing a previous conversation. The context from the previous conver
   private async handleWorkspaceSwitch(newWorkspace: Workspace): Promise<void> {
     const oldWorkspacePath = this.workspace.path;
 
-    if (
-      this.hermesRuntimeAdapter &&
-      oldWorkspacePath !== newWorkspace.path
-    ) {
+    if (this.hermesRuntimeAdapter && oldWorkspacePath !== newWorkspace.path) {
       await this.closeHermesRuntime("workspace_changed");
     }
 
@@ -24376,10 +25312,7 @@ You are continuing a previous conversation. The context from the previous conver
       isDirectory: (workspacePath) => fs.statSync(workspacePath).isDirectory(),
       applyWorkspaceSwitch: (preferred) => {
         const oldWorkspacePath = this.workspace.path;
-        if (
-          this.hermesRuntimeAdapter &&
-          oldWorkspacePath !== preferred.path
-        ) {
+        if (this.hermesRuntimeAdapter && oldWorkspacePath !== preferred.path) {
           void this.closeHermesRuntime("workspace_changed");
         }
         this.workspace = preferred;
@@ -26355,6 +27288,8 @@ You are continuing a previous conversation. The context from the previous conver
   private buildDeterministicWorkflowHint(
     contract: StepExecutionContract,
   ): string {
+    const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
+    if (translationGuidance) return `\n\n${translationGuidance}`;
     const strictLengthArtifactTask = this.isStrictLengthArtifactTask();
     if (!strictLengthArtifactTask && contract.artifactKind !== "presentation")
       return "";
@@ -26391,6 +27326,16 @@ You are continuing a previous conversation. The context from the previous conver
         );
       }
       if (activePresentationWorkflow === "presentation-studio") {
+        if (this.isNativePresentationTranslationWorkflow()) {
+          return (
+            "\n\nPRESENTATION STUDIO NATIVE TRANSLATION WORKFLOW (REQUIRED):\n" +
+            "1) Treat every source PPTX as an existing deck to edit, never as source material for a new deck.\n" +
+            "2) Create one independent copy per input and translate text inside the copied native package with run_command.\n" +
+            "3) Preserve masters, layouts, theme, fonts, dimensions, slide count/order, images, charts, tables, notes, transitions, and reusable assets.\n" +
+            "4) Validate every output package and render slides for text-fit review when available.\n" +
+            "Do not bootstrap a blank project or call create_presentation/generate_presentation. If native editing fails, report the blocker instead of rebuilding with another template."
+          );
+        }
         return (
           "\n\nPRESENTATION STUDIO WORKFLOW (REQUIRED):\n" +
           "1) Follow the active Presentation Studio source-first workflow.\n" +
@@ -26405,8 +27350,9 @@ You are continuing a previous conversation. The context from the previous conver
           "\n\nPPT MASTER ADVANCED WORKFLOW (REQUIRED):\n" +
           "1) Follow exactly one route from the manually selected PPT Master workflow.\n" +
           "2) Keep the advanced project and all source artifacts under the task-scoped ppt-master directory.\n" +
-          "3) After planning and review, call create_presentation exactly once with the complete slide plan; the host pins it to the advanced renderer and canonical output path.\n" +
-          "4) Verify workflow.log and pptx-delivery-check.json before completion, and report missing optional dependencies or incomplete visual review explicitly.\n" +
+          "3) If an attached/source PPTX or POTX template is available, treat it as the native template source of record: fill/clone that package and preserve its master, layouts, theme, fonts, aspect ratio, and assets instead of rebuilding a generic deck that only imitates its style.\n" +
+          "4) After planning and review, call create_presentation exactly once with the complete slide plan; the host pins it to the advanced renderer and canonical output path.\n" +
+          "5) Verify workflow.log and pptx-delivery-check.json before completion, and report missing optional dependencies or incomplete visual review explicitly.\n" +
           "Do not call generate_presentation or create a competing deck variant."
         );
       }
@@ -28639,7 +29585,10 @@ You are continuing a previous conversation. The context from the previous conver
         includeDisabled: true,
       });
       if (!Array.isArray(result)) {
-        const err = String(result?.error || "Failed to list scheduled tasks.");
+        const err = getToolErrorMessage(
+          result?.error,
+          "Failed to list scheduled tasks.",
+        );
         throw new Error(err);
       }
 
@@ -28748,7 +29697,10 @@ You are continuing a previous conversation. The context from the previous conver
       });
       if (!result || result.success === false || result.error) {
         throw new Error(
-          String(result?.error || "Failed to update scheduled task."),
+          getToolErrorMessage(
+            result?.error,
+            "Failed to update scheduled task.",
+          ),
         );
       }
       const jobName = result?.job?.name
@@ -28765,7 +29717,10 @@ You are continuing a previous conversation. The context from the previous conver
       const result = await runScheduleTool({ action: "remove", id });
       if (!result || result.success === false || result.error) {
         throw new Error(
-          String(result?.error || "Failed to remove scheduled task."),
+          getToolErrorMessage(
+            result?.error,
+            "Failed to remove scheduled task.",
+          ),
         );
       }
       logAssistant("✅ Removed scheduled task.");
@@ -28881,7 +29836,9 @@ You are continuing a previous conversation. The context from the previous conver
           });
 
     if (!result || result.success === false || result.error) {
-      throw new Error(String(result?.error || "Failed to schedule task."));
+      throw new Error(
+        getToolErrorMessage(result?.error, "Failed to schedule task."),
+      );
     }
 
     const job = result.job;
@@ -29081,10 +30038,9 @@ You are continuing a previous conversation. The context from the previous conver
 
     if (result?.success !== true) {
       throw new Error(
-        String(
-          result?.error ||
-            result?.message ||
-            "Failed to delegate task to Claude Code",
+        getToolErrorMessage(
+          result?.error ?? result?.message,
+          "Failed to delegate task to Claude Code",
         ),
       );
     }
@@ -30158,16 +31114,16 @@ You are continuing a previous conversation. The context from the previous conver
     if (!mentionsPresentation) return false;
 
     const existingDeckCue =
-      /\b(?:existing|attached|uploaded|current|this)\b[\s\S]{0,30}\b(?:pptx?|powerpoint|presentation|deck)\b/i.test(
+      /\b(?:existing|attached|uploaded|current|this|these)\b[\s\S]{0,30}\b(?:pptx?|powerpoint|presentations?|decks?)\b/i.test(
         normalized,
       ) ||
-      /(?:现有|已有|上传|附件里|这个|这份).{0,20}(?:pptx?|演示文稿|幻灯片)/i.test(
+      /(?:现有|已有|上传|附件里|这个|这份|这些|这几个|这几份|多个).{0,20}(?:pptx?|演示文稿|幻灯片)/i.test(
         normalized,
       );
     const editOrInspectCue =
-      /\b(?:edit|revise|redesign|restyle|improve|polish|repair|fix|inspect|review|read|check)\b/i.test(
+      /\b(?:edit|revise|redesign|restyle|improve|locali[sz]e|polish|repair|fix|inspect|review|read|check|translate|translation)\b/i.test(
         normalized,
-      ) || /(?:编辑|修改|优化|美化|修复|检查|查看|读取|评审)/.test(normalized);
+      ) || /(?:编辑|修改|优化|美化|修复|检查|查看|读取|评审|翻译|汉化|本地化|译成|译为)/.test(normalized);
 
     const createOrTransformCue =
       /\b(?:create|generate|make|build|produce|draft|turn|convert|transform)\b/i.test(
@@ -30298,6 +31254,11 @@ You are continuing a previous conversation. The context from the previous conver
     return null;
   }
 
+  private isNativePresentationTranslationWorkflow(): boolean {
+    const application = this.getAppliedSkillApplication("presentation-studio");
+    return application?.parameters?.preserve_source_design === true;
+  }
+
   private getPptMasterArtifactRoot(): string | null {
     const application = this.getAppliedSkillApplication("ppt-master");
     const artifactDirectories = Array.isArray(
@@ -30329,6 +31290,93 @@ You are continuing a previous conversation. The context from the previous conver
     );
   }
 
+  private inferPptMasterSourcePathFromTaskText(): string | undefined {
+    const workspacePath =
+      this.workspace?.path && typeof this.workspace.path === "string"
+        ? this.workspace.path
+        : "";
+    if (!workspacePath) return undefined;
+
+    const taskText = [
+      this.task?.title,
+      this.task?.prompt,
+      this.task?.rawPrompt,
+      this.task?.userPrompt,
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join("\n");
+    if (!taskText.trim()) return undefined;
+
+    const candidates: string[] = [];
+    const addCandidate = (value: string) => {
+      const cleaned = value
+        .trim()
+        .replace(/[.,;:!?，。；：！？）》】〉]+$/g, "");
+      if (!/\.(?:pptx|ppt|potx|pot)$/i.test(cleaned)) return;
+      const resolved = path.isAbsolute(cleaned)
+        ? path.resolve(cleaned)
+        : path.resolve(workspacePath, cleaned);
+      if (!candidates.includes(resolved)) candidates.push(resolved);
+    };
+
+    const uploadReferencePattern =
+      /(?:^|[\s("'`])((?:\.neoworker[\\/]+uploads[\\/]+)[^)\]\r\n"'`]+\.(?:pptx|ppt|potx|pot)\b)/gim;
+    for (const match of taskText.matchAll(uploadReferencePattern)) {
+      addCandidate(match[1]);
+    }
+
+    const explicitPathPattern =
+      /(?:\/(?:Users|private|tmp|var|Volumes|home)\/[^\s"'`<>()\[\]]+|[A-Za-z]:[\\/][^\s"'`<>()\[\]]+|(?:\.\/|\.\.\/)[^\s"'`<>()\[\]]+)\.(?:pptx|ppt|potx|pot)\b/gi;
+    for (const match of taskText.matchAll(explicitPathPattern)) {
+      addCandidate(match[0]);
+    }
+
+    if (/\.(?:pptx|ppt|potx|pot)\b/i.test(taskText)) {
+      const uploadsRoot = path.join(workspacePath, ".neoworker", "uploads");
+      const uploadFiles: string[] = [];
+      const collectUploadFiles = (directory: string, depth: number) => {
+        if (depth > 2 || uploadFiles.length >= 32) return;
+        let entries: fs.Dirent[];
+        try {
+          entries = fs.readdirSync(directory, { withFileTypes: true });
+        } catch {
+          return;
+        }
+        for (const entry of entries) {
+          const fullPath = path.join(directory, entry.name);
+          if (entry.isDirectory()) {
+            collectUploadFiles(fullPath, depth + 1);
+            continue;
+          }
+          if (entry.isFile() && /\.(?:pptx|ppt|potx|pot)$/i.test(entry.name)) {
+            uploadFiles.push(fullPath);
+          }
+        }
+      };
+      collectUploadFiles(uploadsRoot, 0);
+      const namedMatches = uploadFiles.filter((candidate) =>
+        taskText.includes(path.basename(candidate)),
+      );
+      for (const candidate of namedMatches.length === 1
+        ? namedMatches
+        : uploadFiles.length === 1
+          ? uploadFiles
+          : []) {
+        addCandidate(candidate);
+      }
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const stats = fs.statSync(candidate);
+        if (stats.isFile()) return candidate;
+      } catch {
+        // Keep looking for another uploaded/source template reference.
+      }
+    }
+    return undefined;
+  }
+
   /**
    * PPT Master is user-selected, so its renderer must be selected by the host
    * rather than trusted to a model-authored style hint. The hidden fields below
@@ -30355,12 +31403,6 @@ You are continuing a previous conversation. The context from the previous conver
       input && typeof input === "object" && !Array.isArray(input)
         ? (input as Record<string, unknown>)
         : {};
-    const styleBrief = [
-      typeof original.styleBrief === "string" ? original.styleBrief : "",
-      "PPT Master advanced editorial system: strong hierarchy, asymmetric composition, intentional whitespace, restrained cobalt and coral accents, varied native layouts, executive-quality typography, and no repetitive white-card template grid.",
-    ]
-      .filter(Boolean)
-      .join(" ");
     const application = this.getAppliedSkillApplication("ppt-master");
     const skillParameters =
       application?.parameters && typeof application.parameters === "object"
@@ -30372,7 +31414,15 @@ You are continuing a previous conversation. The context from the previous conver
         : typeof skillParameters.source_path === "string" &&
             skillParameters.source_path.trim()
           ? skillParameters.source_path
-          : undefined;
+          : this.inferPptMasterSourcePathFromTaskText();
+    const styleBrief = [
+      typeof original.styleBrief === "string" ? original.styleBrief : "",
+      sourcePath
+        ? "PPT Master native template lock: sourcePath is the template source of record; clone/fill the native PPTX/POTX package, preserve its slide master, layouts, theme colors, fonts, aspect ratio, and reusable assets, and never create a blank deck that merely imitates its colors or typography."
+        : "PPT Master advanced editorial system: strong hierarchy, asymmetric composition, intentional whitespace, restrained cobalt and coral accents, varied native layouts, executive-quality typography, and no repetitive white-card template grid.",
+    ]
+      .filter(Boolean)
+      .join(" ");
 
     return {
       ...original,
@@ -31949,28 +32999,37 @@ You are continuing a previous conversation. The context from the previous conver
         try {
           if (this.getAcpxExternalRuntimeConfig()?.agent === "hermes") {
             await this.ensureRuntimeCatalogsReady();
-            await this.executeWithHermesRuntime(initialPrompt || this.getContractPrompt() || "");
+            await this.executeWithHermesRuntime(
+              initialPrompt || this.getContractPrompt() || "",
+            );
           } else {
-            await this.executeWithAcpxRuntime(initialPrompt || this.getContractPrompt() || "");
+            await this.executeWithAcpxRuntime(
+              initialPrompt || this.getContractPrompt() || "",
+            );
           }
           return;
         } catch (error) {
           if (
             error instanceof AcpxRuntimeUnavailableError ||
             (error instanceof HermesAcpError &&
-              ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
+              ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(
+                String(error.code),
+              ))
           ) {
             const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
             const fallbackAllowed = this.isExternalRuntimeFallbackAllowed();
             this.emitRuntimeStatus(
               this.getAcpxExternalRuntimeConfig()?.agent || "acpx",
               fallbackAllowed ? "fallback" : "failed",
-              fallbackAllowed
-                ? `${runtimeAgentName} ACP runtime unavailable; falling back to NeoWorker native execution`
-                : `${runtimeAgentName} ACP runtime unavailable; forced runtime cannot fall back`,
+              this.getExternalRuntimeStatusMessage(
+                runtimeAgentName,
+                fallbackAllowed,
+              ),
               {
                 errorCode:
-                  error instanceof HermesAcpError ? String(error.code) : undefined,
+                  error instanceof HermesAcpError
+                    ? String(error.code)
+                    : undefined,
                 fallbackTarget: fallbackAllowed ? "native" : undefined,
               },
             );
@@ -31983,7 +33042,10 @@ You are continuing a previous conversation. The context from the previous conver
               );
             }
             this.disableExternalRuntimeForFallback(
-              `${runtimeAgentName} acpx runtime unavailable. Falling back to NeoWorker native execution path.`,
+              this.getExternalRuntimeFallbackLogMessage(
+                runtimeAgentName,
+                "initial",
+              ),
             );
           } else {
             throw error;
@@ -32213,9 +33275,10 @@ You are continuing a previous conversation. The context from the previous conver
                 );
                 if (!result.success) {
                   throw new Error(
-                    result.error ||
-                      result.message ||
+                    getToolErrorMessage(
+                      result.error ?? result.message,
                       "Workflow pipeline failed",
+                    ),
                   );
                 }
               }
@@ -32658,8 +33721,7 @@ You are continuing a previous conversation. The context from the previous conver
       }
       this.emitEvent("assistant_message", {
         message:
-          userFacingError ||
-          "本轮任务未能完成，当前会话已保留，请重试。",
+          userFacingError || "本轮任务未能完成，当前会话已保留，请重试。",
         terminalFailure: true,
         failureClass,
         technicalError: rawError,
@@ -37705,7 +38767,10 @@ Return ONLY a JSON object:
                               result.success === false &&
                               content.input?.glob
                             ) {
-                              const errorText = String(result.error || "");
+                              const errorText = getToolErrorMessage(
+                                result.error,
+                                "",
+                              );
                               if (
                                 /invalid regex pattern|nothing to repeat/i.test(
                                   errorText,
@@ -37747,8 +38812,9 @@ Return ONLY a JSON object:
                               await this.tryWorkspaceBoundaryRecovery({
                                 toolName: content.name,
                                 input: content.input,
-                                errorMessage: String(
-                                  result?.error || result?.message || "",
+                                errorMessage: getToolErrorMessage(
+                                  result?.error ?? result?.message,
+                                  "",
                                 ),
                                 toolTimeoutMs,
                                 targetPaths: stepContract.targetPaths,
@@ -37986,7 +39052,7 @@ Return ONLY a JSON object:
                             const disabledScope =
                               failureTracking.shouldDisable &&
                               content.name === "web_search" &&
-                              /tavily|brave|serpapi|google|duckduckgo/i.test(
+                              /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
                                 failureMessage,
                               )
                                 ? "provider"
@@ -38420,7 +39486,11 @@ Return ONLY a JSON object:
                             });
                           }
 
-                          if (result && result.success === false && !benignNoChange) {
+                          if (
+                            result &&
+                            result.success === false &&
+                            !benignNoChange
+                          ) {
                             this.releaseBatchCreatedPathReservation(
                               batchCreatedPaths,
                               content.name,
@@ -38466,28 +39536,22 @@ Return ONLY a JSON object:
                                 ) &&
                                 this.isWorkspaceAliasRecoverableFailure(
                                   String(content.input?.path || ""),
-                                  String(result?.error || reason || ""),
+                                  reason,
                                 )
                               ) {
                                 aliasRecoverableFailureObserved = true;
-                                aliasRecoverableFailureReason = String(
-                                  result?.error || reason || "",
-                                );
+                                aliasRecoverableFailureReason = reason;
                               } else if (
                                 this.isRecoverableTaskRootPathDriftFailure(
                                   content.name,
                                   String(content.input?.path || ""),
-                                  String(result?.error || reason || ""),
+                                  reason,
                                 )
                               ) {
                                 aliasRecoverableFailureObserved = true;
-                                aliasRecoverableFailureReason = String(
-                                  result?.error || reason || "",
-                                );
+                                aliasRecoverableFailureReason = reason;
                               }
-                              if (
-                                !_isInputDependentError(result.error || reason)
-                              ) {
+                              if (!_isInputDependentError(reason)) {
                                 allToolErrorsInputDependent = false;
                               }
                               if (isExecutionToolCall) {
@@ -38497,7 +39561,7 @@ Return ONLY a JSON object:
                               const pauseReason =
                                 getUserActionRequiredPauseReason(
                                   content.name,
-                                  result.error || reason,
+                                  reason,
                                 );
                               if (
                                 pauseReason &&
@@ -38515,16 +39579,14 @@ Return ONLY a JSON object:
                                     inputPath: String(
                                       content.input?.path || "",
                                     ),
-                                    failureReason: String(
-                                      result?.error || reason || "",
-                                    ),
+                                    failureReason: reason,
                                     stepId: step.id,
                                   },
                                 );
                               const failureTracking =
                                 recordToolFailureOutcomeUtil({
                                   toolName: content.name,
-                                  failureReason: result.error || reason,
+                                  failureReason: reason,
                                   result,
                                   persistentToolFailures,
                                   recordFailure: (toolName, error) => {
@@ -38575,8 +39637,8 @@ Return ONLY a JSON object:
                               if (failureTracking.shouldDisable) {
                                 const disabledScope =
                                   content.name === "web_search" &&
-                                  /tavily|brave|serpapi|google|duckduckgo/i.test(
-                                    result.error || reason,
+                                  /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
+                                    reason,
                                   )
                                     ? "provider"
                                     : "global";
@@ -38584,7 +39646,7 @@ Return ONLY a JSON object:
                                   ...this.attachToolCorrelationMetadata(
                                     {
                                       tool: content.name,
-                                      error: result.error || reason,
+                                      error: reason,
                                       disabled: true,
                                       disabledScope,
                                     },
@@ -39547,7 +40609,7 @@ Return ONLY a JSON object:
                 result.success === false &&
                 content.input?.glob
               ) {
-                const errorText = String(result.error || "");
+                const errorText = getToolErrorMessage(result.error, "");
                 if (/invalid regex pattern|nothing to repeat/i.test(errorText)) {
                   this.emitEvent("tool_fallback", {
                     tool: "grep",
@@ -39577,7 +40639,10 @@ Return ONLY a JSON object:
               const boundaryRecovery = await this.tryWorkspaceBoundaryRecovery({
                 toolName: content.name,
                 input: content.input,
-                errorMessage: String(result?.error || result?.message || ""),
+                errorMessage: getToolErrorMessage(
+                  result?.error ?? result?.message,
+                  "",
+                ),
                 toolTimeoutMs,
                 targetPaths: stepContract.targetPaths,
                 stepId: step.id,
@@ -39873,13 +40938,12 @@ Return ONLY a JSON object:
                 if (
                   content.name.startsWith("browser_") &&
                   isHtmlBrowserVerificationInfrastructureFailure(
-                    String(result.error || reason || ""),
+                    reason,
                   )
                 ) {
                   browserInfrastructureFailureObserved = true;
-                  browserInfrastructureFailureReason ||= String(
-                    result.error || reason || "Browser automation unavailable",
-                  );
+                  browserInfrastructureFailureReason ||=
+                    reason || "Browser automation unavailable";
                 }
                 const advisoryFailure = isAdvisoryToolFailureResultUtil(result);
                 if (advisoryFailure) {
@@ -39910,22 +40974,22 @@ Return ONLY a JSON object:
                     this.isWorkspaceAliasRecoverableTool(content.name) &&
                     this.isWorkspaceAliasRecoverableFailure(
                       String(content.input?.path || ""),
-                      String(result?.error || reason || ""),
+                      reason,
                     )
                   ) {
                     aliasRecoverableFailureObserved = true;
-                    aliasRecoverableFailureReason = String(result?.error || reason || "");
+                    aliasRecoverableFailureReason = reason;
                   } else if (
                     this.isRecoverableTaskRootPathDriftFailure(
                       content.name,
                       String(content.input?.path || ""),
-                      String(result?.error || reason || ""),
+                      reason,
                     )
                   ) {
                     aliasRecoverableFailureObserved = true;
-                    aliasRecoverableFailureReason = String(result?.error || reason || "");
+                    aliasRecoverableFailureReason = reason;
                   }
-                  if (!_isInputDependentError(result.error || reason)) {
+                  if (!_isInputDependentError(reason)) {
                     allToolErrorsInputDependent = false;
                   }
                   if (isExecutionToolCall) {
@@ -39934,7 +40998,7 @@ Return ONLY a JSON object:
 
                   const pauseReason = getUserActionRequiredPauseReason(
                     content.name,
-                    result.error || reason,
+                    reason,
                   );
                   if (pauseReason && !pauseAfterNextAssistantMessage) {
                     pauseAfterNextAssistantMessage = true;
@@ -39944,12 +41008,12 @@ Return ONLY a JSON object:
                   const suppressDisableForPathDrift = this.shouldSuppressToolDisableForRecoverablePathDrift({
                     toolName: content.name,
                     inputPath: String(content.input?.path || ""),
-                    failureReason: String(result?.error || reason || ""),
+                    failureReason: reason,
                     stepId: step.id,
                   });
                   const failureTracking = recordToolFailureOutcomeUtil({
                     toolName: content.name,
-                    failureReason: result.error || reason,
+                    failureReason: reason,
                     result,
                     persistentToolFailures,
                     recordFailure: (toolName, error) => {
@@ -39978,14 +41042,14 @@ Return ONLY a JSON object:
                   if (failureTracking.shouldDisable) {
                     const disabledScope =
                       content.name === "web_search" &&
-                      /tavily|brave|serpapi|google|duckduckgo/i.test(result.error || reason)
+                      /tavily|brave|serpapi|serper|google|duckduckgo/i.test(reason)
                         ? "provider"
                         : "global";
 	                    this.emitEvent("tool_error", {
 	                      ...this.attachToolCorrelationMetadata(
 	                        {
 	                          tool: content.name,
-	                          error: result.error || reason,
+	                          error: reason,
 	                          disabled: true,
 	                          disabledScope,
 	                        },
@@ -40130,7 +41194,7 @@ Return ONLY a JSON object:
               const disabledScope =
                 failureTracking.shouldDisable &&
                 content.name === "web_search" &&
-                /tavily|brave|serpapi|google|duckduckgo/i.test(failureMessage)
+                /tavily|brave|serpapi|serper|google|duckduckgo/i.test(failureMessage)
                   ? "provider"
                   : "global";
 	              this.emitEvent("tool_error", {
@@ -41224,18 +42288,18 @@ Return ONLY a JSON object:
         requiredArtifactExtensions.includes(".html") &&
         (stepContract.requiresMutation || stepRequiresArtifactEvidence)
       ) {
-          const htmlCandidates = Array.from(
-            new Set(
-              [
-                ...artifactVerificationTargets,
-                ...stepContract.targetPaths,
-                ...this.getAllArtifactEvidencePaths(),
-                // The model may omit the target path entirely after creating
-                // only preparation files. Still run the HTML guard against
-                // the deterministic task filename so the step cannot be
-                // reported complete without a final document.
-                this.buildTaskArtifactFilename(".html"),
-              ].filter(
+        const htmlCandidates = Array.from(
+          new Set(
+            [
+              ...artifactVerificationTargets,
+              ...stepContract.targetPaths,
+              ...this.getAllArtifactEvidencePaths(),
+              // The model may omit the target path entirely after creating
+              // only preparation files. Still run the HTML guard against
+              // the deterministic task filename so the step cannot be
+              // reported complete without a final document.
+              this.buildTaskArtifactFilename(".html"),
+            ].filter(
               (candidate): candidate is string =>
                 typeof candidate === "string" &&
                 path.extname(candidate).toLowerCase() === ".html",
@@ -41279,9 +42343,8 @@ Return ONLY a JSON object:
                 { path: recovery.path },
                 { success: true, path: recovery.path },
               );
-              const recoveredRelativePath = this.toWorkspaceRelativeArtifactPath(
-                recovery.path,
-              );
+              const recoveredRelativePath =
+                this.toWorkspaceRelativeArtifactPath(recovery.path);
               this.emitEvent("file_modified", {
                 path: recoveredRelativePath,
                 size: recovery.bytes,
@@ -42206,10 +43269,7 @@ Return ONLY a JSON object:
       logger.error(`${this.logTag} Resumed task execution failed:`, error);
       this.saveConversationSnapshot();
       const failureClass = this.classifyFailure(error);
-      const userFacingError = this.buildTaskFailureMessage(
-        error,
-        failureClass,
-      );
+      const userFacingError = this.buildTaskFailureMessage(error, failureClass);
       this.daemon.updateTask(this.task.id, {
         status: "failed",
         error: userFacingError,
@@ -42219,9 +43279,7 @@ Return ONLY a JSON object:
         ...this.applyRuntimeTaskProjectionToTask(),
       });
       this.emitEvent("assistant_message", {
-        message:
-          userFacingError ||
-          "恢复执行失败，当前会话已保留，请重试。",
+        message: userFacingError || "恢复执行失败，当前会话已保留，请重试。",
         terminalFailure: true,
         failureClass,
         technicalError: error?.message || String(error),
@@ -42302,6 +43360,77 @@ Return ONLY a JSON object:
       mode: "follow_up",
       reason: "new_terminal_follow_up_run",
     });
+  }
+
+  /**
+   * External runtimes return before sendMessageUnified, so they must perform
+   * the same terminal-task transition themselves. Without this, a follow-up
+   * on a completed task keeps the old terminal state and the renderer never
+   * receives a follow_up_started boundary.
+   */
+  private prepareExternalRuntimeFollowUpRun(message: string): {
+    outputEvidenceStartedAt: number;
+    previousStatus?: Task["status"];
+    previousCompletedAt?: number;
+    createdFilesBefore: Set<string>;
+  } {
+    const artifactEvidenceStartedAt = Date.now();
+    const createdFilesBefore = new Set(
+      (this.fileOperationTracker?.getCreatedFiles?.() || []).map((file) =>
+        String(file || "")
+          .replace(/\\/g, "/")
+          .replace(/^\.\//, "")
+          .trim(),
+      ),
+    );
+    // A few lightweight callers exercise routing with a minimal executor
+    // double. Production executors always have a daemon; keep the routing
+    // guard usable without requiring test-only persistence plumbing.
+    if (!this.daemon) {
+      return {
+        outputEvidenceStartedAt: artifactEvidenceStartedAt,
+        createdFilesBefore,
+      };
+    }
+    const persistedTask = this.daemon?.getTask?.(this.task.id);
+    const previousStatus = persistedTask?.status || this.task.status;
+    const previousCompletedAt =
+      persistedTask?.completedAt || this.task.completedAt;
+    const startsNewRun = ["completed", "failed", "cancelled"].includes(
+      String(previousStatus),
+    );
+    this.lastUserMessage = message;
+    this.currentStepId = startsNewRun ? null : this.currentStepId;
+    this.toolRegistry?.setDocumentTaskContext?.(message);
+
+    if (startsNewRun) {
+      const restartedTask = this.daemon.beginFollowUpRun?.(this.task.id);
+      if (restartedTask) {
+        this.task = { ...this.task, ...restartedTask };
+      } else {
+        this.daemon?.updateTaskStatus?.(this.task.id, "executing");
+      }
+      this.resetRuntimeForNewFollowUpRun();
+    } else {
+      this.daemon?.updateTaskStatus?.(this.task.id, "executing");
+    }
+
+    this.activeFollowUpCompletionContract =
+      this.buildFollowUpCompletionContract(message);
+    this.emitEvent("follow_up_started", {
+      message,
+      followUpMessage: message,
+      turnId: this.activeConversationTurnId || undefined,
+      artifactEvidenceStartedAt,
+      requiredArtifactExtensions:
+        this.activeFollowUpCompletionContract.requiredArtifactExtensions,
+    });
+    return {
+      outputEvidenceStartedAt: artifactEvidenceStartedAt,
+      previousStatus,
+      previousCompletedAt,
+      createdFilesBefore,
+    };
   }
 
   /**
@@ -43063,9 +44192,35 @@ Return ONLY a JSON object:
     );
   }
 
+  private isHermesRuntimeErrorMessage(error: unknown): boolean {
+    if (!this.isHermesExternalRuntimeTask()) return false;
+    const record =
+      error && typeof error === "object"
+        ? (error as { message?: unknown; code?: unknown })
+        : {};
+    const raw = String(record.message || error || "");
+    const code = typeof record.code === "string" ? record.code : "";
+    return /\bhermes\b|\bacp(?:x)?\b|\bHERMES_[A-Z0-9_]+\b|task execution service unavailable|preferred execution service unavailable|automatic fallback is disabled for this task/i.test(
+      `${raw} ${code}`,
+    );
+  }
+
+  private getHermesRuntimeFailureDisplayMessage(): string {
+    return this.taskRequiresSimplifiedChineseOutput()
+      ? "执行服务发生错误，本轮已结束，当前上下文已保留。请重试。"
+      : "The task execution service encountered an error. This turn has ended and your context was preserved. Please try again.";
+  }
+
   private buildFollowUpFailureMessage(error: Any): string {
     const raw = String(error?.message || "Unknown error");
     const lower = raw.toLowerCase();
+
+    // Hermes/ACP implementation details are diagnostic data. Keep them on
+    // technicalError/log events, but never copy the backend name into the
+    // assistant bubble shown for a follow-up failure.
+    if (this.isHermesRuntimeErrorMessage(error)) {
+      return "执行服务发生错误，本轮已结束，当前上下文已保留。请重试。";
+    }
 
     if (lower.includes("image-capable model/provider")) {
       return "当前模型不支持图片，本轮已结束，对话上下文已保留。请切换支持图片的模型后重新发送。";
@@ -43129,6 +44284,9 @@ Return ONLY a JSON object:
     failureClass: NonNullable<Task["failureClass"]>,
   ): string {
     const raw = String(error?.message || error || "Unknown error");
+    if (this.isHermesRuntimeErrorMessage(error)) {
+      return this.getHermesRuntimeFailureDisplayMessage();
+    }
     const formatted = formatProviderErrorForDisplay(raw, { task: this.task });
     if (!this.taskRequiresSimplifiedChineseOutput()) return formatted;
 
@@ -43970,10 +45128,12 @@ Return ONLY a JSON object:
   ): Promise<void> {
     await this.getLifecycleMutex().runExclusive(async () => {
       const persistedTask = this.daemon.getTask(this.task.id);
-      const persistedAgentConfig = persistedTask?.agentConfig ?? this.task.agentConfig;
+      const persistedAgentConfig =
+        persistedTask?.agentConfig ?? this.task.agentConfig;
       // Snapshot before setup changes the task to executing/clears completedAt.
       const previousStatus = persistedTask?.status ?? this.task.status;
-      const previousCompletedAt = persistedTask?.completedAt ?? this.task.completedAt;
+      const previousCompletedAt =
+        persistedTask?.completedAt ?? this.task.completedAt;
       const previousConversationTurnId = this.activeConversationTurnId;
       const previousFollowUpCompletionContract =
         this.activeFollowUpCompletionContract;
@@ -43991,7 +45151,11 @@ Return ONLY a JSON object:
         // Attachment/provider/prompt setup runs before the unified loop's
         // error boundary. Those failures must close this turn as well, or
         // the UI keeps spinning forever despite already displaying an error.
-        this.finalizeRecoverableFollowUpFailure(error, previousStatus, previousCompletedAt);
+        this.finalizeRecoverableFollowUpFailure(
+          error,
+          previousStatus,
+          previousCompletedAt,
+        );
       } finally {
         this.activeConversationTurnId = previousConversationTurnId;
         this.activeFollowUpCompletionContract =
@@ -44016,30 +45180,38 @@ Return ONLY a JSON object:
       });
     }
     if (this.isAcpxExternalRuntimeTask()) {
+      const outputEvidenceStartedAt =
+        this.prepareExternalRuntimeFollowUpRun(message);
       try {
         await this.sendMessageWithAcpxRuntime(
           message,
           images,
           quotedAssistantMessage,
+          outputEvidenceStartedAt,
         );
         return;
       } catch (error) {
         if (
           error instanceof AcpxRuntimeUnavailableError ||
           (error instanceof HermesAcpError &&
-            ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(String(error.code)))
+            ["HERMES_UNAVAILABLE", "PROCESS_SPAWN_FAILED"].includes(
+              String(error.code),
+            ))
         ) {
           const runtimeAgentName = this.getAcpxRuntimeAgentDisplayName();
           const fallbackAllowed = this.isExternalRuntimeFallbackAllowed();
           this.emitRuntimeStatus(
             this.getAcpxExternalRuntimeConfig()?.agent || "acpx",
             fallbackAllowed ? "fallback" : "failed",
-            fallbackAllowed
-              ? `${runtimeAgentName} ACP runtime unavailable; falling back to NeoWorker native execution`
-              : `${runtimeAgentName} ACP runtime unavailable; forced runtime cannot fall back`,
+            this.getExternalRuntimeStatusMessage(
+              runtimeAgentName,
+              fallbackAllowed,
+            ),
             {
               errorCode:
-                error instanceof HermesAcpError ? String(error.code) : undefined,
+                error instanceof HermesAcpError
+                  ? String(error.code)
+                  : undefined,
               fallbackTarget: fallbackAllowed ? "native" : undefined,
             },
           );
@@ -44052,7 +45224,10 @@ Return ONLY a JSON object:
             );
           }
           this.disableExternalRuntimeForFallback(
-            `${runtimeAgentName} acpx runtime unavailable for follow-up. Falling back to NeoWorker native execution path.`,
+            this.getExternalRuntimeFallbackLogMessage(
+              runtimeAgentName,
+              "follow_up",
+            ),
           );
         } else {
           throw error;
@@ -44132,6 +45307,7 @@ Return ONLY a JSON object:
     this.waitingForUserInput = false;
     this.paused = false;
     this.lastUserMessage = message;
+    this.toolRegistry?.setDocumentTaskContext?.(message);
     const goalFollowUp = this.handleGoalSlashFollowUp(message);
     if (goalFollowUp.handled) {
       return;
@@ -45769,8 +46945,9 @@ Return ONLY a JSON object:
                               await this.tryWorkspaceBoundaryRecovery({
                                 toolName: content.name,
                                 input: content.input,
-                                errorMessage: String(
-                                  result?.error || result?.message || "",
+                                errorMessage: getToolErrorMessage(
+                                  result?.error ?? result?.message,
+                                  "",
                                 ),
                                 toolTimeoutMs,
                                 stepId: this.currentStepId || undefined,
@@ -45945,7 +47122,7 @@ Return ONLY a JSON object:
                             const disabledScope =
                               failureTracking.shouldDisable &&
                               content.name === "web_search" &&
-                              /tavily|brave|serpapi|google|duckduckgo/i.test(
+                              /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
                                 failureMessage,
                               )
                                 ? "provider"
@@ -46152,7 +47329,7 @@ Return ONLY a JSON object:
                               if (failureTracking.shouldDisable) {
                                 const disabledScope =
                                   content.name === "web_search" &&
-                                  /tavily|brave|serpapi|google|duckduckgo/i.test(
+                                  /tavily|brave|serpapi|serper|google|duckduckgo/i.test(
                                     reason,
                                   )
                                     ? "provider"
@@ -47300,8 +48477,21 @@ Return ONLY a JSON object:
     this.paused = true;
     if (this.isHermesExternalRuntimeTask()) {
       this.daemon.updateTaskStatus(this.task.id, "paused");
-      this.emitEvent("task_paused", { message: "Pausing Hermes session" });
-      await this.hermesRuntimeAdapter?.pause();
+      this.emitEvent("task_paused", { message: "Pausing task" });
+      try {
+        await this.hermesRuntimeAdapter?.pause();
+      } catch (error) {
+        const technicalError = String(
+          (error as { message?: unknown })?.message || error || "",
+        );
+        this.emitEvent("log", {
+          message: "Failed to pause task execution.",
+          technicalError,
+          runtime: "acpx",
+          runtimeAgent: "hermes",
+        });
+        throw new Error(this.getHermesRuntimeFailureDisplayMessage());
+      }
     }
   }
 
@@ -47309,15 +48499,16 @@ Return ONLY a JSON object:
     const runtime = this.createHermesRuntimeAdapter(this.hermesCheckpoint);
     this.activateHermesRuntime(runtime);
     this.daemon.updateTaskStatus(this.task.id, "executing");
-    this.emitEvent("executing", { message: "Resuming Hermes session from checkpoint" });
+    this.emitEvent("executing", {
+      message: "Resuming task from saved progress",
+    });
     let keepWarm = false;
     try {
-      const continuation =
-        buildHermesFollowUpPrompt({
-          message:
-            "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.",
-          workspacePath: this.workspace.path,
-        });
+      const continuation = buildHermesFollowUpPrompt({
+        message:
+          "Continue the task from the last checkpoint. Inspect the session state first and do not repeat any side effect whose result is unknown.",
+        workspacePath: this.workspace.path,
+      });
       const toolProgress = runtime.getCheckpoint()?.toolProgress;
       const isResuming = Boolean(
         toolProgress?.unknownToolCallIds?.length ||
@@ -47330,14 +48521,38 @@ Return ONLY a JSON object:
         "resume",
       );
       this.hermesCheckpoint = runtime.getCheckpoint();
-      const assistantText = this.enforceTaskOutputLanguageForDisplay(result.assistantText, { finalResponse: true });
+      const assistantText = this.enforceTaskOutputLanguageForDisplay(
+        result.assistantText,
+        { finalResponse: true },
+      );
+      if (this.cancelled || this.paused) return;
+      if (!assistantText) {
+        throw new HermesAcpError(
+          "Task execution ended before a final response could be produced.",
+          "HERMES_EMPTY_FINAL_RESPONSE",
+        );
+      }
       if (assistantText) {
         this.lastAssistantOutput = assistantText;
         this.lastAssistantText = assistantText;
         this.lastNonVerificationOutput = assistantText;
       }
-      this.finalizeTaskBestEffort(assistantText || "Hermes Agent resumed without a final assistant message.", "hermes runtime resumed");
+      this.finalizeTaskBestEffort(assistantText, "hermes runtime resumed");
       keepWarm = true;
+    } catch (error) {
+      if (this.isHermesRuntimeErrorMessage(error)) {
+        const technicalError = String(
+          (error as { message?: unknown })?.message || error || "",
+        );
+        this.emitEvent("log", {
+          message: "Failed to resume task execution.",
+          technicalError,
+          runtime: "acpx",
+          runtimeAgent: "hermes",
+        });
+        throw new Error(this.getHermesRuntimeFailureDisplayMessage());
+      }
+      throw error;
     } finally {
       await this.finishHermesRuntimeTurn(
         runtime,
@@ -47352,7 +48567,11 @@ Return ONLY a JSON object:
    */
   async resume(): Promise<void> {
     await this.getLifecycleMutex().runExclusive(async () => {
-      if (this.isHermesExternalRuntimeTask() && this.paused && !this.waitingForUserInput) {
+      if (
+        this.isHermesExternalRuntimeTask() &&
+        this.paused &&
+        !this.waitingForUserInput
+      ) {
         this.paused = false;
         await this.resumeHermesAfterPause();
         return;

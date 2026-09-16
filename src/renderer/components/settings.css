@@ -5503,6 +5503,13 @@
   color: #2383ff;
 }
 
+.llm-provider-tab-muted {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.72;
+}
+
 .more-channels-content,
 .integrations-content,
 .llm-provider-content {

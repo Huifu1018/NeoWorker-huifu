@@ -29,6 +29,7 @@ import {
 } from "../../utils/office-artifact-publisher";
 import { normalizePresentationArtifactInput } from "./office-artifact-input-normalizer";
 import { selectOfficeTemplate } from "../../utils/office-template-registry";
+import { inspectOfficeTranslation, applyOfficeTranslation } from "../../documents/office-translation";
 
 function sanitizeFilename(raw: string, maxLen = 80): string {
   const normalized = (String(raw || "").trim() || "document").replace(
@@ -171,6 +172,20 @@ export class DocumentTools {
   static getToolDefinitions(): LLMTool[] {
     return [
       {
+        name: "office_translation",
+        description: "Translate an existing PPTX, DOCX or XLSX without changing its template or pictures. First inspect sourcePath, read the returned JSON manifest, translate ALL units keeping ids/sourceSha256/schema, save it with write_file, then apply using translationsPath and filename. Keeps formulas, numeric cells, images, layout and package parts unchanged. No Python installation. Does not translate image pixels or verify visual text fit. PDF and legacy formats are unsupported: report the limitation rather than rebuild with a new template.",
+        input_schema: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["inspect", "apply"] },
+            sourcePath: { type: "string", description: "Workspace path of the ORIGINAL source file" },
+            translationsPath: { type: "string", description: "Workspace JSON manifest with translated text units, required for apply" },
+            filename: { type: "string", description: "New output filename with same extension as source, required for apply" },
+          },
+          required: ["action", "sourcePath"],
+        },
+      },
+      {
         name: "compile_latex",
         description:
           "Compile a workspace .tex file into a PDF using a system LaTeX engine. " +
@@ -258,6 +273,7 @@ export class DocumentTools {
               type: "string",
               description: 'Output filename (e.g. "pitch-deck.pptx")',
             },
+            sourcePath: { type: "string", description: "Template input only for the ppt-master workflow. For translation use office_translation; ordinary generation does not preserve a source template." },
             title: { type: "string", description: "Presentation title" },
             author: { type: "string", description: "Author name (optional)" },
             audience: {
@@ -329,7 +345,8 @@ export class DocumentTools {
             },
             slides: {
               type: "array",
-              description: "Array of slide definitions",
+              description:
+                "Array of slide objects. Pass the objects directly; never JSON-stringify the array or its items.",
               items: {
                 type: "object",
                 properties: {
@@ -672,6 +689,62 @@ export class DocumentTools {
 
   // ── Tool execution ──────────────────────────────────────────────
 
+  async officeTranslation(input: Any): Promise<Any> {
+    const root = await fs.promises.realpath(this.workspacePath);
+    const readContained = async (raw: unknown): Promise<Buffer> => {
+      if (typeof raw !== "string" || !raw.trim()) throw new Error("必须提供有效的工作区文件路径。");
+      const resolved = await fs.promises.realpath(path.resolve(root, raw));
+      const relative = path.relative(root, resolved);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error("翻译文件路径必须位于当前工作区内。");
+      }
+      return fs.promises.readFile(resolved);
+    };
+    const extension = path.extname(String(input?.sourcePath || "")).toLowerCase();
+    if (![".pptx", ".docx", ".xlsx"].includes(extension)) {
+      throw new Error("当前原版式翻译工具支持 PPTX、DOCX、XLSX；PDF 和旧版 Office 格式尚不支持，不能擅自更换模板或把图片移到附录。");
+    }
+    const source = await readContained(input.sourcePath);
+    if (input.action === "inspect") {
+      const manifest = await inspectOfficeTranslation(source);
+      const manifestPath = resolveVersionedOutputPath(path.join(root, `.neoworker-translation-${manifest.sourceSha256.slice(0, 16)}.json`));
+      await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx" });
+      return {
+        success: true,
+        manifestPath: path.relative(root, manifestPath),
+        units: manifest.units.length,
+        sourceSha256: manifest.sourceSha256,
+        preview: manifest.units.slice(0, 8),
+        guidance: "Read the complete manifest. Translate text units in paragraph order and context, retaining every id, schema and sourceSha256. Keep proper names/identifiers unchanged where appropriate. Save a translated JSON manifest, then call office_translation with action=apply, the ORIGINAL sourcePath, translationsPath and a new filename. Image text is not editable by this tool.",
+      };
+    }
+    if (input.action !== "apply") throw new Error("action 必须为 inspect 或 apply。");
+    if (typeof input.filename !== "string" || !input.filename.trim() || path.extname(input.filename).toLowerCase() !== extension) {
+      throw new Error("翻译输出必须提供与源文件格式相同的新文件名。");
+    }
+    const manifest = JSON.parse((await readContained(input.translationsPath)).toString("utf8"));
+    const output = await applyOfficeTranslation(source, manifest);
+    const outputPath = resolveVersionedOutputPath(path.join(root, sanitizeFilename(input.filename, 180)));
+    if (path.extname(outputPath).toLowerCase() !== extension) throw new Error("输出文件名无效。");
+    await fs.promises.writeFile(outputPath, output, { flag: "wx" });
+    const mimeType = extension === ".pptx"
+      ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      : extension === ".xlsx"
+        ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    this.registerArtifact?.(this.taskId, outputPath, mimeType, { sourcePath: input.sourcePath, sourceFidelity: "verified" });
+    return {
+      success: true,
+      path: path.relative(root, outputPath),
+      sourcePath: input.sourcePath,
+      size: output.length,
+      mimeType,
+      sourceFidelity: { verified: true, scope: "native package structure and non-text parts", textUnits: manifest.units.length },
+      visualCheck: "not_performed",
+      _modelReminder: "Native source structure, images, styles, formulas and non-text parts were verified unchanged. This is NOT a visual or translation accuracy check. Inspect rendered pages for text fit before claiming visual QA. Disclose that text inside images, embedded objects and calculated fields was not translated. Do not claim 0 issues or complete translation based on this check alone.",
+    };
+  }
+
   async compileLatex(input: Any): Promise<Any> {
     const result = await compileLatex({
       workspacePath: this.workspacePath,
@@ -834,7 +907,7 @@ export class DocumentTools {
     }
     const qualityCheck = published.qualityCheck;
 
-    if (this.registerArtifact && !published.deduplicated) {
+    if (this.registerArtifact) {
       this.registerArtifact(
         this.taskId,
         published.path,
@@ -953,7 +1026,7 @@ export class DocumentTools {
     }
     const qualityCheck = published.qualityCheck;
 
-    if (this.registerArtifact && !published.deduplicated) {
+    if (this.registerArtifact) {
       this.registerArtifact(
         this.taskId,
         published.path,

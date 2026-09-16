@@ -55,6 +55,7 @@ import {
 import { localizeProgressText } from "../utils/localized-progress-text";
 import { getLocalizedSubagentDisplay } from "../utils/localized-agent-roles";
 import { getLocalizedSkillNameFromIdentifier } from "../utils/localized-skills";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 import {
   deriveOfficeArtifactDelivery,
   mapOfficeVersionsByPath,
@@ -3033,7 +3034,9 @@ function RightPanelComponent({
     "rightPanel.preserved.tooltip",
     "Completed with preserved outputs. NeoWorker kept the files and summary it produced, even though some checks or steps did not fully finish.",
   );
-  const overviewSummary = task?.semanticSummary || task?.resultSummary || null;
+  const overviewSummary = sanitizeHermesText(
+    task?.semanticSummary || task?.resultSummary || "",
+  ) || null;
   const artifactCount = outputSummary?.outputCount || stableFiles.length;
   const completedProcessSteps = stableProgressPlanSteps.filter(
     (step) => step.status === "completed",

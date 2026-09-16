@@ -100,6 +100,7 @@ import { useVoiceInput } from "../../hooks/useVoiceInput";
 import { useVoiceTalkMode } from "../../hooks/useVoiceTalkMode";
 import { useAgentContext, type AgentContext } from "../../hooks/useAgentContext";
 import { translate, useLanguage } from "../../i18n";
+import { localizeErrorText } from "../../utils/localized-error-text";
 import { localizeProgressText } from "../../utils/localized-progress-text";
 import { isCapabilityCatalogPlan } from "../../../shared/plan-quality";
 import { shouldShowComposerProgress } from "../../utils/right-panel-progress";
@@ -120,6 +121,10 @@ import {
   shouldShowTaskEventInStepFeed,
   shouldShowTaskEventInSummaryMode,
 } from "../../utils/task-event-visibility";
+import {
+  isHermesRuntimeEvent,
+  sanitizeHermesText,
+} from "../../utils/runtime-privacy";
 import { normalizeEventsForTimelineUi } from "../../utils/timeline-projection";
 import { getEffectiveTaskEventType } from "../../utils/task-event-compat";
 import {
@@ -175,6 +180,8 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  ThumbsDown,
+  ThumbsUp,
   Clock,
   X,
 } from "lucide-react";
@@ -205,7 +212,10 @@ import {
   buildComposerPermissionOverrides,
   resolveComposerPermissionAccessModeForContext,
 } from "./composer-permission";
-import { isComposerSubmissionBusy } from "./composer-submission-state";
+import {
+  hasComposerSendableDraft,
+  isComposerSubmissionBusy,
+} from "./composer-submission-state";
 import {
   type WelcomeTaskSuggestion,
   type ActiveWelcomeSuggestionDraft,
@@ -258,6 +268,8 @@ import {
   shouldShowTimelineControls,
   resolveTimelineControlsPlacement,
   deriveComposerTaskSettings,
+  annotateRecoveredIntermediateFailures,
+  collapseRepeatedTimelineFailures,
 } from "./task-event-presentation";
 import {
   type ImportedAttachment,
@@ -440,6 +452,7 @@ import {
   shouldShowChatTaskExecutionRows,
   selectVisibleCommandOutputSessions,
   shouldShowBootstrapProgressRow,
+  isActionBlockInCurrentTurn,
   shouldMarkActionBlockActiveForCurrentTurn,
   getBootstrapProgressTitle,
   deriveProgressHeartbeat,
@@ -1905,6 +1918,10 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
     latestUserMessageEventIndex >= 0
       ? events[latestUserMessageEventIndex]?.id || null
       : null;
+  const latestUserMessageEvent =
+    latestUserMessageEventIndex >= 0
+      ? events[latestUserMessageEventIndex] ?? null
+      : null;
 
   recordRendererRender(
     "MainContent.taskConversationShell",
@@ -2210,6 +2227,8 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                   isReplayMode,
                   actionBlockEventIndices: item.eventIndices,
                   latestUserMessageEventIndex,
+                  actionBlockEvents: item.events,
+                  latestUserMessageEvent,
                 });
                 const expanded = resolveDisclosureExpanded({
                   forceExpanded: isActive,
@@ -2475,7 +2494,11 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       workspace?.path,
     ],
   );
-  const feedRowRenderCacheRef = useRef<Map<string, { signature: string; node: React.ReactNode }>>(
+  const feedRowRenderCacheRef = useRef<Map<string, {
+    signature: string;
+    node: React.ReactNode;
+    queryControls?: (defaultActions: ReactNode) => ReactNode;
+  }>>(
     new Map(),
   );
 
@@ -2544,6 +2567,8 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                   isReplayMode,
                   actionBlockEventIndices: item.eventIndices,
                   latestUserMessageEventIndex,
+                  actionBlockEvents: item.events,
+                  latestUserMessageEvent,
                 });
                 const visibleEventState = item.events
                   .map((event: TaskEvent) => {
@@ -2807,12 +2832,21 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                   );
                 }
                 const isLatestActionBlock = timelineIndex === lastActionBlockTimelineIndex;
+                const isCurrentTurnActionBlock = isActionBlockInCurrentTurn({
+                  isLatestActionBlock,
+                  actionBlockEventIndices: item.eventIndices,
+                  latestUserMessageEventIndex,
+                  actionBlockEvents: item.events,
+                  latestUserMessageEvent,
+                });
                 const isActive = shouldMarkActionBlockActiveForCurrentTurn({
                   isLatestActionBlock,
                   isTaskWorking,
                   isReplayMode,
                   actionBlockEventIndices: item.eventIndices,
                   latestUserMessageEventIndex,
+                  actionBlockEvents: item.events,
+                  latestUserMessageEvent,
                 });
                 const actionBlockState = getActionBlockRenderState(
                   item.events as TaskEvent[],
@@ -2858,7 +2892,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                   // A task can execute several queued user turns. Once a newer
                   // action block exists, an older block must not inherit the
                   // latest turn's working/recovering state.
-                  isHistoricalBlock: !isLatestActionBlock,
+                  isHistoricalBlock: !isCurrentTurnActionBlock,
                 });
                 const expanded = resolveDisclosureExpanded({
                   forceExpanded: isActive || actionBlockStatus === "needs_approval",
@@ -3212,6 +3246,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                 item.eventIndex,
               );
               if (
+                isHermesRuntimeEvent(event) ||
                 isHermesStreamingEvent(event) ||
                 isInternalAssistantMessage(event)
               ) {
@@ -3388,13 +3423,14 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                   ? completionSummaryText
                   : event.payload?.message || "";
                 const cleanedMessageText = cleanAssistantMessageForDisplay(messageText);
+                const displayMessageText = localizeErrorText(cleanedMessageText);
                 const inlineFrames = getTaskEventInlineFrames(event);
                 const sourceUserMessage = getPreviousUserMessageText(
                   transcriptEvents,
                   item.eventIndex,
                 );
                 const quotedAssistantMessage = createQuotedAssistantMessage(
-                  cleanedMessageText,
+                  displayMessageText,
                   event.id,
                   event.taskId,
                 );
@@ -3402,18 +3438,31 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                 const isFinalAssistantMessage = isLastAssistant && !isTaskWorking;
                 const isFailedFollowUpMessage =
                   event.payload?.followUpFailed === true;
+                const isPlainSuccessfulCompletion =
+                  isFinalAssistantMessage &&
+                  !isChatTask &&
+                  !isFailedFollowUpMessage &&
+                  task.status === "completed" &&
+                  task.terminalStatus !== "needs_user_action" &&
+                  task.terminalStatus !== "partial_success";
                 const showAssistantIdentity =
-                  cleanedMessageText.trim().length > 0 && assistantIdentityEventIds.has(event.id);
+                  displayMessageText.trim().length > 0 &&
+                  assistantIdentityEventIds.has(event.id) &&
+                  !isPlainSuccessfulCompletion;
+                const showAssistantResponseStyling =
+                  showAssistantIdentity || isFinalAssistantMessage;
                 return (
                   <Fragment key={event.id || `event-${item.eventIndex}`}>
                     <div
                       className={`chat-message assistant-message${
                         isFinalAssistantMessage ? "" : " assistant-process-message"
-                      }${showAssistantIdentity ? " assistant-response-message" : ""}`}
+                      }${showAssistantResponseStyling ? " assistant-response-message" : ""}`}
                     >
                       {showAssistantIdentity && <AssistantIdentityHeader />}
                       <div className="chat-bubble assistant-bubble">
-                        {isFinalAssistantMessage && !isChatTask && (
+                        {isFinalAssistantMessage &&
+                          !isChatTask &&
+                          !isPlainSuccessfulCompletion && (
                           <div className="chat-bubble-header">
                             {isFailedFollowUpMessage && (
                               <span className="chat-status failed-follow-up">
@@ -3472,12 +3521,12 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                         )}
                         <div className="chat-bubble-content markdown-content">
                           <AssistantMessageContent
-                            message={cleanedMessageText}
+                            message={displayMessageText}
                             markdownComponents={markdownComponents}
                             workspacePath={workspace?.path}
                             onOpenViewer={setViewerFilePath}
                           />
-                          {renderGeneratedArtifactCards(cleanedMessageText, event)}
+                          {renderGeneratedArtifactCards(displayMessageText, event)}
                         </div>
                       </div>
                       {isFinalAssistantMessage &&
@@ -3493,7 +3542,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                               <AutoMailComposeFrame
                                 eventId={event.id}
                                 taskId={event.taskId}
-                                assistantMessage={cleanedMessageText}
+                                assistantMessage={displayMessageText}
                                 sourceUserMessage={sourceUserMessage}
                                 allowCreate={true}
                               />
@@ -3502,9 +3551,9 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                         )}
                       {isFinalAssistantMessage && (
                         <div className="message-actions">
-                          <MessageCopyButton text={cleanedMessageText} />
+                          <MessageCopyButton text={displayMessageText} />
                           <MessageSpeakButton
-                            text={cleanedMessageText}
+                            text={displayMessageText}
                             voiceEnabled={voiceEnabled}
                           />
                           {quotedAssistantMessage && onQuoteAssistantMessage && (
@@ -3527,7 +3576,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                                   })
                                 }
                               >
-                                👍
+                                <ThumbsUp size={14} strokeWidth={1.7} aria-hidden="true" />
                               </button>
                               <div
                                 ref={rejectMenuOpenFor === event.id ? rejectMenuRef : undefined}
@@ -3542,7 +3591,11 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                                     )
                                   }
                                 >
-                                  👎
+                                  <ThumbsDown
+                                    size={14}
+                                    strokeWidth={1.7}
+                                    aria-hidden="true"
+                                  />
                                 </button>
                                 {rejectMenuOpenFor === event.id && (
                                   <div className="message-feedback-menu">
@@ -3813,14 +3866,28 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
 
             const getRenderedFeedRow = (row: TaskFeedRow) => {
               const signature = getRowRenderSignature(row);
+              // Follow-up clocks live inside the latest user row. Its event
+              // payload does not change on ticks, but its controls renderer
+              // does. Also invalidate the old row when it loses the controls.
+              const queryControls =
+                row.kind === "timeline" &&
+                row.item.kind === "event" &&
+                getEffectiveTaskEventType(row.item.event) === "user_message" &&
+                row.item.event.id === latestUserMessageEventId
+                  ? renderLatestUserMessageActionRow
+                  : undefined;
               const cached = feedRowRenderCacheRef.current.get(row.key);
-              if (cached && cached.signature === signature) {
+              if (
+                cached &&
+                cached.signature === signature &&
+                cached.queryControls === queryControls
+              ) {
                 return cached.node;
               }
 
               recordRendererRender("MainContent.feedRow", row.key, rendererPerfLoggingEnabled);
               const node = renderFeedRow(row);
-              feedRowRenderCacheRef.current.set(row.key, { signature, node });
+              feedRowRenderCacheRef.current.set(row.key, { signature, node, queryControls });
               return node;
             };
 
@@ -5091,8 +5158,8 @@ function MainContentComponent({
 
   const [transcriptModeOverride, setTranscriptModeOverride] = useState<TranscriptMode | null>(null);
   // Keep execution records visible by default and persist explicit user
-  // choices. This state sits beside transcript projection because enabling it
-  // must bypass the pre-filtered live summary immediately.
+  // choices. Live projection still owns active tasks so older queries do not
+  // stack above the current execution trace.
   const [verboseSteps, setVerboseSteps] = useState(true);
   const isReplayMode = replayControls?.isReplayMode ?? false;
   const includeExecutionRecordEvents = shouldIncludeExecutionRecordEvents({
@@ -5111,12 +5178,22 @@ function MainContentComponent({
     : sharedTaskEventUi;
   const events = useMemo(() => {
     if (effectiveSharedTaskEventUi) {
-      return effectiveSharedTaskEventUi.normalizedEvents;
+      return collapseRepeatedTimelineFailures(
+        annotateRecoveredIntermediateFailures(
+          effectiveSharedTaskEventUi.normalizedEvents,
+          task?.status,
+        ),
+      );
     }
     return measureRendererPerf("MainContent.normalizeEvents", rendererPerfLoggingEnabled, () =>
-      normalizeEventsForTimelineUi(rawEvents),
+      collapseRepeatedTimelineFailures(
+        annotateRecoveredIntermediateFailures(
+          normalizeEventsForTimelineUi(rawEvents),
+          task?.status,
+        ),
+      ),
     );
-  }, [rawEvents, rendererPerfLoggingEnabled, effectiveSharedTaskEventUi]);
+  }, [rawEvents, rendererPerfLoggingEnabled, effectiveSharedTaskEventUi, task?.status]);
   const childEvents = useMemo(
     () =>
       measureRendererPerf("MainContent.normalizeChildEvents", rendererPerfLoggingEnabled, () =>
@@ -5674,6 +5751,7 @@ function MainContentComponent({
   // Collaborative team run detection for current task
   const [collaborativeRun, setCollaborativeRun] = useState<AgentTeamRun | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const autoScrollRef = useRef(true);
   // Track toggled events by ID for stable state across filtering
   const [toggledEvents, setToggledEvents] = useState<Set<string>>(new Set());
   const [expandedActionBlocks, setExpandedActionBlocks] = useTaskScopedDisclosureSet(task?.id);
@@ -6353,17 +6431,19 @@ function MainContentComponent({
     [childTasks, task],
   );
 
+  // Rendering may collapse repeated failures; lifecycle decisions must retain
+  // the original terminal event even when its visible error row is deduped.
   const isTaskWorking = useMemo(
-    () => isTaskActivelyWorking(task, events, hasActiveChildren),
-    [task, events, hasActiveChildren],
+    () => isTaskActivelyWorking(task, rawEvents, hasActiveChildren),
+    [task, rawEvents, hasActiveChildren],
   );
   // A follow-up can be sent while the task row still has the previous turn's
   // terminal status. Keep the duration clock alive from the local send time
   // until a terminal/paused event clears the optimistic marker. This closes
   // the event-delivery gap without changing the task's persisted status.
   const workTiming = useMemo(
-    () => deriveTaskWorkTiming(task, events, hasActiveChildren, optimisticFollowUpStartedAt),
-    [task, events, hasActiveChildren, optimisticFollowUpStartedAt],
+    () => deriveTaskWorkTiming(task, rawEvents, hasActiveChildren, optimisticFollowUpStartedAt),
+    [task, rawEvents, hasActiveChildren, optimisticFollowUpStartedAt],
   );
   const isTaskWorkingForDuration = workTiming.isActive;
   const isFollowUpActive =
@@ -7865,6 +7945,9 @@ function MainContentComponent({
 
   const shouldRenderTimelineEventInStepFeed = useCallback(
     (event: TaskEvent): boolean => {
+      if (isHermesRuntimeEvent(event)) {
+        return false;
+      }
       const effectiveType = getEffectiveTaskEventType(event);
       if (effectiveType === "user_message" || effectiveType === "assistant_message") {
         return false;
@@ -7900,6 +7983,9 @@ function MainContentComponent({
   // Check if an event has details to show
   const hasEventDetails = useCallback(
     (event: TaskEvent): boolean => {
+      if (isHermesRuntimeEvent(event)) {
+        return false;
+      }
       const effectiveType = getEffectiveTaskEventType(event);
       if (getTruncatedTaskEventDetailId(event)) return true;
       if (isImageFileEvent(event)) return true;
@@ -8009,6 +8095,8 @@ function MainContentComponent({
   const shouldDefaultExpand = useCallback(
     (event: TaskEvent): boolean => {
       const effectiveType = getEffectiveTaskEventType(event);
+      if (event.payload?.recoveredIntermediateFailure === true) return false;
+      if (event.payload?.intermediateFailurePending === true) return false;
       if (isImageFileEvent(event)) return true;
       if (isHtmlFileEvent(event)) return shouldExposeEndOfTaskArtifactCard(event);
       if (isVideoFileEvent(event)) return true;
@@ -8107,11 +8195,14 @@ function MainContentComponent({
     isPreparingMessage,
     isQueueingFollowUp,
   });
-  const hasSendableComposerDraft =
-    hasLiveComposerDraft ||
-    Boolean(inputValue.trim()) ||
-    pendingAttachments.length > 0 ||
-    isPromptComposing;
+  const hasSendableComposerDraft = hasComposerSendableDraft({
+    hasLiveComposerDraft,
+    inputValue,
+    currentDraftValue: composerDraftValueRef.current,
+    pendingAttachmentCount: pendingAttachments.length,
+    currentAttachmentCount: pendingAttachmentsRef.current.length,
+    isPromptComposing,
+  });
 
   // Auto-resize textarea; prefer direct event-path resizing to avoid an extra
   // effect/layout cycle on every keypress in long sessions.
@@ -8250,6 +8341,7 @@ function MainContentComponent({
     if (restoringComposerScrollRef.current) return;
 
     const nextAutoScroll = isNearBottom(container);
+    autoScrollRef.current = nextAutoScroll;
     composerScrollCache.set(composerScrollCacheKeyRef.current, {
       scrollTop: container.scrollTop,
       stickToBottom: nextAutoScroll,
@@ -8304,6 +8396,7 @@ function MainContentComponent({
     container.addEventListener("wheel", finish, { passive: true });
     container.addEventListener("touchstart", finish, { passive: true });
 
+    autoScrollRef.current = true;
     setAutoScroll(true);
     pinToLatestBottom();
     frameId = window.requestAnimationFrame(() => {
@@ -8319,6 +8412,42 @@ function MainContentComponent({
     }
     settleTimer = window.setTimeout(finish, 600);
   }, []);
+
+  // Markdown, tables, previews, and artifact cards can finish laying out after
+  // the event that triggered the normal scroll pass. Keep following those
+  // asynchronous height changes while follow mode is enabled so a complete
+  // answer never appears to stop halfway through its final table or paragraph.
+  useEffect(() => {
+    const container = mainBodyRef.current;
+    if (!autoScroll || !container || typeof ResizeObserver === "undefined") return;
+
+    let frameId = 0;
+    const pinAfterLayout = () => {
+      if (!autoScrollRef.current || restoringComposerScrollRef.current) return;
+      if (frameId) window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        frameId = 0;
+        if (!autoScrollRef.current || restoringComposerScrollRef.current) return;
+        const targetTop = pinScrollElementToBottom(container);
+        lastAutoScrollTargetRef.current = targetTop;
+        composerScrollCache.set(composerScrollCacheKeyRef.current, {
+          scrollTop: targetTop,
+          stickToBottom: true,
+        });
+      });
+    };
+
+    const observer = new ResizeObserver(pinAfterLayout);
+    observer.observe(container);
+    const content = container.querySelector<HTMLElement>(".task-content");
+    if (content) observer.observe(content);
+    pinAfterLayout();
+
+    return () => {
+      observer.disconnect();
+      if (frameId) window.cancelAnimationFrame(frameId);
+    };
+  }, [autoScroll, composerDraftCacheKey]);
 
   // Auto-scroll to bottom when visible transcript rows materially change.
   useEffect(() => {
@@ -8382,10 +8511,12 @@ function MainContentComponent({
     const snapshot = composerScrollCache.get(composerDraftCacheKey);
     if (!snapshot) {
       restoringComposerScrollRef.current = false;
+      autoScrollRef.current = true;
       setAutoScroll(true);
       return;
     }
 
+    autoScrollRef.current = snapshot.stickToBottom;
     setAutoScroll(snapshot.stickToBottom);
     if (snapshot.stickToBottom) {
       restoringComposerScrollRef.current = false;
@@ -8747,15 +8878,17 @@ function MainContentComponent({
     );
   };
 
-  const importAttachmentsToWorkspace = async (): Promise<ImportedAttachment[]> => {
-    if (pendingAttachments.length === 0) return [];
+  const importAttachmentsToWorkspace = async (
+    attachments: PendingAttachment[],
+  ): Promise<ImportedAttachment[]> => {
+    if (attachments.length === 0) return [];
     if (!workspace) {
       throw new Error("Select a workspace before attaching files.");
     }
-    const pathAttachments = pendingAttachments.filter(
+    const pathAttachments = attachments.filter(
       (attachment) => attachment.path && !attachment.dataBase64,
     );
-    const dataAttachments = pendingAttachments.filter((attachment) => attachment.dataBase64);
+    const dataAttachments = attachments.filter((attachment) => attachment.dataBase64);
 
     const results: ImportedAttachment[] = [];
 
@@ -8821,7 +8954,11 @@ function MainContentComponent({
       setIntegrationMentionSpans(submittedIntegrationMentionSpans);
     }
     const submittedInputValue = liveInputValue;
-    const submittedAttachments = [...pendingAttachments];
+    const submittedAttachments = [
+      ...(pendingAttachmentsRef.current.length > 0
+        ? pendingAttachmentsRef.current
+        : pendingAttachments),
+    ];
     let submittedComposerCleared = false;
 
     const clearSubmittedComposerDraft = () => {
@@ -8863,7 +9000,7 @@ function MainContentComponent({
     };
 
     const trimmedInput = liveInputValue.trim();
-    const hasAttachments = pendingAttachments.length > 0;
+    const hasAttachments = submittedAttachments.length > 0;
     const onboardingSlashCommand = parseOnboardingSlashCommand(trimmedInput);
     const appSlashCommand = parseLeadingMessageAppShortcut(trimmedInput);
     const goalSlashCommand = parseLeadingGoalSlashCommand(trimmedInput);
@@ -9017,7 +9154,7 @@ function MainContentComponent({
 
     try {
       if (hasAttachments) {
-        importedAttachments = await importAttachmentsToWorkspace();
+        importedAttachments = await importAttachmentsToWorkspace(submittedAttachments);
         setComposerProcessingStage("reading");
       }
 
@@ -9251,7 +9388,9 @@ function MainContentComponent({
         // Fresh task - create new task with optional autonomy enabled.
         const titleSource =
           trimmedInput ||
-          (pendingAttachments[0]?.name ? `Review ${pendingAttachments[0].name}` : "New task");
+          (submittedAttachments[0]?.name
+            ? `Review ${submittedAttachments[0].name}`
+            : "New task");
         const title = buildTaskTitle(titleSource);
         const modeOptions: CreateTaskOptions = {
           ...(executionModeDirty ? { executionMode } : {}),
@@ -9403,6 +9542,14 @@ function MainContentComponent({
         setIsUploadingAttachments(false);
         setIsPreparingMessage(false);
         setComposerProcessingStage("idle");
+      } else if (isCurrentSubmission()) {
+        setIsUploadingAttachments(false);
+        setIsPreparingMessage(false);
+        setComposerProcessingStage("idle");
+        if (isFollowUpQueueSubmission) {
+          queueFollowUpInFlightRef.current = false;
+          setIsQueueingFollowUp(false);
+        }
       }
       if (followUpDispatchStarted && followUpDispatchKey) {
         const dispatchKey = followUpDispatchKey;
@@ -10877,7 +11024,9 @@ function MainContentComponent({
       task.sessionId ? `- Session ID: ${task.sessionId}` : null,
       taskWorkingDirectory ? `- Working directory: ${taskWorkingDirectory}` : null,
       `- Link: ${taskDeeplink}`,
-      task.semanticSummary ? `- Summary: ${task.semanticSummary}` : null,
+      task.semanticSummary
+        ? `- Summary: ${sanitizeHermesText(task.semanticSummary)}`
+        : null,
       "",
       "## Prompt",
       "",
@@ -11161,6 +11310,7 @@ function MainContentComponent({
       window.cancelAnimationFrame(autoScrollFrameRef.current);
       autoScrollFrameRef.current = null;
     }
+    autoScrollRef.current = false;
     setAutoScroll(false);
     lastAutoScrollTargetRef.current = null;
     setActiveConversationTurnId(turnId);
@@ -11310,7 +11460,11 @@ function MainContentComponent({
           >
             <span>{workDurationLabel}</span>
             <span className="timeline-controls-label-chevron" aria-hidden="true">
-              {transcriptMode === "delivery" ? ">" : "v"}
+              {transcriptMode === "delivery" ? (
+                <ChevronRight size={13} strokeWidth={1.8} />
+              ) : (
+                <ChevronDown size={13} strokeWidth={1.8} />
+              )}
             </span>
           </button>
         ) : (
@@ -13294,7 +13448,7 @@ function MainContentComponent({
           />
         )}
         <TaskFollowUpQueue
-          taskId={remoteSession ? null : selectedTaskId}
+          taskId={remoteSession || !task ? null : task.id}
           active={isFollowUpActive}
         />
         <div

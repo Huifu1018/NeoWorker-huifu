@@ -187,6 +187,26 @@ preserve a source backup, and follow `references/editing.md`. If the existing
 deck has a coherent template, preserve its master/layout language rather than
 rebuilding it with unrelated styling. Render the edited output before delivery.
 
+### Translating existing decks
+
+Translation, localization, and language conversion of an attached/source PPTX
+are always editing operations unless the user explicitly asks to redesign,
+rebuild, or replace the template. Copy each source deck and replace its text in
+the native PPTX package. Preserve slide masters, layouts, theme, fonts, canvas,
+slide count and order, images, charts, tables, notes, transitions, and reusable
+assets. Adjust text fit only as much as the target language requires.
+
+In NeoWorker, use `office_translation` with `action: inspect` to obtain the
+source-bound text manifest, then `action: apply` with the translated manifest.
+This preserves the native package and verifies non-text parts before publishing.
+Do not install Python packages or fall back to a new-deck generator. Package
+fidelity is not visual QA: inspect the rendered output for text fit separately.
+
+For multiple source decks, produce one translated output per input and keep the
+decks independent. Never merge them or bootstrap a blank project. If native
+preservation is blocked, report the blocker instead of silently creating a new
+generic deck.
+
 ## Failure handling
 
 - If rendering tools are unavailable, still compile and validate the package,

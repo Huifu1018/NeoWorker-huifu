@@ -9,6 +9,7 @@ import {
   memo,
 } from "react";
 import { createPortal } from "react-dom";
+import { sanitizeHermesText } from "../utils/runtime-privacy";
 import {
   ChevronDown,
   ChevronRight,
@@ -370,7 +371,7 @@ const GENERIC_SESSION_TITLES = new Set([
 
 function normalizeSidebarTitleCandidate(value?: string | null): string {
   if (typeof value !== "string") return "";
-  const trimmed = value.trim();
+  const trimmed = sanitizeHermesText(value.trim());
   if (!trimmed) return "";
   const userRequestMatch = trimmed.match(/(?:^|\n)User request:\s*([\s\S]+)/i);
   const candidate = (userRequestMatch?.[1] || trimmed)

@@ -13,6 +13,14 @@ const TOOL_NAMESPACE_PREFIXES = new Set(["functions", "tool", "tools"]);
 
 const TOOL_SEMANTICS_TABLE: ToolSemantics[] = [
   {
+    canonicalName: "office_translation",
+    aliases: ["office_translation"],
+    mutatesFile: true,
+    artifactKind: "document",
+    dedupeClass: "document_translation",
+    requiredInputSchemaKey: "sourcePath",
+  },
+  {
     canonicalName: "create_document",
     aliases: ["create_document", "generate_document"],
     mutatesFile: true,

@@ -401,6 +401,9 @@ describe("Sidebar top-level destinations", () => {
     expect(source).toMatch(
       /\.task-completion-dot\s*\{[\s\S]*?background:\s*color-mix\(\s*in srgb,\s*var\(--color-success/,
     );
+    expect(source).toMatch(
+      /@container \(max-width: 280px\)\s*\{[\s\S]*?\.cli-task-time-wrap\s*\{[\s\S]*?width:\s*22px;[\s\S]*?justify-content:\s*center;[\s\S]*?\.task-completion-dot\s*\{\s*margin:\s*0 auto;/,
+    );
   });
 
   it("marks automated task rows with a distinct icon before the session time", () => {

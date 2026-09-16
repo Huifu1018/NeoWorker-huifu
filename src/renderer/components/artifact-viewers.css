@@ -2091,7 +2091,21 @@
     0 12px 32px rgba(15, 23, 42, 0.055);
   font-size: 15px;
   line-height: 1.72;
+  overflow-wrap: anywhere;
   transform-origin: top center;
+}
+
+.document-viewer-html img,
+.document-viewer-html svg,
+.document-viewer-html canvas,
+.document-editor-page img,
+.document-editor-page svg,
+.document-editor-page canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  object-fit: contain;
 }
 
 .document-viewer-sidebar .document-viewer-html,
@@ -2124,6 +2138,7 @@
 
 .document-viewer-html table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
 }
 
@@ -2155,6 +2170,31 @@
   min-height: 100%;
   padding: 24px 28px 150px;
   overflow: auto;
+}
+
+.document-viewer-layout-notice {
+  padding: 6px 16px;
+  color: #6b7280;
+  font-size: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.docx-layout-preview {
+  position: relative;
+  height: 100%;
+  min-height: 320px;
+}
+
+.docx-layout-preview > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.docx-layout-preview > .document-viewer-state {
+  position: absolute;
+  inset: 0;
 }
 
 .document-editor-page {

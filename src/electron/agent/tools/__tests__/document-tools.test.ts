@@ -120,9 +120,10 @@ describe("DocumentTools", () => {
   it("getToolDefinitions returns all tool definitions", () => {
     const defs = DocumentTools.getToolDefinitions();
 
-    expect(defs).toHaveLength(8);
+    expect(defs).toHaveLength(9);
     const names = defs.map((d) => d.name);
     expect(names).toContain("compile_latex");
+    expect(names).toContain("office_translation");
     expect(names).toContain("generate_document");
     expect(names).toContain("generate_presentation");
     expect(names).toContain("generate_spreadsheet");
@@ -144,6 +145,51 @@ describe("DocumentTools", () => {
   });
 
   // ── setWorkspace ──────────────────────────────────────────────
+
+  it("rejects unsupported PDF preservation without publishing a replacement report", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "office-translation-pdf-"));
+    const register = vi.fn();
+    try {
+      const tools = new DocumentTools(directory, "translation-test", register);
+      await expect(tools.officeTranslation({ action: "inspect", sourcePath: "source.pdf" })).rejects.toThrow("尚不支持");
+      expect(register).not.toHaveBeenCalled();
+      expect(fs.readdirSync(directory)).toEqual([]);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("does not publish incomplete manifests, overwrite sources, or accept source symlinks outside the workspace", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "office-translation-tool-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "office-translation-outside-"));
+    const register = vi.fn();
+    try {
+      const archive = new JSZip();
+      archive.file("[Content_Types].xml", "<Types/>");
+      archive.file("ppt/presentation.xml", "<presentation/>");
+      archive.file("ppt/slides/slide1.xml", '<a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Hello</a:t></a:r></a:p>');
+      const source = await archive.generateAsync({ type: "nodebuffer" });
+      fs.writeFileSync(path.join(directory, "source.pptx"), source);
+      const tools = new DocumentTools(directory, "translation-test", register);
+      const inspection = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx" });
+      expect(register).not.toHaveBeenCalled();
+      const manifest = JSON.parse(fs.readFileSync(path.join(directory, inspection.manifestPath), "utf8"));
+      fs.writeFileSync(path.join(directory, "bad.json"), JSON.stringify({ ...manifest, units: [] }));
+      await expect(tools.officeTranslation({ action: "apply", sourcePath: "source.pptx", translationsPath: "bad.json", filename: "source.pptx" })).rejects.toThrow("不完整");
+      expect(register).not.toHaveBeenCalled();
+      manifest.units[0].text = "你好";
+      fs.writeFileSync(path.join(directory, "good.json"), JSON.stringify(manifest));
+      const result = await tools.officeTranslation({ action: "apply", sourcePath: "source.pptx", translationsPath: "good.json", filename: "source.pptx" });
+      expect(result.path).toBe("source-v2.pptx");
+      expect(result.visualCheck).toBe("not_performed");
+      expect(fs.readFileSync(path.join(directory, "source.pptx"))).toEqual(source);
+      expect(register).toHaveBeenCalledTimes(1);
+      fs.writeFileSync(path.join(outside, "external.pptx"), source);
+      fs.symlinkSync(path.join(outside, "external.pptx"), path.join(directory, "link.pptx"));
+      await expect(tools.officeTranslation({ action: "inspect", sourcePath: "link.pptx" })).rejects.toThrow("当前工作区");
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
 
   it("setWorkspace updates the internal workspace path", async () => {
     const tools = new DocumentTools("/original/path", "task-1");

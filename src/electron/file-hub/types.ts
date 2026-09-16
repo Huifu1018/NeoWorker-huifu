@@ -19,6 +19,7 @@ export interface UnifiedFile {
   mimeType: string;
   size: number;
   modifiedAt: number;
+  createdAt?: number;
   provider?: string;
   isDirectory?: boolean;
   thumbnailUrl?: string;
@@ -39,6 +40,7 @@ export interface FileHubListOptions {
   query?: string;
   limit?: number;
   offset?: number;
+  sortBy?: "createdAt";
 }
 
 export interface FileHubArtifactQuery {

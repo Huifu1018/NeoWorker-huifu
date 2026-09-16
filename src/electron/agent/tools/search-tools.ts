@@ -13,6 +13,8 @@ import {
   buildFlightQueryVariants,
   extractFlightRoute,
   filterFlightResults,
+  getFlightScheduleEvidenceScore,
+  hasFlightScheduleDetails,
 } from "../search/flight-query";
 
 /**
@@ -185,17 +187,18 @@ export class SearchTools {
     region?: string;
     maxUses?: number;
   }): Promise<SearchResponse> {
+    const flightRoute = extractFlightRoute(input.query);
     // Automatic routing is resolved by SearchProviderFactory. The log should
     // describe the routing mode rather than guessing that DDG will be used
     // before the provider chain has run.
     const searchQuery: SearchQuery = {
       query: input.query,
       searchType: input.searchType || "web",
-      maxResults: Math.min(input.maxResults || 10, 20), // Cap at 20 results
+      maxResults: Math.min(input.maxResults || (flightRoute ? 20 : 10), 20),
       dateRange: input.dateRange,
       region: input.region,
       provider: input.provider,
-      preferFlight: false,
+      preferFlight: Boolean(flightRoute),
     };
 
     const settings = SearchProviderFactory.loadSettings();
@@ -205,35 +208,38 @@ export class SearchTools {
     });
 
     try {
-      const flightRoute = extractFlightRoute(input.query);
-      searchQuery.preferFlight = Boolean(flightRoute);
-      const queryVariants = flightRoute
-        ? buildFlightQueryVariants(input.query).slice(0, 2)
-        : [input.query];
+      const queryVariants = flightRoute ? buildFlightQueryVariants(input.query) : [input.query];
       const responses: SearchResponse[] = [];
       let lastFlightError: Any = null;
 
       // Flight schedules and fares are often split across dynamic OTA pages.
-      // Run at most two deterministic variants, merge only real provider
-      // results, and expose the variants as metadata so the final answer can
-      // distinguish evidence from an unverified route.
-      for (const queryVariant of queryVariants) {
-        try {
-          const variantResponse = await SearchProviderFactory.searchWithFallback({
-            ...searchQuery,
-            query: queryVariant,
-          });
-          if (variantResponse.success === false) {
-            lastFlightError = variantResponse.error || "Web search failed";
-            continue;
+      // Run every bounded route variant concurrently: coverage should improve
+      // without making the user wait for four provider round trips in series.
+      const variantAttempts = await Promise.all(
+        queryVariants.map(async (queryVariant) => {
+          try {
+            const response = await SearchProviderFactory.searchWithFallback({
+              ...searchQuery,
+              query: queryVariant,
+            });
+            if (response.success === false) {
+              return {
+                response: null,
+                error: response.error || "Web search failed",
+              };
+            }
+            return { response, error: null };
+          } catch (error: Any) {
+            return { response: null, error };
           }
-          responses.push(variantResponse);
-          if (!flightRoute || variantResponse.results.length >= searchQuery.maxResults!) {
-            break;
-          }
-        } catch (error: Any) {
-          lastFlightError = error;
-          if (!flightRoute) throw error;
+        }),
+      );
+
+      for (const attempt of variantAttempts) {
+        if (attempt.response) {
+          responses.push(attempt.response);
+        } else if (attempt.error) {
+          lastFlightError = attempt.error;
         }
       }
 
@@ -243,20 +249,47 @@ export class SearchTools {
       }
 
       const firstResponse = responses[0];
-      const seenUrls = new Set<string>();
-      const mergedResults = responses.flatMap((result) => result.results).filter((result) => {
-        const key = String(result.url || result.title || "").trim();
-        if (!key || seenUrls.has(key)) return false;
-        seenUrls.add(key);
-        return true;
-      });
+      const mergedByIdentity = new Map<string, SearchResult>();
+      for (const result of responses.flatMap((response) => response.results)) {
+        const key = String(result.url || result.title || "")
+          .trim()
+          .toLowerCase();
+        if (!key) continue;
+        const existing = mergedByIdentity.get(key);
+        if (!existing) {
+          mergedByIdentity.set(key, result);
+          continue;
+        }
+        const existingEvidence = getFlightScheduleEvidenceScore(existing);
+        const candidateEvidence = getFlightScheduleEvidenceScore(result);
+        if (
+          candidateEvidence > existingEvidence ||
+          (candidateEvidence === existingEvidence &&
+            result.snippet.length > existing.snippet.length)
+        ) {
+          mergedByIdentity.set(key, result);
+        }
+      }
+      const mergedResults = Array.from(mergedByIdentity.values());
       const routeEvidence = flightRoute
         ? filterFlightResults(mergedResults, flightRoute)
         : { results: mergedResults, matchedCount: 0 };
+      const rankedResults = flightRoute
+        ? routeEvidence.results
+            .map((result, index) => ({
+              result,
+              index,
+              evidenceScore: getFlightScheduleEvidenceScore(result),
+            }))
+            .sort(
+              (left, right) => right.evidenceScore - left.evidenceScore || left.index - right.index,
+            )
+            .map(({ result }) => result)
+        : routeEvidence.results;
       const response: SearchResponse = {
         ...firstResponse,
         query: input.query,
-        results: routeEvidence.results.slice(0, searchQuery.maxResults),
+        results: rankedResults.slice(0, searchQuery.maxResults),
         metadata: {
           ...firstResponse.metadata,
           ...(flightRoute
@@ -264,14 +297,28 @@ export class SearchTools {
                 flightRoute,
                 flightQueryVariants: queryVariants,
                 flightRouteMatchedCount: routeEvidence.matchedCount,
+                flightCollectedResultCount: mergedResults.length,
+                flightScheduleDetailedResultCount:
+                  routeEvidence.results.filter(hasFlightScheduleDetails).length,
+                flightScheduleCompleteness: "unverified",
+                flightSourceFetchRequired: true,
                 flightEvidencePolicy:
-                  "Only provider-returned results are included; route matching is evidence metadata, not a flight schedule or price claim.",
+                  "Search results are discovery evidence, not a complete flight inventory. Fetch multiple route/date-specific source pages before answering, never describe a snippet-only list as complete, and label any missing times, airports, seats, or prices as unverified.",
               }
             : {}),
         },
       };
       const domainPolicy = this.applyDomainPolicy(response);
-      const filteredResponse = domainPolicy.response;
+      const filteredResponse = flightRoute
+        ? {
+            ...domainPolicy.response,
+            metadata: {
+              ...domainPolicy.response.metadata,
+              flightReturnedDetailedResultCount:
+                domainPolicy.response.results.filter(hasFlightScheduleDetails).length,
+            },
+          }
+        : domainPolicy.response;
 
       this.daemon.logEvent(this.taskId, "log", {
         metric: "web_search_domain_filtered_result_count",

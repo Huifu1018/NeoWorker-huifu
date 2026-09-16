@@ -40,6 +40,31 @@ describe("FileHubService", () => {
     expect(names).toEqual(["config.json", "readme.md"]);
   });
 
+  it("sorts by creation time before limiting the workspace list", async () => {
+    fs.writeFileSync(path.join(tmpDir, ".hidden"), "hidden");
+    fs.writeFileSync(path.join(tmpDir, "a-old.pptx"), "old");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    fs.writeFileSync(path.join(tmpDir, "z-new.xlsx"), "new");
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(tmpDir, "a-old.pptx"), future, future);
+    const service = new FileHubService(makeDeps({ getWorkspacePath: () => tmpDir }));
+    const files = await service.listFiles({ source: "local", sortBy: "createdAt", limit: 1 });
+    expect(files).toHaveLength(1);
+    expect(files[0].name).toBe("z-new.xlsx");
+    expect(files[0].createdAt).toBe(fs.statSync(path.join(tmpDir, "z-new.xlsx")).birthtimeMs);
+  });
+
+  it("sorts artifact creation dates without treating unknown dates as now", async () => {
+    const service = new FileHubService(makeDeps({ getArtifacts: () => [
+      { id: "old", path: "old.pdf", created_at: 100 },
+      { id: "unknown", path: "unknown.pdf" },
+      { id: "new", path: "new.pptx", createdAt: 300 },
+    ] }));
+    const files = await service.listFiles({ source: "artifacts", sortBy: "createdAt" });
+    expect(files.map((file) => file.name)).toEqual(["new.pptx", "old.pdf", "unknown.pdf"]);
+    expect(files[2].modifiedAt).toBe(0);
+  });
+
   it("assigns correct MIME types", async () => {
     fs.writeFileSync(path.join(tmpDir, "doc.md"), "# Markdown");
     fs.writeFileSync(path.join(tmpDir, "style.css"), "body {}");

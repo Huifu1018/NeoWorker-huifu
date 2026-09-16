@@ -173,7 +173,7 @@ describe("SearchTools", () => {
       );
     });
 
-    it("uses bounded flight variants and reports route evidence metadata", async () => {
+    it("uses every bounded flight variant and reports route evidence metadata", async () => {
       vi.mocked(SearchProviderFactory.searchWithFallback)
         .mockResolvedValueOnce({
           query: "北京到上海9月3日航班",
@@ -194,7 +194,7 @@ describe("SearchTools", () => {
             {
               title: "PEK to SHA flight schedule",
               url: "https://example.com/schedule",
-              snippet: "PEK SHA schedule",
+              snippet: "MU5100 departs PEK at 07:00 and arrives SHA at 09:15",
             },
           ],
           provider: "tavily",
@@ -202,7 +202,7 @@ describe("SearchTools", () => {
 
       const result = await searchTools.webSearch({ query: "北京到上海9月3日航班" });
 
-      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(2);
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(4);
       expect(SearchProviderFactory.searchWithFallback).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ preferFlight: true }),
@@ -216,8 +216,210 @@ describe("SearchTools", () => {
         fromCode: "PEK",
         toCode: "SHA",
       });
-      expect(result.metadata?.flightQueryVariants).toHaveLength(2);
+      expect(result.metadata?.flightQueryVariants).toHaveLength(4);
       expect(result.metadata?.flightRouteMatchedCount).toBe(2);
+      expect(result.metadata?.flightScheduleDetailedResultCount).toBe(1);
+      expect(result.metadata?.flightReturnedDetailedResultCount).toBe(1);
+      expect(result.metadata?.flightScheduleCompleteness).toBe("unverified");
+      expect(result.metadata?.flightSourceFetchRequired).toBe(true);
+    });
+
+    it("does not stop flight discovery when the first variant fills the raw result cap", async () => {
+      vi.mocked(SearchProviderFactory.searchWithFallback).mockImplementation(async (query) => {
+        if (query.query === "北京到上海9月3日航班") {
+          return {
+            query: query.query,
+            searchType: "web",
+            results: Array.from({ length: 20 }, (_, index) => ({
+              title: `Generic travel result ${index}`,
+              url: `https://example.com/generic-${index}`,
+              snippet: "Travel planning overview",
+            })),
+            provider: "tavily",
+          } as Any;
+        }
+        if (query.query.includes("航班时刻表")) {
+          return {
+            query: query.query,
+            searchType: "web",
+            results: [
+              {
+                title: "北京到上海航班时刻表",
+                url: "https://example.com/verified-schedule",
+                snippet: "MU5100 07:00 从北京起飞，09:15 到达上海",
+              },
+            ],
+            provider: "tavily",
+          } as Any;
+        }
+        return {
+          query: query.query,
+          searchType: "web",
+          results: [],
+          provider: "tavily",
+        } as Any;
+      });
+
+      const result = await searchTools.webSearch({ query: "北京到上海9月3日航班" });
+
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(4);
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ maxResults: 20 }),
+      );
+      expect(result.results[0]).toMatchObject({
+        url: "https://example.com/verified-schedule",
+      });
+      expect(result.metadata?.flightCollectedResultCount).toBe(21);
+      expect(result.metadata?.flightReturnedDetailedResultCount).toBe(1);
+    });
+
+    it("runs flight query variants concurrently", async () => {
+      let activeSearches = 0;
+      let maxActiveSearches = 0;
+      let startedSearches = 0;
+      let releaseSearches: (() => void) | undefined;
+      const allStarted = new Promise<void>((resolve) => {
+        releaseSearches = resolve;
+      });
+
+      vi.mocked(SearchProviderFactory.searchWithFallback).mockImplementation(async (query) => {
+        activeSearches += 1;
+        startedSearches += 1;
+        maxActiveSearches = Math.max(maxActiveSearches, activeSearches);
+        if (startedSearches === 4) releaseSearches?.();
+        await allStarted;
+        activeSearches -= 1;
+        return {
+          query: query.query,
+          searchType: "web",
+          results: [],
+          provider: "tavily",
+        } as Any;
+      });
+
+      await searchTools.webSearch({ query: "北京到上海9月3日航班" });
+
+      expect(startedSearches).toBe(4);
+      expect(maxActiveSearches).toBe(4);
+    });
+
+    it("keeps deterministic rich evidence when concurrent variants finish out of order", async () => {
+      const pendingSearches: Array<{
+        query: string;
+        resolve: (response: Any) => void;
+      }> = [];
+      vi.mocked(SearchProviderFactory.searchWithFallback).mockImplementation(
+        (query) =>
+          new Promise((resolve) => {
+            pendingSearches.push({ query: query.query, resolve });
+          }),
+      );
+
+      const searchPromise = searchTools.webSearch({ query: "北京到上海9月3日航班" });
+      await vi.waitFor(() => expect(pendingSearches).toHaveLength(4));
+
+      const sharedUrl = "https://example.com/shared-schedule";
+      pendingSearches[3].resolve({
+        query: pendingSearches[3].query,
+        searchType: "web",
+        results: [
+          {
+            title: "PEK to SHA official schedule",
+            url: sharedUrl,
+            snippet: "MU5100 departs at 07:00 and arrives at 09:15",
+          },
+        ],
+        provider: "tavily",
+      });
+      pendingSearches[2].resolve({
+        query: pendingSearches[2].query,
+        searchType: "web",
+        results: [],
+        provider: "tavily",
+      });
+      pendingSearches[1].resolve({
+        query: pendingSearches[1].query,
+        searchType: "web",
+        results: [],
+        provider: "tavily",
+      });
+      pendingSearches[0].resolve({
+        query: pendingSearches[0].query,
+        searchType: "web",
+        results: [
+          {
+            title: "PEK to SHA flights",
+            url: sharedUrl,
+            snippet: "Compare flights between PEK and SHA",
+          },
+        ],
+        provider: "tavily",
+      });
+
+      const result = await searchPromise;
+
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].snippet).toContain("MU5100");
+      expect(result.metadata?.flightReturnedDetailedResultCount).toBe(1);
+    });
+
+    it("returns successful flight evidence when some concurrent variants fail", async () => {
+      vi.mocked(SearchProviderFactory.searchWithFallback).mockImplementation(async (query) => {
+        if (query.query.includes("official airline")) {
+          throw new Error("Official source timed out");
+        }
+        if (query.query.includes("航班时刻表")) {
+          return {
+            query: query.query,
+            searchType: "web",
+            results: [
+              {
+                title: "北京到上海航班时刻表",
+                url: "https://example.com/partial-success",
+                snippet: "CA1835 08:00 从北京起飞，10:15 到达上海",
+              },
+            ],
+            provider: "tavily",
+          } as Any;
+        }
+        return {
+          success: false,
+          error: "Provider returned no usable result",
+          query: query.query,
+          searchType: "web",
+          results: [],
+          provider: "tavily",
+        } as Any;
+      });
+
+      const result = await searchTools.webSearch({ query: "北京到上海9月3日航班" });
+
+      expect(result.success).toBe(true);
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0].snippet).toContain("CA1835");
+    });
+
+    it("returns one clean failure when every concurrent flight variant fails", async () => {
+      vi.mocked(SearchProviderFactory.searchWithFallback).mockRejectedValue(
+        new Error("All flight providers unavailable"),
+      );
+
+      const result = await searchTools.webSearch({ query: "北京到上海9月3日航班" });
+
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(4);
+      expect(result.success).toBe(false);
+      expect(result.results).toEqual([]);
+      expect(result.error).toBe("All flight providers unavailable");
+    });
+
+    it("keeps ordinary web searches to a single provider request", async () => {
+      await searchTools.webSearch({ query: "NeoWorker release notes" });
+
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(1);
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledWith(
+        expect.objectContaining({ preferFlight: false, maxResults: 10 }),
+      );
     });
 
     it("should pass search type to provider", async () => {

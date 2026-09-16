@@ -12,6 +12,49 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? compactText(value) : [];
 }
 
+function parseJsonEncodedPresentationValue(value: string, path: string): unknown {
+  const trimmed = value.trim();
+  const json = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)?.[1] ?? trimmed;
+  try {
+    return JSON.parse(json);
+  } catch {
+    throw new Error(
+      `Invalid presentation JSON at ${path}. Pass slide objects directly instead of JSON-encoded strings.`,
+    );
+  }
+}
+
+function normalizePresentationSlides(value: unknown): InputRecord[] {
+  let candidate =
+    typeof value === "string"
+      ? parseJsonEncodedPresentationValue(value, "slides")
+      : value;
+
+  if (!Array.isArray(candidate)) return [];
+  let rawSlides: unknown[] = candidate;
+
+  // Some model runtimes serialize the complete slide array one extra time,
+  // producing `slides: ["[{...}]"]`. Unwrap that common transport mistake at
+  // the tool boundary so aliases and providers all receive the same input.
+  if (rawSlides.length === 1 && typeof rawSlides[0] === "string") {
+    const decoded = parseJsonEncodedPresentationValue(rawSlides[0], "slides[0]");
+    if (Array.isArray(decoded)) rawSlides = decoded;
+  }
+
+  return rawSlides.map((rawSlide, index) => {
+    const slide =
+      typeof rawSlide === "string"
+        ? parseJsonEncodedPresentationValue(rawSlide, `slides[${index}]`)
+        : rawSlide;
+    if (!slide || typeof slide !== "object" || Array.isArray(slide)) {
+      throw new Error(
+        `Invalid presentation slide at slides[${index}]. Expected an object; do not JSON-encode the slides array.`,
+      );
+    }
+    return slide as InputRecord;
+  });
+}
+
 function normalizeSlideData(slide: InputRecord): InputRecord {
   const explicit =
     slide.data && typeof slide.data === "object" && !Array.isArray(slide.data)
@@ -110,7 +153,7 @@ export function normalizePresentationArtifactInput(input: InputRecord): any {
       .filter((asset: InputRecord) => asset?.id)
       .map((asset: InputRecord) => [String(asset.id), asset]),
   );
-  const slides = (Array.isArray(input?.slides) ? input.slides : []).map(
+  const slides = normalizePresentationSlides(input?.slides).map(
     (slide: InputRecord, index: number) => {
       const allowedSlideKeys = new Set([
         "title",

@@ -1,6 +1,7 @@
 import type { TaskEvent, TaskOutputSummary } from "../../../shared/types";
 import { getEffectiveTaskEventType } from "../../utils/task-event-compat";
 import { resolveTaskOutputSummaryFromCompletionEvent } from "../../utils/task-outputs";
+import { getCompletionSummaryText } from "./task-event-presentation";
 import { isUserVisibleTaskArtifactPath } from "../../utils/task-artifact-visibility";
 import { normalizeArtifactPathForWorkspace } from "../../utils/artifact-path-identity";
 import {
@@ -371,10 +372,18 @@ function normalizeArtifactCardKey(filePath: string): string {
   return filePath.trim().replace(/\\/g, "/").toLowerCase();
 }
 
-function isEventInCompletedTurn(
+function getEventTurnBounds(
   eventStream: TaskEvent[],
   eventIndex: number,
-): boolean {
+): { segmentStart: number; segmentEnd: number } {
+  let segmentStart = 0;
+  for (let index = eventIndex; index >= 0; index -= 1) {
+    if (getEffectiveTaskEventType(eventStream[index]) === "user_message") {
+      segmentStart = index;
+      break;
+    }
+  }
+
   let segmentEnd = eventStream.length;
   for (let index = eventIndex + 1; index < eventStream.length; index += 1) {
     if (getEffectiveTaskEventType(eventStream[index]) === "user_message") {
@@ -383,7 +392,202 @@ function isEventInCompletedTurn(
     }
   }
 
-  for (let index = eventIndex; index < segmentEnd; index += 1) {
+  return { segmentStart, segmentEnd };
+}
+
+function getEventStreamIndex(
+  eventStream: TaskEvent[] | undefined,
+  referenceEvent: TaskEvent,
+): number {
+  if (!Array.isArray(eventStream)) return -1;
+  return eventStream.findIndex(
+    (event) =>
+      event === referenceEvent ||
+      Boolean(event.id && referenceEvent.id && event.id === referenceEvent.id),
+  );
+}
+
+function getEventTurnStream(
+  eventStream: TaskEvent[] | undefined,
+  referenceEvent: TaskEvent,
+): TaskEvent[] {
+  if (!Array.isArray(eventStream) || eventStream.length === 0) return [];
+  const eventIndex = getEventStreamIndex(eventStream, referenceEvent);
+  if (eventIndex < 0) return eventStream;
+  const { segmentStart, segmentEnd } = getEventTurnBounds(
+    eventStream,
+    eventIndex,
+  );
+  return eventStream.slice(segmentStart, segmentEnd);
+}
+
+function hasPriorConversationBeforeTurn(
+  eventStream: TaskEvent[],
+  referenceIndex: number,
+): boolean {
+  if (referenceIndex < 0) return false;
+  const { segmentStart } = getEventTurnBounds(eventStream, referenceIndex);
+  if (segmentStart <= 0) return false;
+  return eventStream
+    .slice(0, segmentStart)
+    .some((event) => {
+      const effectiveType = getEffectiveTaskEventType(event);
+      return (
+        effectiveType === "user_message" ||
+        effectiveType === "assistant_message" ||
+        effectiveType === "task_completed"
+      );
+    });
+}
+
+function shouldRequireTurnArtifactEvidence(args: {
+  eventStream: TaskEvent[];
+  referenceIndex: number;
+  candidateCount: number;
+}): boolean {
+  if (hasPriorConversationBeforeTurn(args.eventStream, args.referenceIndex)) {
+    return true;
+  }
+  if (args.referenceIndex < 0 || args.candidateCount <= 1) return false;
+
+  const { segmentStart } = getEventTurnBounds(
+    args.eventStream,
+    args.referenceIndex,
+  );
+  return (
+    getEffectiveTaskEventType(args.eventStream[segmentStart]) ===
+    "user_message"
+  );
+}
+
+function getDirectTaskEventArtifactPathCandidates(event: TaskEvent): string[] {
+  if (
+    String(event.payload?.source || "").trim().toLowerCase() ===
+      "artifact_bootstrap" ||
+    event.payload?.provisional === true
+  ) {
+    return [];
+  }
+
+  const effectiveType = getEffectiveTaskEventType(event);
+  const paths: unknown[] = [];
+  if (effectiveType === "file_modified") {
+    paths.push(event.payload?.path || event.payload?.to || event.payload?.from);
+  } else if (
+    effectiveType === "file_created" ||
+    effectiveType === "artifact_created"
+  ) {
+    paths.push(event.payload?.path, event.payload?.to, event.payload?.from);
+  }
+
+  if (event.type === "timeline_artifact_emitted") {
+    paths.push(event.payload?.path);
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const candidate of paths) {
+    if (typeof candidate !== "string" || candidate.trim().length === 0)
+      continue;
+    const workspacePath = normalizeArtifactPathForWorkspace(candidate);
+    const key = normalizeArtifactCardKey(workspacePath);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(workspacePath);
+  }
+  return normalized;
+}
+
+function getTaskEventUserVisibleText(event: TaskEvent): string {
+  return [
+    event.payload?.message,
+    event.payload?.resultSummary,
+    event.payload?.followUpMessage,
+    event.payload?.semanticSummary,
+    event.payload?.title,
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+}
+
+function doesPathMatchArtifactCard(
+  candidatePath: string,
+  targetPath: string,
+  targetKind: GeneratedInlinePreviewKind,
+): boolean {
+  const workspacePath = normalizeArtifactPathForWorkspace(candidatePath);
+  const candidateKind =
+    getInlinePreviewKindForGeneratedFile({ path: workspacePath }) ||
+    targetKind;
+  return (
+    getArtifactCardDisplayKey(workspacePath, candidateKind) ===
+    getArtifactCardDisplayKey(targetPath, targetKind)
+  );
+}
+
+function doesTextMentionArtifactPath(text: string, artifactPath: string): boolean {
+  if (!text.trim()) return false;
+  const normalizedText = normalizeArtifactCardKey(text);
+  const normalizedPath = normalizeArtifactCardKey(artifactPath);
+  const fileName = getArtifactFileName(artifactPath);
+  if (normalizedPath.length >= 4 && normalizedText.includes(normalizedPath)) {
+    return true;
+  }
+  return fileName.length >= 4 && normalizedText.includes(fileName);
+}
+
+function turnContainsDirectArtifactEvidence(args: {
+  eventStream: TaskEvent[];
+  referenceIndex: number;
+  artifactPath: string;
+  kind: GeneratedInlinePreviewKind;
+}): boolean {
+  if (
+    args.referenceIndex < 0 ||
+    args.referenceIndex >= args.eventStream.length
+  ) {
+    return false;
+  }
+
+  const { segmentStart, segmentEnd } = getEventTurnBounds(
+    args.eventStream,
+    args.referenceIndex,
+  );
+  for (let index = segmentStart; index < segmentEnd; index += 1) {
+    const event = args.eventStream[index];
+    for (const eventPath of getDirectTaskEventArtifactPathCandidates(event)) {
+      if (doesPathMatchArtifactCard(eventPath, args.artifactPath, args.kind)) {
+        return true;
+      }
+    }
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (
+      (effectiveType === "assistant_message" ||
+        effectiveType === "task_completed" ||
+        effectiveType === "follow_up_completed") &&
+      doesTextMentionArtifactPath(
+        getTaskEventUserVisibleText(event),
+        args.artifactPath,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isEventInCompletedTurn(
+  eventStream: TaskEvent[],
+  eventIndex: number,
+): boolean {
+  if (eventIndex < 0 || eventIndex >= eventStream.length) return false;
+
+  const { segmentStart, segmentEnd } = getEventTurnBounds(
+    eventStream,
+    eventIndex,
+  );
+  for (let index = segmentStart; index < segmentEnd; index += 1) {
     if (getEffectiveTaskEventType(eventStream[index]) === "task_completed") {
       return true;
     }
@@ -420,10 +624,11 @@ export function getTaskEventArtifactPaths(
       typeof event.payload?.followUpMessage === "string"
         ? event.payload.followUpMessage
         : "";
+    const resolutionEvents = getEventTurnStream(eventStream, event);
     paths.push(
       ...resolveArtifactPathsAgainstTaskEvents(
         extractGeneratedArtifactPathsFromText(message),
-        eventStream || [],
+        resolutionEvents,
       ),
     );
   }
@@ -434,10 +639,11 @@ export function getTaskEventArtifactPaths(
   ) {
     const message =
       typeof event.payload?.message === "string" ? event.payload.message : "";
+    const resolutionEvents = getEventTurnStream(eventStream, event);
     paths.push(
       ...resolveArtifactPathsAgainstTaskEvents(
         extractGeneratedArtifactPathsFromText(message),
-        eventStream || [],
+        resolutionEvents,
       ),
     );
   }
@@ -495,19 +701,62 @@ function getAuthoritativeTaskEventArtifactPaths(
   }
 
   if (effectiveType === "task_completed") {
+    const completionIndex = getEventStreamIndex(eventStream, event);
+    const completionFallbackEvents = Array.isArray(eventStream)
+      ? getEventTurnStream(eventStream, event)
+      : undefined;
     const outputSummary = resolveTaskOutputSummaryFromCompletionEvent(
       event,
-      eventStream,
+      completionFallbackEvents,
     );
     if (outputSummary) {
       const created = Array.isArray(outputSummary.created)
         ? outputSummary.created
         : [];
-      paths.push(
+      const outputPaths = [
         outputSummary.primaryOutputPath,
         ...created,
-        ...(created.length === 0 ? outputSummary.modifiedFallback || [] : []),
-      );
+        ...(created.length === 0 ||
+        (Array.isArray(eventStream) &&
+          hasPriorConversationBeforeTurn(eventStream, completionIndex))
+          ? outputSummary.modifiedFallback || []
+          : []),
+      ];
+      const requireTurnEvidence =
+        Array.isArray(eventStream) &&
+        shouldRequireTurnArtifactEvidence({
+          eventStream,
+          referenceIndex: completionIndex,
+          candidateCount: new Set(
+            outputPaths
+              .filter(
+                (outputPath): outputPath is string =>
+                  typeof outputPath === "string" &&
+                  outputPath.trim().length > 0,
+              )
+              .map((outputPath) => normalizeArtifactCardKey(outputPath)),
+          ).size,
+        });
+      for (const outputPath of outputPaths) {
+        const outputKind =
+          typeof outputPath === "string"
+            ? getInlinePreviewKindForGeneratedFile({ path: outputPath })
+            : null;
+        if (
+          typeof outputPath === "string" &&
+          requireTurnEvidence &&
+          outputKind &&
+          !turnContainsDirectArtifactEvidence({
+            eventStream: eventStream || [],
+            referenceIndex: completionIndex,
+            artifactPath: normalizeArtifactPathForWorkspace(outputPath),
+            kind: outputKind,
+          })
+        ) {
+          continue;
+        }
+        paths.push(outputPath);
+      }
     }
   }
 
@@ -690,12 +939,48 @@ export function collectLatestEndOfTaskArtifactCards(
     }
     if (completionIndex >= 0) {
       const completionEvent = eventStream[completionIndex];
+      const latestCompletionHasDirectOutputSummary = Boolean(
+        completionEvent.payload?.outputSummary &&
+          typeof completionEvent.payload.outputSummary === "object" &&
+          !Array.isArray(completionEvent.payload.outputSummary),
+      );
       const fallbackPaths = [
         fallbackOutputSummary.primaryOutputPath,
         ...(fallbackOutputSummary.created.length > 0
           ? fallbackOutputSummary.created
           : fallbackOutputSummary.modifiedFallback || []),
       ];
+      const requireTurnEvidenceForRecoveredFallback =
+        shouldRequireTurnArtifactEvidence({
+          eventStream,
+          referenceIndex: completionIndex,
+          candidateCount: new Set(
+            fallbackPaths
+              .filter(
+                (artifactPath): artifactPath is string =>
+                  typeof artifactPath === "string" &&
+                  artifactPath.trim().length > 0,
+              )
+              .map((artifactPath) => normalizeArtifactCardKey(artifactPath)),
+          ).size,
+        });
+      // A task-level bestKnownOutcome can outlive many follow-up turns. Once
+      // the latest turn has its own completion summary, that per-turn record
+      // is authoritative; reapplying the task-level summary can move an older
+      // file below the newest query and can erase a current modified output.
+      if (
+        requireTurnEvidenceForRecoveredFallback &&
+        latestCompletionHasDirectOutputSummary
+      ) {
+        return Array.from(byKey.values())
+          .sort((a, b) => {
+            if (a.lastReferenceIndex !== b.lastReferenceIndex) {
+              return a.lastReferenceIndex - b.lastReferenceIndex;
+            }
+            return a.lastReferenceTimestamp - b.lastReferenceTimestamp;
+          })
+          .slice(Math.max(0, byKey.size - limit));
+      }
       const authoritativeByKey = new Map<string, EndOfTaskArtifactCard>();
       for (const artifactPath of fallbackPaths) {
         if (typeof artifactPath !== "string" || !artifactPath.trim()) continue;
@@ -727,6 +1012,17 @@ export function collectLatestEndOfTaskArtifactCards(
           });
           continue;
         }
+        if (
+          requireTurnEvidenceForRecoveredFallback &&
+          !turnContainsDirectArtifactEvidence({
+            eventStream,
+            referenceIndex: completionIndex,
+            artifactPath: workspaceArtifactPath,
+            kind,
+          })
+        ) {
+          continue;
+        }
         authoritativeByKey.set(displayKey, {
           path: workspaceArtifactPath,
           kind,
@@ -735,8 +1031,13 @@ export function collectLatestEndOfTaskArtifactCards(
           lastReferenceTimestamp: completionEvent.timestamp,
         });
       }
-      byKey.clear();
-      for (const [key, card] of authoritativeByKey) byKey.set(key, card);
+      if (
+        authoritativeByKey.size > 0 ||
+        !requireTurnEvidenceForRecoveredFallback
+      ) {
+        byKey.clear();
+        for (const [key, card] of authoritativeByKey) byKey.set(key, card);
+      }
     }
   }
 
@@ -747,6 +1048,58 @@ export function collectLatestEndOfTaskArtifactCards(
     return a.lastReferenceTimestamp - b.lastReferenceTimestamp;
   });
   return cards.slice(Math.max(0, cards.length - limit));
+}
+
+function getPreferredArtifactStackAnchorIndex(
+  eventStream: TaskEvent[],
+  card: EndOfTaskArtifactCard,
+): number {
+  const artifactIndex = card.lastReferenceIndex;
+  if (
+    artifactIndex < 0 ||
+    artifactIndex >= eventStream.length ||
+    !isEventInCompletedTurn(eventStream, artifactIndex)
+  ) {
+    return artifactIndex;
+  }
+
+  const { segmentStart, segmentEnd } = getEventTurnBounds(
+    eventStream,
+    artifactIndex,
+  );
+
+  let latestVisibleReplyIndex = -1;
+  let latestCompletionIndex = -1;
+  for (let index = segmentStart; index < segmentEnd; index += 1) {
+    const event = eventStream[index];
+    const effectiveType = getEffectiveTaskEventType(event);
+    if (effectiveType === "assistant_message") {
+      if (event.payload?.internal === true) continue;
+      const message =
+        typeof event.payload?.message === "string"
+          ? event.payload.message.trim()
+          : "";
+      if (message) {
+        latestVisibleReplyIndex = index;
+      }
+      continue;
+    }
+    if (effectiveType === "task_completed") {
+      latestCompletionIndex = index;
+      // Every nonempty completion summary is rendered as an assistant reply,
+      // even when validation/recovery changed its wording. Anchor after that
+      // reply, not after an earlier assistant message that may be suppressed.
+      const completionSummary = getCompletionSummaryText(event).trim();
+      if (completionSummary) {
+        latestVisibleReplyIndex = index;
+      }
+    }
+  }
+
+  if (latestVisibleReplyIndex >= 0) return latestVisibleReplyIndex;
+  if (latestCompletionIndex >= 0) return latestCompletionIndex;
+
+  return artifactIndex;
 }
 
 export function collectEndOfTaskArtifactCardStacks(
@@ -763,9 +1116,10 @@ export function collectEndOfTaskArtifactCardStacks(
 
   const byAnchorIndex = new Map<number, EndOfTaskArtifactCard[]>();
   for (const card of cards) {
-    const existing = byAnchorIndex.get(card.lastReferenceIndex) || [];
+    const anchorIndex = getPreferredArtifactStackAnchorIndex(eventStream, card);
+    const existing = byAnchorIndex.get(anchorIndex) || [];
     existing.push(card);
-    byAnchorIndex.set(card.lastReferenceIndex, existing);
+    byAnchorIndex.set(anchorIndex, existing);
   }
 
   return Array.from(byAnchorIndex.entries())

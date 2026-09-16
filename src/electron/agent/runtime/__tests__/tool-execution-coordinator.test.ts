@@ -72,7 +72,9 @@ describe("ToolExecutionCoordinator lifecycle", () => {
       "call-1",
     );
 
-    const lifecycle = events.filter((event) => event.payload.metric === "tool_lifecycle");
+    const lifecycle = events.filter(
+      (event) => event.payload.metric === "tool_lifecycle",
+    );
     expect(lifecycle.map((event) => event.payload.status)).toEqual([
       "request",
       "running",
@@ -92,7 +94,10 @@ describe("ToolExecutionCoordinator lifecycle", () => {
 
   it("classifies structured tool failures as failed", async () => {
     const events: Any[] = [];
-    const { coordinator } = coordinatorFor({ success: false, error: "permission denied" });
+    const { coordinator } = coordinatorFor({
+      success: false,
+      error: "permission denied",
+    });
     const output = await coordinator.executeTool(
       "write_file",
       { path: "secret.txt" },
@@ -100,9 +105,85 @@ describe("ToolExecutionCoordinator lifecycle", () => {
       "call-2",
     );
 
-    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "failed")?.payload)
-      .toMatchObject({ toolCallId: "call-2", error: "permission denied" });
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "failed",
+      )?.payload,
+    ).toMatchObject({ toolCallId: "call-2", error: "permission denied" });
     expect(output.envelope.status).toBe("error");
+  });
+
+  it("extracts readable lifecycle messages from nested error objects", async () => {
+    const events: Any[] = [];
+    const { coordinator } = coordinatorFor({
+      success: false,
+      error: {
+        kind: "runtime",
+        message: "Variable x is not defined",
+      },
+    });
+
+    await coordinator.executeTool(
+      "monty_run",
+      { code: "x" },
+      lifecycleContext(events),
+      "call-structured-error",
+    );
+
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "failed",
+      )?.payload.error,
+    ).toBe("Variable x is not defined");
+  });
+
+  it("keeps recoverable source failures advisory at the Tool Host boundary", async () => {
+    const events: Any[] = [];
+    const { coordinator } = coordinatorFor({
+      success: false,
+      error: "HTTP 432",
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "source_unavailable",
+      immediateReminder: "Use a search result from a different hostname.",
+    });
+
+    const output = await coordinator.executeTool(
+      "web_fetch",
+      { url: "https://m.ctrip.com/blocked" },
+      lifecycleContext(events),
+      "call-advisory",
+    );
+
+    expect(output.envelope.status).toBe("success");
+    expect(JSON.parse(output.envelope.modelPayload)).toMatchObject({
+      success: false,
+      nonBlocking: true,
+      recoverableFallback: true,
+      failureKind: "source_unavailable",
+    });
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "result",
+      )?.payload,
+    ).toMatchObject({
+      toolCallId: "call-advisory",
+      advisory: true,
+      recoverableFallback: true,
+    });
+    expect(
+      events.some(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "failed",
+      ),
+    ).toBe(false);
   });
 
   it("preserves cancellation status when a shell reports it was stopped", async () => {
@@ -122,13 +203,18 @@ describe("ToolExecutionCoordinator lifecycle", () => {
     );
 
     expect(output.envelope.status).toBe("cancelled");
-    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
-      .toMatchObject({
-        taskId: "task-1",
-        toolCallId: "call-stopped",
-        exitCode: null,
-        terminationReason: "user_stopped",
-      });
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "cancelled",
+      )?.payload,
+    ).toMatchObject({
+      taskId: "task-1",
+      toolCallId: "call-stopped",
+      exitCode: null,
+      terminationReason: "user_stopped",
+    });
   });
 
   it.each([
@@ -138,15 +224,25 @@ describe("ToolExecutionCoordinator lifecycle", () => {
   ])("classifies thrown errors as %s", async (error, expected) => {
     const events: Any[] = [];
     const { coordinator } = coordinatorFor(undefined, error);
-    await coordinator.executeTool("run_command", { command: "build" }, lifecycleContext(events), "call-error");
-    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === expected)?.payload)
-      .toMatchObject({
-        taskId: "task-1",
-        toolCallId: "call-error",
-        idempotencyKey: '["task-1","call-error"]',
-        error: error.message,
-        errorType: "Error",
-      });
+    await coordinator.executeTool(
+      "run_command",
+      { command: "build" },
+      lifecycleContext(events),
+      "call-error",
+    );
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === expected,
+      )?.payload,
+    ).toMatchObject({
+      taskId: "task-1",
+      toolCallId: "call-error",
+      idempotencyKey: '["task-1","call-error"]',
+      error: error.message,
+      errorType: "Error",
+    });
   });
 
   it("does not start workspace recovery after cancellation", async () => {
@@ -155,21 +251,32 @@ describe("ToolExecutionCoordinator lifecycle", () => {
       recovered: true,
       result: { success: true, value: "unexpected-replay" },
     }));
-    const { coordinator } = coordinatorFor(undefined, new Error("request cancelled"));
+    const { coordinator } = coordinatorFor(
+      undefined,
+      new Error("request cancelled"),
+    );
     const controller = new AbortController();
     controller.abort();
 
     const output = await coordinator.executeTool(
       "run_command",
       { command: "long-running-command" },
-      lifecycleContext(events, { signal: controller.signal, workspaceRecovery: recovery }),
+      lifecycleContext(events, {
+        signal: controller.signal,
+        workspaceRecovery: recovery,
+      }),
       "call-cancelled",
     );
 
     expect(recovery).not.toHaveBeenCalled();
     expect(output.envelope.status).toBe("error");
-    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
-      .toMatchObject({ toolCallId: "call-cancelled" });
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "cancelled",
+      )?.payload,
+    ).toMatchObject({ toolCallId: "call-cancelled" });
   });
 
   it("discards a recovery result when cancellation races with recovery", async () => {
@@ -180,19 +287,37 @@ describe("ToolExecutionCoordinator lifecycle", () => {
       await Promise.resolve();
       return { recovered: true, result: { success: true, value: "late" } };
     });
-    const { coordinator } = coordinatorFor(undefined, new Error("workspace boundary failure"));
+    const { coordinator } = coordinatorFor(
+      undefined,
+      new Error("workspace boundary failure"),
+    );
 
     const output = await coordinator.executeTool(
       "read_file",
       { path: "/outside/workspace/file.txt" },
-      lifecycleContext(events, { signal: controller.signal, workspaceRecovery: recovery }),
+      lifecycleContext(events, {
+        signal: controller.signal,
+        workspaceRecovery: recovery,
+      }),
       "call-race",
     );
 
     expect(recovery).toHaveBeenCalledTimes(1);
     expect(output.envelope.status).toBe("error");
-    expect(events.find((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "cancelled")?.payload)
-      .toMatchObject({ toolCallId: "call-race" });
-    expect(events.some((event) => event.payload.metric === "tool_lifecycle" && event.payload.status === "result" && event.payload.recovered)).toBe(false);
+    expect(
+      events.find(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "cancelled",
+      )?.payload,
+    ).toMatchObject({ toolCallId: "call-race" });
+    expect(
+      events.some(
+        (event) =>
+          event.payload.metric === "tool_lifecycle" &&
+          event.payload.status === "result" &&
+          event.payload.recovered,
+      ),
+    ).toBe(false);
   });
 });

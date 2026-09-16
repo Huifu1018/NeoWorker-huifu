@@ -6,6 +6,7 @@ import {
 import { sanitizeToolCallTextFromAssistant } from "../../../shared/tool-call-text-sanitizer";
 import { normalizeLegacyProductBrand } from "../../../shared/legacy-product-brand";
 import { normalizeInternalToolNamesForDisplay } from "../../utils/internal-tool-display";
+import { sanitizeHermesText } from "../../utils/runtime-privacy";
 import {
   normalizeInlineLists,
   normalizeInlineHeadings,
@@ -283,7 +284,9 @@ export function normalizeMarkdownForDisplay(text: string): string {
 export function normalizeTimelineTitleMarkdownForDisplay(text: string): string {
   // Normalize inline headings (### mid-line -> line-start) and lists
   const normalized = normalizeInlineLists(
-    normalizeInlineHeadings(normalizeMarkdownForDisplay(text)),
+    normalizeInlineHeadings(
+      normalizeMarkdownForDisplay(sanitizeHermesText(String(text || ""))),
+    ),
   );
   // Escape only single # so shell comments like "# route check" are not rendered
   // as <h1>. Allow ##, ###, etc. to render as headings.
@@ -295,7 +298,9 @@ export function normalizeTimelineTitleMarkdownForDisplay(text: string): string {
 }
 
 export function cleanAssistantMessageForDisplay(message: string): string {
-  const sanitized = normalizeLegacyProductBrand(String(message || ""))
+  const sanitized = normalizeLegacyProductBrand(
+    sanitizeHermesText(String(message || "")),
+  )
     .replace(/\[\[speak\]\]([\s\S]*?)\[\[\/speak\]\]/gi, "$1")
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/gi, "")

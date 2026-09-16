@@ -27,4 +27,12 @@ describe("create task error presentation", () => {
       ),
     ).toBe("当前工作区未关联到所选项目，请重新选择工作区或项目后再试。");
   });
+
+  it("turns a missing workspace folder into a re-selection prompt", () => {
+    expect(
+      formatCreateTaskError(
+        "Error invoking remote method 'workspace:select': Error: WORKSPACE_PATH_UNAVAILABLE:missing: Workspace folder no longer exists",
+      ),
+    ).toBe("工作区文件夹已被移动、删除或替换，请重新选择文件夹后再继续。");
+  });
 });

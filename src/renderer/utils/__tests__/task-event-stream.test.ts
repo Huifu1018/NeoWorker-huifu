@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task, TaskEvent } from "../../../shared/types";
 import { getEffectiveTaskEventType } from "../task-event-compat";
+import { selectCompletionResultSummary } from "../task-completion-summary";
 import { deriveSharedTaskEventUiState } from "../task-event-derived";
 import {
   getTaskStatusUpdateFromEvent,
@@ -79,6 +80,32 @@ const userEvent: TaskEvent = {
 };
 
 describe("reconcileTaskDeliveryEvents", () => {
+  it.each(["report.pptx", "report.pdf", "report.xlsx", "report.docx"])(
+    "does not replace a turn-authoritative %s reply with a stale task snapshot",
+    (path) => {
+      const outputSummary = { created: [path], primaryOutputPath: path, outputCount: 1, folders: ["."] };
+      const completion = {
+        ...userEvent,
+        id: "current-completion",
+        eventId: "current-completion",
+        type: "task_completed",
+        legacyType: "task_completed",
+        timestamp: 500,
+        payload: { resultSummary: "Korean translation ready", outputSummary },
+      } as TaskEvent;
+      const staleTask = {
+        ...completedTask,
+        resultSummary: "Previous Russian translation verified",
+        bestKnownOutcome: { capturedAt: 500, resultSummary: "Korean translation ready", outputSummary },
+      } as Task;
+      const stream = [userEvent, completion];
+      const reconciled = reconcileTaskDeliveryEvents(staleTask, stream);
+      expect(reconciled[1]).toBe(completion);
+      expect(selectCompletionResultSummary(reconciled[1])).toBe("Korean translation ready");
+      expect(reconcileTaskDeliveryEvents(staleTask, reconciled)).toEqual(reconciled);
+    },
+  );
+
   it("synthesizes a durable completion anchor when projected history omitted it", () => {
     const reconciled = reconcileTaskDeliveryEvents(completedTask, [userEvent]);
     const completion = reconciled.find(
@@ -208,6 +235,84 @@ describe("reconcileTaskDeliveryEvents", () => {
       outputCount: 0,
       folders: [],
     });
+  });
+
+  it("does not attach a later query answer to an older artifact completion", () => {
+    const firstCompletion: TaskEvent = {
+      id: "completion-with-ppt",
+      eventId: "completion-with-ppt",
+      taskId: completedTask.id,
+      timestamp: 200,
+      ts: 200,
+      type: "task_completed",
+      legacyType: "task_completed",
+      status: "completed",
+      schemaVersion: 2,
+      payload: {
+        outputSummary: {
+          created: ["translated.pptx"],
+          primaryOutputPath: "translated.pptx",
+          outputCount: 1,
+          folders: ["."],
+        },
+      },
+    };
+    const travelAnswer =
+      "明天是 2026年9月14日（周一）。推荐坐高铁，首选 G19。";
+    const followUpUser: TaskEvent = {
+      ...userEvent,
+      id: "user-travel",
+      eventId: "user-travel",
+      timestamp: 350,
+      ts: 350,
+      payload: { message: "明天上海到北京怎么走？" },
+    };
+    const followUpCompletion: TaskEvent = {
+      id: "completion-travel",
+      eventId: "completion-travel",
+      taskId: completedTask.id,
+      timestamp: 400,
+      ts: 400,
+      type: "task_completed",
+      legacyType: "task_completed",
+      status: "completed",
+      schemaVersion: 2,
+      payload: {
+        resultSummary: travelAnswer,
+        outputSummary: { created: [], outputCount: 0, folders: [] },
+      },
+    };
+    const multiTurnTask = {
+      ...completedTask,
+      resultSummary: travelAnswer,
+      bestKnownOutcome: {
+        capturedAt: 450,
+        resultSummary: travelAnswer,
+        outputSummary: {
+          created: ["translated.pptx"],
+          primaryOutputPath: "translated.pptx",
+          outputCount: 1,
+          folders: ["."],
+        },
+      },
+    } as Task;
+
+    const reconciled = reconcileTaskDeliveryEvents(multiTurnTask, [
+      userEvent,
+      firstCompletion,
+      followUpUser,
+      followUpCompletion,
+    ]);
+
+    const original = reconciled.find((event) => event.id === firstCompletion.id);
+    const followUp = reconciled.find((event) => event.id === followUpCompletion.id);
+    expect(original?.payload.resultSummary).toBeUndefined();
+    expect(original?.payload.bestKnownOutcome?.resultSummary).toBeUndefined();
+    expect(selectCompletionResultSummary(original!)).toBe("");
+    expect(original?.payload.outputSummary.primaryOutputPath).toBe(
+      "translated.pptx",
+    );
+    expect(selectCompletionResultSummary(followUp!)).toBe(travelAnswer);
   });
 
   it("does not alter an active task timeline", () => {

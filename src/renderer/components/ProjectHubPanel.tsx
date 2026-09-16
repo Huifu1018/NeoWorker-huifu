@@ -440,7 +440,9 @@ export function ProjectHubPanel({
           write: true,
           delete: true,
           network: false,
-          shell: permissionSettings?.defaultShellEnabled === true,
+          shell:
+            permissionSettings?.defaultShellEnabled === true ||
+            permissionSettings?.defaultPermissionAccess === "full",
         },
       });
       setWorkspaces((current) => [workspace, ...current]);

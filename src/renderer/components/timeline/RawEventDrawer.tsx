@@ -1,5 +1,9 @@
 import { useState } from "react";
 import type { TaskEvent } from "../../../shared/types";
+import {
+  sanitizeRuntimeDisplayValue,
+  sanitizeTaskEventForDisplay,
+} from "../../utils/runtime-privacy";
 
 interface RawEventDrawerProps {
   rawEventIds: string[];
@@ -22,11 +26,11 @@ function formatTimestamp(ts: number): string {
 
 function truncatePayload(payload: unknown): string {
   try {
-    const json = JSON.stringify(payload, null, 2);
+    const json = JSON.stringify(sanitizeRuntimeDisplayValue(payload), null, 2);
     if (json.length <= 400) return json;
     return `${json.slice(0, 400)}\n  … (truncated)`;
   } catch {
-    return String(payload);
+    return String(sanitizeRuntimeDisplayValue(payload));
   }
 }
 
@@ -38,7 +42,8 @@ export function RawEventDrawer({
 
   const events = rawEventIds
     .map((id) => allEvents.find((e) => e.id === id))
-    .filter((e): e is TaskEvent => Boolean(e));
+    .map((event) => (event ? sanitizeTaskEventForDisplay(event) : null))
+    .filter((event): event is TaskEvent => Boolean(event));
 
   if (events.length === 0) return null;
 
@@ -50,7 +55,7 @@ export function RawEventDrawer({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        {open ? "Hide" : "Show"} raw events ({rawEventIds.length})
+        {open ? "Hide" : "Show"} raw events ({events.length})
       </button>
       {open && (
         <div className="raw-event-drawer-body" role="region">

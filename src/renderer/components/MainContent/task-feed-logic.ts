@@ -13,6 +13,7 @@ import {
 import { localizeProgressText } from "../../utils/localized-progress-text";
 import type { EndOfTaskArtifactCard } from "./artifact-logic";
 import type { CommandOutputSession } from "../../utils/task-event-derived";
+import { isHermesRuntimeEvent } from "../../utils/runtime-privacy";
 
 export const STEP_WINDOW_SIZE = 7;
 export const VIRTUALIZED_FEED_ROW_THRESHOLD = 18;
@@ -71,7 +72,7 @@ export function shouldBypassLiveTaskEventProjection(args: {
 }): boolean {
   return (
     args.projectionMode === "live" &&
-    (args.verboseSteps || args.transcriptModeOverride === "inspect")
+    args.transcriptModeOverride === "inspect"
   );
 }
 
@@ -153,6 +154,7 @@ export function deriveProgressHeartbeat(
     ? events.filter((event) => event.taskId === taskId)
     : events;
   const hasToolActivity = scopedEvents.some((event) => {
+    if (isHermesRuntimeEvent(event)) return false;
     const type = getEffectiveTaskEventType(event);
     return type === "tool_call" || type === "tool_result";
   });
@@ -166,6 +168,7 @@ export function deriveProgressHeartbeat(
 
   for (let index = scopedEvents.length - 1; index >= 0; index -= 1) {
     const event = scopedEvents[index];
+    if (isHermesRuntimeEvent(event)) continue;
     const effectiveType = getEffectiveTaskEventType(event);
     const payload =
       event.payload &&
@@ -260,7 +263,7 @@ export function getDefaultTranscriptMode(args: {
   isChatTask: boolean;
   taskStatus?: Task["status"] | null;
 }): TranscriptMode {
-  if (args.isReplayMode || args.verboseSteps || args.isChatTask) {
+  if (args.isReplayMode || args.isChatTask) {
     return "inspect";
   }
   if (args.isTaskWorking) {
@@ -268,6 +271,9 @@ export function getDefaultTranscriptMode(args: {
   }
   if (args.taskStatus === "completed") {
     return "delivery";
+  }
+  if (args.verboseSteps) {
+    return "inspect";
   }
   return "inspect";
 }
@@ -305,14 +311,45 @@ export function shouldMarkActionBlockActiveForCurrentTurn(args: {
   isReplayMode: boolean;
   actionBlockEventIndices: number[];
   latestUserMessageEventIndex: number;
+  actionBlockEvents?: TaskEvent[];
+  latestUserMessageEvent?: TaskEvent | null;
 }): boolean {
   if (!args.isLatestActionBlock) return false;
   if (args.isReplayMode) return true;
   if (!args.isTaskWorking) return false;
-  if (args.latestUserMessageEventIndex < 0) return true;
-  return args.actionBlockEventIndices.some(
-    (eventIndex) => eventIndex > args.latestUserMessageEventIndex,
-  );
+  return isActionBlockInCurrentTurn(args);
+}
+
+export function isActionBlockInCurrentTurn(args: {
+  isLatestActionBlock: boolean;
+  actionBlockEventIndices: number[];
+  latestUserMessageEventIndex: number;
+  actionBlockEvents?: TaskEvent[];
+  latestUserMessageEvent?: TaskEvent | null;
+}): boolean {
+  if (!args.isLatestActionBlock) return false;
+  if (!args.latestUserMessageEvent) {
+    if (args.latestUserMessageEventIndex < 0) return true;
+    return args.actionBlockEventIndices.some(
+      (eventIndex) => eventIndex > args.latestUserMessageEventIndex,
+    );
+  }
+
+  const latestUserMessage = args.latestUserMessageEvent;
+  return (args.actionBlockEvents ?? []).some((event) => {
+    if (
+      typeof event.seq === "number" &&
+      Number.isFinite(event.seq) &&
+      typeof latestUserMessage.seq === "number" &&
+      Number.isFinite(latestUserMessage.seq)
+    ) {
+      return event.seq > latestUserMessage.seq;
+    }
+    if (event.timestamp !== latestUserMessage.timestamp) {
+      return event.timestamp > latestUserMessage.timestamp;
+    }
+    return event.id !== latestUserMessage.id;
+  });
 }
 
 export function getBootstrapProgressTitle(
@@ -384,6 +421,7 @@ export function deriveAgentReasoningPanelState(args: {
   for (const event of args.events) {
     if (event.taskId !== args.taskId || isAgentReasoningStreamingEvent(event))
       continue;
+    if (isHermesRuntimeEvent(event)) continue;
     const effectiveType = getEffectiveTaskEventType(event);
     if (
       effectiveType !== "progress_update" &&
@@ -416,6 +454,7 @@ export function deriveAgentReasoningPanelState(args: {
   for (let index = args.events.length - 1; index >= 0; index -= 1) {
     const event = args.events[index];
     if (event.taskId !== args.taskId) continue;
+    if (isHermesRuntimeEvent(event)) continue;
     const effectiveType = getEffectiveTaskEventType(event);
     if (
       effectiveType === "log" ||
@@ -454,6 +493,7 @@ export function hasAgentReasoningPanelContent(
 export function isTransientLiveTranscriptRow(row: TaskFeedRow): boolean {
   const event = getTaskFeedRowEvent(row);
   if (!event) return false;
+  if (isHermesRuntimeEvent(event)) return true;
   if (LIVE_TRANSCRIPT_TRANSIENT_RAW_EVENT_TYPES.has(event.type)) return true;
 
   const effectiveType = getEffectiveTaskEventType(event);
@@ -693,7 +733,10 @@ export function selectVisibleTaskFeedRows(
   if (transcriptMode !== "live") {
     return { visibleFeedRows: feedRows, hiddenLiveFeedRowCount: 0 };
   }
-  if (feedRows.length <= 8) {
+  const userMessageRowCount = feedRows.filter(
+    (row) => getTaskFeedRowEventType(row) === "user_message",
+  ).length;
+  if (feedRows.length <= 8 && userMessageRowCount <= 1) {
     const visibleFeedRows = feedRows.filter(
       (row) => row.kind !== "history-control",
     );
@@ -704,23 +747,42 @@ export function selectVisibleTaskFeedRows(
   }
 
   const keepIndexes = new Set<number>();
-  // Conversation rows are durable user-facing content, not live execution
-  // noise. Preserve every turn even when the internal step feed is bounded.
-  const conversationIndexes = new Set<number>();
-  for (let index = 0; index < feedRows.length; index += 1) {
-    if (isConversationTranscriptRow(feedRows[index])) {
-      conversationIndexes.add(index);
-      keepIndexes.add(index);
+  // Live mode is a focused work view. Keep the current turn visible, but leave
+  // older conversation turns to inspect/delivery mode so historical queries do
+  // not stack above the active execution trace without their matching results.
+  const currentConversationIndexes = new Set<number>();
+  let latestUserMessageIndex = -1;
+  for (let index = feedRows.length - 1; index >= 0; index -= 1) {
+    if (getTaskFeedRowEventType(feedRows[index]) === "user_message") {
+      latestUserMessageIndex = index;
+      break;
     }
   }
-  const keepLastMatch = (predicate: (row: TaskFeedRow) => boolean) => {
+  if (latestUserMessageIndex >= 0) {
+    for (let index = latestUserMessageIndex; index < feedRows.length; index += 1) {
+      if (isConversationTranscriptRow(feedRows[index])) {
+        currentConversationIndexes.add(index);
+        keepIndexes.add(index);
+      }
+    }
+  }
+  const keepLastMatch = (predicate: (row: TaskFeedRow, index: number) => boolean) => {
     for (let index = feedRows.length - 1; index >= 0; index -= 1) {
-      if (predicate(feedRows[index])) {
+      if (predicate(feedRows[index], index)) {
         keepIndexes.add(index);
         return;
       }
     }
   };
+  if (currentConversationIndexes.size === 0) {
+    for (let index = feedRows.length - 1; index >= 0; index -= 1) {
+      if (isConversationTranscriptRow(feedRows[index])) {
+        currentConversationIndexes.add(index);
+        keepIndexes.add(index);
+        break;
+      }
+    }
+  }
 
   let meaningfulRowsKept = 0;
   for (
@@ -729,6 +791,12 @@ export function selectVisibleTaskFeedRows(
     index -= 1
   ) {
     const row = feedRows[index];
+    if (
+      isConversationTranscriptRow(row) &&
+      !currentConversationIndexes.has(index)
+    ) {
+      continue;
+    }
     if (!isMeaningfulLiveTranscriptRow(row)) continue;
     keepIndexes.add(index);
     meaningfulRowsKept += 1;
@@ -737,8 +805,18 @@ export function selectVisibleTaskFeedRows(
   keepLastMatch(
     (row) => row.kind === "timeline" && row.item.kind === "action_block",
   );
-  keepLastMatch((row) => getTaskFeedRowEventType(row) === "assistant_message");
-  keepLastMatch((row) => getTaskFeedRowEventType(row) === "user_message");
+  keepLastMatch(
+    (row, index) =>
+      getTaskFeedRowEventType(row) === "assistant_message" &&
+      (currentConversationIndexes.size === 0 ||
+        currentConversationIndexes.has(index)),
+  );
+  keepLastMatch(
+    (row, index) =>
+      getTaskFeedRowEventType(row) === "user_message" &&
+      (currentConversationIndexes.size === 0 ||
+        currentConversationIndexes.has(index)),
+  );
   keepLastMatch(
     (row) => row.kind === "timeline" && row.item.kind === "dispatched-agents",
   );
@@ -751,17 +829,18 @@ export function selectVisibleTaskFeedRows(
 
   const visibleIndexes = [...keepIndexes].sort((a, b) => a - b);
   const nonConversationIndexes = visibleIndexes.filter(
-    (index) => !conversationIndexes.has(index),
+    (index) => !currentConversationIndexes.has(index),
   );
   const nonConversationBudget = Math.max(
     0,
-    LIVE_TRANSCRIPT_MAX_VISIBLE_ROWS - conversationIndexes.size,
+    LIVE_TRANSCRIPT_MAX_VISIBLE_ROWS - currentConversationIndexes.size,
   );
   const cappedIndexes =
     nonConversationIndexes.length > nonConversationBudget
-      ? [...conversationIndexes, ...nonConversationIndexes.slice(-nonConversationBudget)].sort(
-          (a, b) => a - b,
-        )
+      ? [
+          ...currentConversationIndexes,
+          ...nonConversationIndexes.slice(-nonConversationBudget),
+        ].sort((a, b) => a - b)
       : visibleIndexes;
   const cappedKeepIndexes = new Set(cappedIndexes);
   const visibleFeedRows = feedRows.filter((_, index) =>

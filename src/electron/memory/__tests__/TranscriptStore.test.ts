@@ -45,6 +45,20 @@ afterEach(async () => {
 });
 
 describe("TranscriptStore", () => {
+  it("does not recreate a missing workspace while persisting transcripts", async () => {
+    const parentPath = await createWorkspace();
+    const missingWorkspacePath = path.join(parentPath, "deleted-workspace");
+
+    await expect(
+      TranscriptStore.writeCheckpoint(missingWorkspacePath, "task-1", {
+        checkpointKind: "completion",
+      }),
+    ).rejects.toThrow("workspace folder does not exist");
+    await expect(fs.stat(missingWorkspacePath)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("writes checkpoints and restores them synchronously", async () => {
     const workspacePath = await createWorkspace();
 

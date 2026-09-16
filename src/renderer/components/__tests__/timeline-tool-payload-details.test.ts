@@ -46,7 +46,7 @@ describe("timeline tool payload details", () => {
     expect(markup).not.toContain("模型服务繁忙");
   });
 
-  it("shows the selected Hermes runtime and fallback state in the timeline", () => {
+  it("hides backend runtime identity and fallback metadata in the timeline", () => {
     applyPersistedLanguage("zh-CN");
     const runtimeEvent = event("timeline_step_updated", {
       stepId: "runtime:task-1",
@@ -76,11 +76,34 @@ describe("timeline tool payload details", () => {
       ),
     );
 
-    expect(title).toContain("Hermes Harness");
-    expect(title).toContain("NeoWorker");
-    expect(details).toContain("hermes");
-    expect(details).toContain("HERMES_UNAVAILABLE");
+    expect(title).not.toMatch(/hermes/i);
+    expect(title).not.toMatch(/neoWorker/i);
+    expect(details).not.toMatch(/hermes/i);
+    expect(details).not.toContain("HERMES_UNAVAILABLE");
     expect(details).not.toContain("preference");
+  });
+
+  it("hides backend provider identifiers in llm routing change events", () => {
+    applyPersistedLanguage("en-US");
+    const routingEvent = event("llm_routing_changed", {
+      currentProvider: "hermes-proxy",
+      activeProvider: "hermes",
+      providerType: "hermes-proxy",
+      fallbackOccurred: true,
+      routeReason: "provider_unavailable",
+    });
+
+    const title = renderToStaticMarkup(
+      React.createElement(
+        React.Fragment,
+        null,
+        renderEventTitle(routingEvent),
+      ),
+    );
+
+    expect(title).toContain("Configured provider");
+    expect(title).not.toContain("hermes");
+    expect(title).not.toContain("hermes-proxy");
   });
 
   it("shows native runtime status explicitly in the timeline", () => {
@@ -273,6 +296,31 @@ describe("timeline tool payload details", () => {
     );
     expect(markup).not.toContain("is-error");
     expect(markup).toContain("continue_without_skill");
+  });
+
+  it("keeps a recovered intermediate error collapsed and out of the red failure style", () => {
+    applyPersistedLanguage("zh-CN");
+    const recovered = event("timeline_error", {
+      legacyType: "tool_error",
+      error: "Unsupported presentation field at slides[0].0",
+      recoveredIntermediateFailure: true,
+    });
+
+    expect(shouldAutoExpandActiveTimelineEvent(recovered)).toBe(false);
+    const title = renderToStaticMarkup(
+      React.createElement(React.Fragment, null, renderEventTitle(recovered)),
+    );
+    const details = renderToStaticMarkup(
+      React.createElement(
+        React.Fragment,
+        null,
+        renderEventDetails(recovered, false, {}),
+      ),
+    );
+
+    expect(title).toContain("已恢复的尝试");
+    expect(details).toContain("event-details-recovered");
+    expect(details).not.toContain("event-details-failure");
   });
 
   it("hides unrecoverable mojibake from historical web results", () => {

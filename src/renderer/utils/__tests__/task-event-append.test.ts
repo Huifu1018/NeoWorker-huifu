@@ -21,6 +21,7 @@ function makeEvent(
     type: overrides.type,
     timestamp: overrides.timestamp,
     ...(typeof overrides.seq === "number" ? { seq: overrides.seq } : {}),
+    ...(overrides.legacyType ? { legacyType: overrides.legacyType } : {}),
     payload: overrides.payload ?? {},
     schemaVersion: overrides.schemaVersion ?? 2,
     ...(overrides.stepId ? { stepId: overrides.stepId } : {}),
@@ -58,6 +59,20 @@ describe("isRendererNoiseEvent", () => {
         makeEvent({ taskId: "t1", type: "task_completed", timestamp: 1 }),
       ),
     ).toBe(false);
+  });
+
+  it("treats internal runtime telemetry as disposable renderer noise", () => {
+    expect(
+      isRendererNoiseEvent(
+        makeEvent({
+          taskId: "t1",
+          type: "timeline_step_updated",
+          legacyType: "hermes_runtime_checkpoint",
+          timestamp: 1,
+          payload: { runtime: "hermes", phase: "hermes_checkpoint" },
+        }),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -317,9 +332,10 @@ describe("appendRendererTaskEvents", () => {
       payload: { stage: "working", message: "new" },
     });
 
-    const result = appendRendererTaskEvents([progress, completion], [
-      replacement,
-    ]);
+    const result = appendRendererTaskEvents(
+      [progress, completion],
+      [replacement],
+    );
 
     expect(result.map((event) => event.type)).toEqual([
       "progress_update",
@@ -370,6 +386,73 @@ describe("capTaskEvents", () => {
     const result = capTaskEvents(events, 4);
     expect(result).toHaveLength(4);
     expect(result[result.length - 1].type).toBe("assistant_message");
+  });
+
+  it("preserves every conversation round across thousands of later tool events", () => {
+    const conversationEvents = Array.from({ length: 5 }, (_, index) => {
+      const base = index * 3;
+      return [
+        makeEvent({
+          id: `user-${index}`,
+          taskId: "t1",
+          type: "user_message",
+          timestamp: base + 1,
+          payload: { message: `Query ${index + 1}` },
+        }),
+        makeEvent({
+          id: `assistant-${index}`,
+          taskId: "t1",
+          type: "assistant_message",
+          timestamp: base + 2,
+          payload: { message: `Result ${index + 1}` },
+        }),
+        makeEvent({
+          id: `completed-${index}`,
+          taskId: "t1",
+          type: "task_completed",
+          timestamp: base + 3,
+        }),
+      ];
+    }).flat();
+    const toolEvents = Array.from({ length: 2000 }, (_, index) =>
+      makeEvent({
+        id: `tool-${index}`,
+        taskId: "t1",
+        type: "tool_call",
+        timestamp: 100 + index,
+        payload: { tool: "run_command", index },
+      }),
+    );
+
+    const result = capTaskEvents([...conversationEvents, ...toolEvents], 1200);
+    const retainedIds = new Set(result.map((event) => event.id));
+
+    expect(result).toHaveLength(1200);
+    for (const event of conversationEvents) {
+      expect(retainedIds.has(event.id)).toBe(true);
+    }
+  });
+
+  it("does not preserve internal assistant progress as a conversation reply", () => {
+    const internal = makeEvent({
+      id: "internal-assistant",
+      taskId: "t1",
+      type: "assistant_message",
+      timestamp: 1,
+      payload: { internal: true, message: "Internal progress" },
+    });
+    const later = Array.from({ length: 5 }, (_, index) =>
+      makeEvent({
+        id: `tool-${index}`,
+        taskId: "t1",
+        type: "tool_call",
+        timestamp: 10 + index,
+      }),
+    );
+
+    const result = capTaskEvents([internal, ...later], 3);
+
+    expect(result.map((event) => event.id)).not.toContain(internal.id);
   });
 
   it("truncates large command output payloads in renderer state", () => {
@@ -538,6 +621,115 @@ describe("capTaskEvents", () => {
     expect(shared.planSteps).toEqual([
       expect.objectContaining({ id: "1", status: "completed" }),
       expect.objectContaining({ id: "2", status: "in_progress" }),
+    ]);
+  });
+
+  it("keeps long multi-query attachment turns paired with their own replies", () => {
+    const taskId = "multi-query-attachments";
+    const turn = (
+      number: number,
+      userMessage: string,
+      assistantMessage: string,
+      startSeq: number,
+    ): TaskEvent[] => {
+      const turnId = `turn:${taskId}:follow-up:${number}`;
+      return [
+        makeEvent({
+          id: `user-${number}`,
+          eventId: `user-${number}`,
+          taskId,
+          type: "timeline_step_updated",
+          legacyType: "user_message",
+          timestamp: startSeq,
+          seq: startSeq,
+          stepId: turnId,
+          payload: { legacyType: "user_message", message: userMessage },
+        }),
+        ...Array.from({ length: 630 }, (_, index) =>
+          makeEvent({
+            id: `runtime-${number}-${index}`,
+            eventId: `runtime-${number}-${index}`,
+            taskId,
+            type: "timeline_step_updated",
+            legacyType: "hermes_runtime_update",
+            timestamp: startSeq + index + 1,
+            seq: startSeq + index + 1,
+            stepId: turnId,
+            payload: {
+              legacyType: "hermes_runtime_update",
+              runtime: "hermes",
+              chunk: index,
+            },
+          }),
+        ),
+        makeEvent({
+          id: `assistant-${number}`,
+          eventId: `assistant-${number}`,
+          taskId,
+          type: "timeline_step_updated",
+          legacyType: "assistant_message",
+          timestamp: startSeq + 631,
+          seq: startSeq + 631,
+          stepId: turnId,
+          payload: {
+            legacyType: "assistant_message",
+            message: assistantMessage,
+          },
+        }),
+        makeEvent({
+          id: `complete-${number}`,
+          eventId: `complete-${number}`,
+          taskId,
+          type: "timeline_step_finished",
+          legacyType: "task_completed",
+          timestamp: startSeq + 632,
+          seq: startSeq + 632,
+          stepId: turnId,
+          payload: {
+            legacyType: "task_completed",
+            resultSummary: assistantMessage,
+          },
+        }),
+      ];
+    };
+
+    const events = [
+      ...turn(1, "查询明天上海飞北京的航班", "航班查询结果", 1),
+      ...turn(2, "翻译成韩文，并输出 PPT", "韩文 PPT 已完成", 700),
+      ...turn(3, "输出日文版 PDF，保留图片", "日文 PDF 已完成", 1_400),
+    ];
+    const capped = capTaskEvents(events);
+    const shared = deriveSharedTaskEventUiState({
+      rawEvents: capped,
+      task: { id: taskId, status: "completed" } as Any,
+      workspace: null,
+      projectionMode: "inspect",
+      verboseSteps: false,
+    });
+    const conversation = shared.baseTimelineItems
+      .filter((item) => item.kind === "event")
+      .map((item) =>
+        item.kind === "event"
+          ? {
+              id: item.event.id,
+              type:
+                item.event.legacyType ||
+                item.event.payload?.legacyType,
+              text:
+                item.event.payload?.message ||
+                item.event.payload?.resultSummary,
+            }
+          : null,
+      );
+
+    expect(capped.length).toBeLessThanOrEqual(600);
+    expect(conversation).toEqual([
+      { id: "user-1", type: "user_message", text: "查询明天上海飞北京的航班" },
+      { id: "complete-1", type: "task_completed", text: "航班查询结果" },
+      { id: "user-2", type: "user_message", text: "翻译成韩文，并输出 PPT" },
+      { id: "complete-2", type: "task_completed", text: "韩文 PPT 已完成" },
+      { id: "user-3", type: "user_message", text: "输出日文版 PDF，保留图片" },
+      { id: "complete-3", type: "task_completed", text: "日文 PDF 已完成" },
     ]);
   });
 });

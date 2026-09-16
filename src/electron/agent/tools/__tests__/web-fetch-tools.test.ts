@@ -783,6 +783,39 @@ describe("WebFetchTools", () => {
       });
     });
 
+    it("opens a task-scoped circuit after a site rejects automated access", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 432,
+        statusText: "",
+        headers: new Map([["content-type", "text/html"]]),
+        text: async () => "whaleguard blocked",
+      });
+
+      const first = await webFetchTools.webFetch({
+        url: "https://m.ctrip.com/html5/flight/bjs-sha-day-1.html",
+      });
+      const second = await webFetchTools.httpRequest({
+        url: "https://m.ctrip.com/html5/flight/bjs-sha-day-1.html",
+      });
+
+      expect(first).toMatchObject({
+        success: false,
+        nonBlocking: true,
+        recoverableFallback: true,
+        failureKind: "source_unavailable",
+      });
+      expect(second).toMatchObject({
+        success: false,
+        nonBlocking: true,
+        recoverableFallback: true,
+        failureKind: "source_unavailable",
+      });
+      expect(second.error).toContain("blocked earlier in this task");
+      expect(second.immediateReminder).toContain("Do not retry");
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it("should block disallowed domains for raw http requests", async () => {
       vi.spyOn(GuardrailManager, "isDomainAllowed").mockReturnValue(false);
 

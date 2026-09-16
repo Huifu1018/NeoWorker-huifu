@@ -89,7 +89,25 @@ describe("PresentationArtifactViewer", () => {
     expect(markup).toMatch(/Preparing slide preview|正在生成幻灯片预览/);
     expect(markup).toContain("presentation-viewer-thumb-placeholder");
     expect(markup).not.toContain("Opening slide");
-    expect(markup).toContain("Rendering slide previews...");
+    expect(markup).not.toContain("Rendering slide previews...");
+  });
+
+  it("labels extracted text as a fallback without exposing raw renderer errors", () => {
+    const markup = render(React.createElement(PresentationViewer, {
+      fileName: "sample.pptx",
+      preview: {
+        slideCount: 1,
+        renderStatus: "text_only",
+        renderMessage: "spawn soffice ENOENT",
+        slides: [{ index: 1, title: "Intro", text: "Opening slide" }],
+      },
+      onOpenExternal: () => {},
+      onShowInFinder: () => {},
+    }));
+    expect(markup).toMatch(/Original layout preview is unavailable|暂时无法预览原版式/);
+    expect(markup).toContain("Opening slide");
+    expect(markup).not.toContain("spawn soffice");
+    expect(markup).not.toContain("<h3>");
   });
 
   it("uses tokenized image URLs when rendered slide images are available", () => {
@@ -115,5 +133,21 @@ describe("PresentationArtifactViewer", () => {
 
     expect(markup).toContain("media://local/slide-token");
     expect(markup).toMatch(/1 rendered|已渲染 1 张/);
+  });
+
+  it("keeps the compatibility notice visible for cached bundled previews", () => {
+    const markup = render(React.createElement(PresentationViewer, {
+      fileName: "sample.pptx",
+      preview: {
+        slideCount: 1,
+        renderer: "officecli",
+        renderStatus: "cached",
+        slides: [{ index: 1, text: "Intro", imageUrl: "media://local/slide-token" }],
+      },
+      onOpenExternal: () => {},
+      onShowInFinder: () => {},
+    }));
+    expect(markup).toMatch(/Compatibility preview|兼容预览/);
+    expect(markup).toContain("media://local/slide-token");
   });
 });

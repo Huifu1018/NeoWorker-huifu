@@ -228,6 +228,22 @@ function isSuccessfulToolResult(event: TaskEvent): boolean {
   );
 }
 
+function recoverableArtifactToolFamily(toolName: string): string | null {
+  switch (toolName.trim().toLowerCase()) {
+    case "create_presentation":
+    case "generate_presentation":
+      return "presentation";
+    case "create_document":
+    case "generate_document":
+      return "document";
+    case "create_spreadsheet":
+    case "generate_spreadsheet":
+      return "spreadsheet";
+    default:
+      return null;
+  }
+}
+
 function isAggregateToolBatchFailure(
   event: TaskEvent,
   effectiveType: string,
@@ -319,6 +335,7 @@ export function buildActionBlockSummary(
   const sourceIssueIds = new Set<string>();
   const recoveredErrorIds = new Set<string>();
   const successfulCorrelationIds = new Set<string>();
+  const successfulArtifactToolFamilies = new Map<string, number>();
   const failureRecords = new Map<
     string,
     {
@@ -327,6 +344,7 @@ export function buildActionBlockSummary(
       explicitlyRecoverable: boolean;
       correlated: boolean;
       blocked: boolean;
+      timestamp: number;
     }
   >();
   const artifactIds = new Set<string>();
@@ -482,6 +500,16 @@ export function buildActionBlockSummary(
 
     if (isSuccessfulToolResult(event)) {
       successfulToolResultCount += 1;
+      const artifactToolFamily = recoverableArtifactToolFamily(tool);
+      if (artifactToolFamily) {
+        successfulArtifactToolFamilies.set(
+          artifactToolFamily,
+          Math.max(
+            successfulArtifactToolFamilies.get(artifactToolFamily) ?? 0,
+            event.timestamp ?? 0,
+          ),
+        );
+      }
       if (hasSpecificToolCorrelation(event, payload, step)) {
         successfulCorrelationIds.add(correlationKey);
       }
@@ -525,6 +553,10 @@ export function buildActionBlockSummary(
           hasSpecificToolCorrelation(event, payload, step) ||
           existing?.correlated === true,
         blocked: payload.blocked === true || existing?.blocked === true,
+        timestamp: Math.min(
+          existing?.timestamp ?? Number.POSITIVE_INFINITY,
+          event.timestamp ?? 0,
+        ),
       });
     }
 
@@ -615,6 +647,12 @@ export function buildActionBlockSummary(
       successfulWebRetrievalCount > 0 &&
       isRecoverableWebSourceFailure(failure.reason);
     const recoveredBySameCall = successfulCorrelationIds.has(failureKey);
+    const artifactToolFamily = recoverableArtifactToolFamily(failure.toolName);
+    const recoveredByEquivalentArtifactTool = Boolean(
+      artifactToolFamily &&
+        (successfulArtifactToolFamilies.get(artifactToolFamily) ?? 0) >
+          failure.timestamp,
+    );
     const recoveredByCompletedFallback =
       options?.taskStatus === "completed" &&
       failure.blocked &&
@@ -625,6 +663,7 @@ export function buildActionBlockSummary(
     if (
       recoveredByLaterFallback ||
       recoveredBySameCall ||
+      recoveredByEquivalentArtifactTool ||
       recoveredByCompletedFallback
     ) {
       recoveredErrorIds.add(failureKey);

@@ -10,8 +10,14 @@ import { isIP } from "net";
 import mime from "mime-types";
 import { z } from "zod";
 import { getUserDataDir } from "../utils/user-data-dir";
+import {
+  assertWorkspaceDirectoryPath,
+  assertWorkspacePathAvailable,
+  withWorkspaceAvailability,
+} from "../utils/workspace-availability";
 import { resolveImageOcrChars, runOcrFromImagePath, shouldRunImageOcr } from "./image-viewer-ocr";
 import { resolveRealPathWithinWorkspace } from "./viewer-path-security";
+import { recoverVerifiedDeliveryEvents } from "../agent/verified-delivery-artifacts";
 import { buildWebPagePreviewFromPath } from "../utils/web-preview";
 import {
   PptxPreviewService,
@@ -411,6 +417,7 @@ import { isApprovedImportFile } from "../security/file-import-approvals";
 import { FileProvenanceRegistry } from "../security/file-provenance-registry";
 
 type FileViewerRequestOptions = {
+  includeDocxBase64?: boolean;
   workspacePath?: string;
   enableImageOcr?: boolean;
   imageOcrMaxChars?: number;
@@ -2456,6 +2463,7 @@ export async function setupIpcHandlers(
         imageOcrMaxChars,
         includeImageContent = true,
         includePdfBase64 = false,
+        includeDocxBase64 = false,
         includePdfAnalysis = true,
         presentationRenderMode = "full",
       } = data;
@@ -2728,14 +2736,14 @@ export async function setupIpcHandlers(
           }
 
           case "docx": {
-            documentPreview = await buildDocumentPreviewFromFile(fileReadPath);
+            documentPreview = await buildDocumentPreviewFromFile(fileReadPath, { includeDocxBase64 });
             htmlContent = documentPreview.htmlContent;
             content = documentPreview.text || null;
             break;
           }
 
           case "document": {
-            documentPreview = await buildDocumentPreviewFromFile(fileReadPath);
+            documentPreview = await buildDocumentPreviewFromFile(fileReadPath, { includeDocxBase64 });
             htmlContent = documentPreview.htmlContent;
             content = documentPreview.text || null;
             break;
@@ -3177,7 +3185,7 @@ export async function setupIpcHandlers(
 
       try {
         await writeEditableDocumentBlocksToDocxFile(fileWritePath, blocks);
-        const documentPreview = await buildDocumentPreviewFromFile(fileWritePath);
+        const documentPreview = await buildDocumentPreviewFromFile(fileWritePath, { includeDocxBase64: true });
         return {
           success: true,
           data: {
@@ -4246,6 +4254,7 @@ export async function setupIpcHandlers(
     if (PROTECTED_ROOTS.includes(resolvedPath)) {
       throw new Error(`Cannot create a workspace at a protected system path: "${resolvedPath}".`);
     }
+    assertWorkspaceDirectoryPath(resolvedPath);
 
     // Check if workspace with this path already exists
     if (workspaceRepo.existsByPath(resolvedPath)) {
@@ -4262,7 +4271,9 @@ export async function setupIpcHandlers(
       write: true,
       delete: false,
       network: true,
-      shell: permissionSettings.defaultShellEnabled,
+      shell:
+        permissionSettings.defaultShellEnabled ||
+        permissionSettings.defaultPermissionAccess === "full",
     };
 
     return workspaceRepo.create(name, resolvedPath, permissions ?? defaultPermissions);
@@ -4273,12 +4284,14 @@ export async function setupIpcHandlers(
     async (_, options?: { includeArchived?: boolean }) => {
       // Filter out temp workspaces from user workspace lists.
       const allWorkspaces = workspaceRepo.findAll();
-      return allWorkspaces.filter(
-        (workspace) =>
-          !workspace.isTemp &&
-          !isTempWorkspaceId(workspace.id) &&
-          (options?.includeArchived === true || !workspace.archivedAt),
-      );
+      return allWorkspaces
+        .filter(
+          (workspace) =>
+            !workspace.isTemp &&
+            !isTempWorkspaceId(workspace.id) &&
+            (options?.includeArchived === true || !workspace.archivedAt),
+        )
+        .map(withWorkspaceAvailability);
     },
   );
 
@@ -4308,6 +4321,7 @@ export async function setupIpcHandlers(
   ipcMain.handle(IPC_CHANNELS.WORKSPACE_SELECT, async (_, id: string) => {
     const workspace = workspaceRepo.findById(id);
     if (workspace) {
+      assertWorkspacePathAvailable(workspace);
       try {
         workspaceRepo.updateLastUsedAt(workspace.id);
         if (isTempWorkspaceId(workspace.id)) {
@@ -4317,7 +4331,7 @@ export async function setupIpcHandlers(
         logger.warn("Failed to update workspace last used time:", error);
       }
     }
-    return workspace;
+    return workspace ? withWorkspaceAvailability(workspace) : workspace;
   });
 
   ipcMain.handle(
@@ -4642,6 +4656,11 @@ export async function setupIpcHandlers(
       agentConfig,
       images: validatedImages,
     } = validated;
+    const selectedWorkspace = workspaceRepo.findById(workspaceId);
+    if (!selectedWorkspace) {
+      throw new Error(`Workspace not found: ${workspaceId}`);
+    }
+    assertWorkspacePathAvailable(selectedWorkspace);
     if (projectId) {
       const project = controlPlaneCore.getProject(projectId);
       if (!project) throw new Error(`Project not found: ${projectId}`);
@@ -5455,6 +5474,9 @@ export async function setupIpcHandlers(
     const validated = validateInput(TaskWorkspaceUpdateSchema, data, "task workspace update");
     const task = taskRepo.findById(validated.taskId);
     if (!task) throw new Error(`Task not found: ${validated.taskId}`);
+    const workspace = workspaceRepo.findById(validated.workspaceId);
+    if (!workspace) throw new Error(`Workspace not found: ${validated.workspaceId}`);
+    assertWorkspacePathAvailable(workspace);
     if (task.projectId) {
       const isLinkedWorkspace = controlPlaneCore
         .listProjectWorkspaces(task.projectId)
@@ -5628,7 +5650,11 @@ export async function setupIpcHandlers(
         events.sort((a, b) => a.timestamp - b.timestamp);
       }
     }
-    const result = events.length > maxEvents ? events.slice(-maxEvents) : events;
+    const result = recoverVerifiedDeliveryEvents(
+      events.length > maxEvents ? events.slice(-maxEvents) : events,
+      taskId,
+      task ? workspaceRepo.findById(task.workspaceId)?.path : undefined,
+    );
     const dbMs = Date.now() - startedAt;
     const jsonStartedAt = Date.now();
     const serializedBytes = getSerializedByteSize(result);
@@ -5675,6 +5701,11 @@ export async function setupIpcHandlers(
           }
         : {}),
     });
+    page.events = recoverVerifiedDeliveryEvents(
+      page.events,
+      taskId,
+      task ? workspaceRepo.findById(task.workspaceId)?.path : undefined,
+    );
     const dbMs = Date.now() - startedAt;
     const jsonStartedAt = Date.now();
     const serializedBytes = getSerializedByteSize(page);

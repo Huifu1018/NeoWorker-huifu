@@ -12,6 +12,12 @@ import {
 import { Sparkles } from "lucide-react";
 import type { SettingsTab } from "./main-content-types";
 import { translate, useLanguage } from "../../i18n";
+import {
+  filterProvidersForDisplay,
+  getUserVisibleProviderName,
+  isHiddenBackendProviderType,
+  sanitizeModelsForDisplay,
+} from "../../utils/provider-privacy";
 
 // Searchable Model Dropdown Component
 export interface ModelDropdownProps {
@@ -86,7 +92,9 @@ export function ModelDropdown({
 
   const configuredProviders = useMemo(() => {
     const seen = new Set<string>();
-    const list = providers.filter((provider) => provider.configured);
+    const list = filterProvidersForDisplay(providers, {
+      keepSelectedType: selectedProvider,
+    }).filter((provider) => provider.configured);
     return list.filter((provider) => {
       if (seen.has(provider.type)) return false;
       seen.add(provider.type);
@@ -103,12 +111,14 @@ export function ModelDropdown({
     currentProviderModels.find((model) => model.key === selectedModel) ||
     models.find((model) => model.key === selectedModel);
   const selectedModelLabel =
-    selectedModelInfo?.displayName ||
+    (isHiddenBackendProviderType(selectedProvider)
+      ? "Configured model"
+      : selectedModelInfo?.displayName) ||
     selectedModel ||
     t("modelDropdown.selectModel", "Select Model");
   const currentProviderLabel =
     configuredProviders.find((provider) => provider.type === selectedProvider)
-      ?.name || selectedProvider;
+      ?.name || getUserVisibleProviderName(selectedProvider, selectedProvider);
 
   const selectedReasoningEfforts =
     selectedModelInfo?.reasoningEfforts ||
@@ -144,7 +154,10 @@ export function ModelDropdown({
           await window.electronAPI.getProviderModels(providerType);
         setProviderModelCache((prev) => ({
           ...prev,
-          [providerType]: providerModels || [],
+          [providerType]: sanitizeModelsForDisplay(
+            providerModels || [],
+            providerType,
+          ),
         }));
       } catch (error) {
         console.error("Failed to load provider models:", error);

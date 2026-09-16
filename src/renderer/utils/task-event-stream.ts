@@ -90,6 +90,33 @@ function getCanonicalTaskResultSummary(task: Task): string {
     : "";
 }
 
+function getTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getNextUserMessageTimestamp(
+  events: TaskEvent[],
+  afterIndex: number,
+): number | null {
+  for (let index = afterIndex + 1; index < events.length; index += 1) {
+    const candidate = events[index];
+    if (getEffectiveTaskEventType(candidate) !== "user_message") continue;
+    return typeof candidate.timestamp === "number" &&
+      Number.isFinite(candidate.timestamp)
+      ? candidate.timestamp
+      : null;
+  }
+  return null;
+}
+
+function omitBestKnownResultSummaryWhenUnscoped(
+  bestKnownOutcome: Task["bestKnownOutcome"],
+): Task["bestKnownOutcome"] {
+  if (!bestKnownOutcome) return undefined;
+  const { resultSummary: _resultSummary, ...rest } = bestKnownOutcome;
+  return rest;
+}
+
 function getOutputSummaryIdentityKeys(value: unknown): Set<string> {
   const summary = sanitizeTaskOutputSummary(value);
   if (!summary) return new Set();
@@ -190,6 +217,42 @@ export function reconcileTaskDeliveryEvents(
   }
 
   const existing = completionIndex >= 0 ? events[completionIndex] : undefined;
+  // Task rows and event streams refresh independently. A complete per-turn
+  // envelope must never be rewritten from a potentially older task snapshot.
+  if (
+    existing &&
+    hasAuthoritativeOutputSummary(existing) &&
+    getTrimmedString(existing.payload?.resultSummary)
+  ) {
+    return events;
+  }
+  const nextUserMessageTimestamp =
+    completionIndex >= 0
+      ? getNextUserMessageTimestamp(events, completionIndex)
+      : null;
+  const hasLaterUserMessage = nextUserMessageTimestamp !== null;
+  const existingPayload = asObject(existing?.payload);
+  const existingDirectSummary = getTrimmedString(existingPayload.resultSummary);
+  const bestKnownSummary = getTrimmedString(task.bestKnownOutcome?.resultSummary);
+  const bestKnownCapturedAt =
+    typeof task.bestKnownOutcome?.capturedAt === "number" &&
+    Number.isFinite(task.bestKnownOutcome.capturedAt)
+      ? task.bestKnownOutcome.capturedAt
+      : null;
+  const bestKnownSummaryBelongsToAnchor =
+    Boolean(bestKnownSummary) &&
+    hasLaterUserMessage &&
+    bestKnownCapturedAt !== null &&
+    nextUserMessageTimestamp !== null &&
+    bestKnownCapturedAt < nextUserMessageTimestamp;
+  const recoveredResultSummary =
+    completionIndex < 0 || !hasLaterUserMessage
+      ? resultSummary
+      : existingDirectSummary || (bestKnownSummaryBelongsToAnchor ? bestKnownSummary : "");
+  const scopedBestKnownOutcome =
+    hasLaterUserMessage && !bestKnownSummaryBelongsToAnchor
+      ? omitBestKnownResultSummaryWhenUnscoped(task.bestKnownOutcome)
+      : task.bestKnownOutcome;
   const timestamp =
     existing?.timestamp ??
     task.bestKnownOutcome?.capturedAt ??
@@ -200,15 +263,11 @@ export function reconcileTaskDeliveryEvents(
     existing?.id ||
     `task-delivery-recovery:${task.id}:${timestamp}`;
   const payload = {
-    ...(existing?.payload && typeof existing.payload === "object"
-      ? existing.payload
-      : {}),
-    ...(resultSummary ? { resultSummary } : {}),
+    ...existingPayload,
+    ...(recoveredResultSummary ? { resultSummary: recoveredResultSummary } : {}),
     ...(task.semanticSummary ? { semanticSummary: task.semanticSummary } : {}),
     ...(outputSummary ? { outputSummary } : {}),
-    ...(task.bestKnownOutcome
-      ? { bestKnownOutcome: task.bestKnownOutcome }
-      : {}),
+    ...(scopedBestKnownOutcome ? { bestKnownOutcome: scopedBestKnownOutcome } : {}),
     ...(task.terminalStatus ? { terminalStatus: task.terminalStatus } : {}),
     ...(task.verificationVerdict
       ? { verificationVerdict: task.verificationVerdict }
@@ -217,6 +276,7 @@ export function reconcileTaskDeliveryEvents(
       ? { verificationReport: task.verificationReport }
       : {}),
     deliveryRecoveredFromTask: true,
+    ...(hasLaterUserMessage ? { deliveryRecoveredBeforeLaterUserMessage: true } : {}),
   };
   const canonicalCompletion: TaskEvent = {
     ...(existing || {}),

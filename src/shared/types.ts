@@ -1588,6 +1588,7 @@ export const TOOL_GROUPS = {
     "compile_latex",
     "edit_document",
     "create_presentation",
+    "office_translation",
     "organize_folder",
     // Monty transform library can write transformed outputs
     "monty_transform_file",
@@ -4121,7 +4122,16 @@ export interface Workspace {
   archivedAt?: number;
   permissions: WorkspacePermissions;
   isTemp?: boolean; // True for the auto-created temp workspace
+  availability?: WorkspaceAvailability;
+  availabilityReason?: string;
 }
+
+export type WorkspaceAvailability =
+  | "available"
+  | "missing"
+  | "not_directory"
+  | "unreadable"
+  | "recreated_empty";
 
 // Temp workspace constants
 export const TEMP_WORKSPACE_ID = "__temp_workspace__";
@@ -8956,8 +8966,11 @@ export const MULTI_LLM_PROVIDER_DISPLAY: Record<
   },
   moa: { name: "Mixture of Agents", icon: "\u{2699}\uFE0F", color: "#0f766e" },
   "nano-gpt": { name: "NanoGPT", icon: "\u{2728}", color: "#22c55e" },
-  hermes: { name: "Hermes Agent", icon: "\u{2699}\uFE0F", color: "#0ea5e9" },
-  "hermes-proxy": { name: "Hermes Model Proxy", icon: "\u{2699}\uFE0F", color: "#0ea5e9" },
+  // These provider keys are retained for compatibility with existing
+  // configurations, but their implementation names must stay out of the
+  // renderer's provider labels.
+  hermes: { name: "Configured provider", icon: "\u{2699}\uFE0F", color: "#0ea5e9" },
+  "hermes-proxy": { name: "Configured provider", icon: "\u{2699}\uFE0F", color: "#0ea5e9" },
 };
 
 export interface CachedModelInfo {
@@ -9724,7 +9737,7 @@ export interface SecureMcpTunnelAuditEvent {
 
 // Search Provider types
 export type SearchProviderType =
-  "tavily" | "exa" | "brave" | "serpapi" | "google" | "duckduckgo";
+  "tavily" | "exa" | "brave" | "serpapi" | "serper" | "google" | "duckduckgo";
 export type SearchType = "web" | "news" | "images";
 export type WebSearchMode = "disabled" | "cached" | "live";
 
@@ -9741,6 +9754,9 @@ export interface SearchSettingsData {
     apiKey?: string;
   };
   serpapi?: {
+    apiKey?: string;
+  };
+  serper?: {
     apiKey?: string;
   };
   google?: {

@@ -8,6 +8,7 @@ export type SearchProviderType =
   | "exa"
   | "brave"
   | "serpapi"
+  | "serper"
   | "google"
   | "duckduckgo";
 
@@ -23,6 +24,8 @@ export interface SearchProviderConfig {
   braveApiKey?: string;
   // SerpAPI-specific
   serpApiKey?: string;
+  // Serper.dev-specific
+  serperApiKey?: string;
   // Google Custom Search-specific
   googleApiKey?: string;
   googleSearchEngineId?: string;
@@ -139,6 +142,13 @@ export const SEARCH_PROVIDER_INFO = {
     supportedTypes: ["web", "news", "images"] as SearchType[],
     envVar: "SERPAPI_KEY",
     signupUrl: "https://serpapi.com/",
+  },
+  serper: {
+    displayName: "Serper",
+    description: "Google Search API with web, news, and image results",
+    supportedTypes: ["web", "news", "images"] as SearchType[],
+    envVar: "SERPER_API_KEY",
+    signupUrl: "https://serper.dev/",
   },
   google: {
     displayName: "Google Custom Search",

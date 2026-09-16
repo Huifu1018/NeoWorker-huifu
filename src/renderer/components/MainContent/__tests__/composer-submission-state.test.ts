@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isComposerSubmissionBusy } from "../composer-submission-state";
+import {
+  hasComposerSendableDraft,
+  isComposerSubmissionBusy,
+} from "../composer-submission-state";
 
 describe("composer submission state", () => {
   it("keeps the composer available while an earlier task turn is running", () => {
@@ -45,5 +48,29 @@ describe("composer submission state", () => {
         isQueueingFollowUp: false,
       }),
     ).toBe(false);
+  });
+
+  it("treats synchronously tracked draft text as sendable before React state catches up", () => {
+    expect(
+      hasComposerSendableDraft({
+        hasLiveComposerDraft: false,
+        inputValue: "",
+        currentDraftValue: "/ppt-master 帮我优化一下PPT",
+        pendingAttachmentCount: 0,
+        isPromptComposing: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("treats synchronously tracked attachments as sendable before React state catches up", () => {
+    expect(
+      hasComposerSendableDraft({
+        hasLiveComposerDraft: false,
+        inputValue: "",
+        pendingAttachmentCount: 0,
+        currentAttachmentCount: 1,
+        isPromptComposing: false,
+      }),
+    ).toBe(true);
   });
 });

@@ -222,9 +222,56 @@ describe("TaskExecutor entrypoint guards", () => {
 
     await executor.sendMessageUnlocked("hello");
 
-    expect(executor.sendMessageWithAcpxRuntime).toHaveBeenCalledWith("hello", undefined, undefined);
+    expect(executor.sendMessageWithAcpxRuntime).toHaveBeenCalledWith(
+      "hello",
+      undefined,
+      undefined,
+      expect.objectContaining({
+        outputEvidenceStartedAt: expect.any(Number),
+        createdFilesBefore: expect.any(Set),
+      }),
+    );
     expect(executor.sendMessageUnified).not.toHaveBeenCalled();
     expect(executor.sendMessageLegacy).not.toHaveBeenCalled();
+  });
+
+  it("opens a lifecycle boundary before an external-runtime terminal follow-up", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = { id: "external-follow-up", status: "completed" };
+    executor.activeConversationTurnId = "turn:external-follow-up";
+    const restartedTask = { ...executor.task, status: "executing" };
+    executor.daemon = {
+      getTask: vi.fn(() => executor.task),
+      beginFollowUpRun: vi.fn(() => restartedTask),
+      updateTaskStatus: vi.fn(),
+    };
+    executor.buildFollowUpCompletionContract = vi.fn(() => ({
+      requiredArtifactExtensions: [],
+    }));
+    executor.resetRuntimeForNewFollowUpRun = vi.fn();
+    executor.emitEvent = vi.fn();
+
+    const context = executor.prepareExternalRuntimeFollowUpRun("继续生成PPT");
+
+    expect(executor.daemon.beginFollowUpRun).toHaveBeenCalledWith(
+      "external-follow-up",
+    );
+    expect(executor.resetRuntimeForNewFollowUpRun).toHaveBeenCalledTimes(1);
+    expect(executor.lastUserMessage).toBe("继续生成PPT");
+    expect(context).toEqual(
+      expect.objectContaining({
+        outputEvidenceStartedAt: expect.any(Number),
+        previousStatus: "completed",
+        createdFilesBefore: expect.any(Set),
+      }),
+    );
+    expect(executor.emitEvent).toHaveBeenCalledWith(
+      "follow_up_started",
+      expect.objectContaining({
+        message: "继续生成PPT",
+        turnId: "turn:external-follow-up",
+      }),
+    );
   });
 
   it("falls back to native sendMessage flow when acpx is unavailable", async () => {
@@ -462,7 +509,7 @@ describe("TaskExecutor entrypoint guards", () => {
     executor.sendMessageUnified = vi.fn(async () => undefined);
 
     await expect(executor.sendMessageUnlocked("hello")).rejects.toThrow(
-      "Hermes Agent acpx runtime unavailable for follow-up. This task uses NeoWorker's embedded Hermes Harness; a separate Hermes Agent installation is not required.",
+      "Task execution service unavailable for follow-up. Automatic fallback is disabled for this task.",
     );
     expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
     expect(executor.sendMessageUnified).not.toHaveBeenCalled();
@@ -500,7 +547,7 @@ describe("TaskExecutor entrypoint guards", () => {
     executor.sendMessageUnified = vi.fn(async () => undefined);
 
     await expect(executor.sendMessageUnlocked("hello")).rejects.toThrow(
-      "Hermes Agent acpx runtime unavailable for follow-up",
+      "Task execution service unavailable for follow-up. Automatic fallback is disabled for this task.",
     );
 
     expect(executor.disableExternalRuntimeForFallback).not.toHaveBeenCalled();
@@ -514,13 +561,48 @@ describe("TaskExecutor entrypoint guards", () => {
     );
   });
 
+  it("recognizes the wrapped execution-service message as a Hermes runtime failure", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      title: "生成详细的分析报告",
+      prompt: "生成详细的分析报告，PDF 文档",
+      agentConfig: {
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+        },
+      },
+    };
+
+    const error = new Error(
+      "Task execution service unavailable. Automatic fallback is disabled for this task.",
+    );
+
+    expect(
+      (TaskExecutor.prototype as Any).buildTaskFailureMessage.call(
+        executor,
+        error,
+        "unknown",
+      ),
+    ).toBe("执行服务发生错误，本轮已结束，当前上下文已保留。请重试。");
+    expect(
+      (TaskExecutor.prototype as Any).buildFollowUpFailureMessage.call(
+        executor,
+        error,
+      ),
+    ).toBe("执行服务发生错误，本轮已结束，当前上下文已保留。请重试。");
+  });
+
   it("projects runtime status through the timeline emitter", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     const updateStep = vi.fn();
 
     executor.task = {
       id: "runtime-status",
-      agentConfig: { runtimePreference: "auto" },
+      agentConfig: {
+        runtimePreference: "auto",
+        externalRuntime: { kind: "acpx", agent: "hermes" },
+      },
     };
     executor.timelineEmitter = { updateStep };
     executor.emitEvent = vi.fn();
@@ -529,7 +611,11 @@ describe("TaskExecutor entrypoint guards", () => {
       executor,
       "hermes",
       "fallback",
-      "Hermes ACP runtime unavailable; falling back to NeoWorker native execution",
+      (TaskExecutor.prototype as Any).getExternalRuntimeStatusMessage.call(
+        executor,
+        "Hermes Agent",
+        true,
+      ),
       { errorCode: "HERMES_UNAVAILABLE", fallbackTarget: "native" },
     );
 
@@ -537,7 +623,7 @@ describe("TaskExecutor entrypoint guards", () => {
       {
         id: "runtime:runtime-status",
         description:
-          "Hermes ACP runtime unavailable; falling back to NeoWorker native execution",
+          "Preferred execution service unavailable; continuing with available execution.",
       },
       expect.objectContaining({
         actor: "system",
@@ -594,6 +680,35 @@ describe("TaskExecutor entrypoint guards", () => {
       }),
     );
     expect(executor.emitEvent).not.toHaveBeenCalled();
+  });
+
+  it("keeps Hermes implementation details out of user-facing failure text", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = {
+      id: "hermes-error-display",
+      rawPrompt: "Run the requested task.",
+      agentConfig: {
+        externalRuntime: {
+          kind: "acpx",
+          agent: "hermes",
+        },
+      },
+    };
+
+    const followUpMessage = (TaskExecutor.prototype as Any).buildFollowUpFailureMessage.call(
+      executor,
+      new Error("Hermes ACP exited (1) with HERMES_RUNTIME_ERROR"),
+    );
+    const taskMessage = (TaskExecutor.prototype as Any).buildTaskFailureMessage.call(
+      executor,
+      new Error("Hermes ACP exited (1) with HERMES_RUNTIME_ERROR"),
+      "dependency_unavailable",
+    );
+
+    expect(followUpMessage).not.toMatch(/hermes|acp|HERMES/i);
+    expect(taskMessage).not.toMatch(/hermes|acp|HERMES/i);
+    expect(followUpMessage).toContain("当前上下文已保留");
+    expect(taskMessage).toContain("task execution service");
   });
 
   it("injects bounded NeoWorker memory into an allowed Hermes context", async () => {
@@ -761,7 +876,7 @@ describe("TaskExecutor entrypoint guards", () => {
         }),
       }),
     );
-    expect(executor.buildTaskOutputSummary).toHaveBeenCalledWith(1234);
+    expect(executor.buildTaskOutputSummary).toHaveBeenCalledWith(1234, freshSummary);
   });
 
   it("scopes follow-up outputs and tracks a generated file through its final rename", () => {
@@ -814,6 +929,77 @@ describe("TaskExecutor entrypoint guards", () => {
         folders: [".neoworker"],
       });
       expect(executor.fileOperationTracker.getCreatedFiles).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("discovers a PPTX written directly by a shell command in the current turn", () => {
+    const workspacePath = fs.mkdtempSync(
+      path.join(os.tmpdir(), "neoworker-shell-pptx-summary-"),
+    );
+    try {
+      const startedAt = Date.now() - 1_000;
+      fs.mkdirSync(path.join(workspacePath, ".neoworker", "uploads"), {
+        recursive: true,
+      });
+      fs.writeFileSync(
+        path.join(workspacePath, ".neoworker", "uploads", "source.pptx"),
+        "uploaded source",
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, "季度营销会实训课程设计_EN.pptx"),
+        "translated deck",
+      );
+
+      const executor = Object.create(TaskExecutor.prototype) as Any;
+      executor.task = { id: "task-shell-pptx", createdAt: startedAt };
+      executor.workspace = { path: workspacePath };
+      executor.activeFollowUpCompletionContract = {
+        requiredArtifactExtensions: [".pptx"],
+      };
+      executor.fileOperationTracker = {
+        getCreatedFiles: vi.fn(() => []),
+      };
+      executor.resolveWorkspaceMutationPathCandidate = (candidate: string) =>
+        path.resolve(workspacePath, candidate);
+      executor.getReplayEventType = (event: Any) => event.type;
+      executor.daemon = { getTaskEvents: vi.fn(() => []) };
+
+      const summary = (
+        TaskExecutor as Any
+      ).prototype.buildTaskOutputSummary.call(executor, startedAt);
+
+      expect(summary).toEqual({
+        created: [],
+        modifiedFallback: ["季度营销会实训课程设计_EN.pptx"],
+        primaryOutputPath: "季度营销会实训课程设计_EN.pptx",
+        outputCount: 1,
+        folders: ["."],
+      });
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  });
+
+  it("registers an explicitly re-delivered old file without collecting unrelated old outputs", () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "neoworker-redelivery-"));
+    try {
+      for (const file of ["case EN.xlsx", "old.pdf"]) {
+        fs.writeFileSync(path.join(workspacePath, file), "existing file");
+        fs.utimesSync(path.join(workspacePath, file), 1, 1);
+      }
+      const executor = Object.create(TaskExecutor.prototype) as Any;
+      executor.task = { id: "task-redelivery", createdAt: 1 };
+      executor.workspace = { path: workspacePath };
+      executor.activeFollowUpCompletionContract = { requiredArtifactExtensions: [] };
+      executor.fileOperationTracker = { getCreatedFiles: () => [] };
+      executor.resolveWorkspaceMutationPathCandidate = (candidate: string) => path.resolve(workspacePath, candidate);
+      executor.daemon = { getTaskEvents: () => [] };
+      expect(executor.buildTaskOutputSummary(Date.now())).toBeUndefined();
+      const summary = executor.buildTaskOutputSummary(Date.now(), "## 已完成\n`case EN.xlsx`");
+      expect(summary.modifiedFallback).toEqual(["case EN.xlsx"]);
+      expect(summary.outputCount).toBe(1);
     } finally {
       fs.rmSync(workspacePath, { recursive: true, force: true });
     }

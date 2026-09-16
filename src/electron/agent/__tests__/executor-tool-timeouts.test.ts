@@ -23,6 +23,75 @@ vi.mock("../../memory/MemoryService", () => ({
 }));
 
 describe("TaskExecutor getToolTimeoutMs", () => {
+  it("lets a tool return its structured timeout result before the host boundary closes", async () => {
+    vi.useFakeTimers();
+    try {
+      const executor = Object.create(TaskExecutor.prototype) as Any;
+      executor.task = { id: "structured-timeout", agentConfig: {} };
+      executor.abortController = new AbortController();
+      executor.currentStepId = null;
+      executor.streamingToolExecutor = null;
+      executor.preparePresentationWorkflowToolInput = (_tool: string, input: unknown) => input;
+      executor.getSchedulerSpecForTool = () => ({
+        concurrencyClass: "read_parallel",
+        idempotent: true,
+      });
+      executor.getToolPolicyContext = () => ({});
+      executor.beginToolExecutionHeartbeat = () => undefined;
+      executor.loadPersistedToolHostRecord = () => undefined;
+      executor.tryWorkspaceBoundaryRecovery = vi.fn();
+      executor.emitEvent = vi.fn();
+      executor.getToolHost = () => ({
+        execute: vi.fn(
+          () =>
+            new Promise((resolve) => {
+              setTimeout(
+                () =>
+                  resolve({
+                    outcome: {
+                      result: {
+                        success: false,
+                        nonBlocking: true,
+                        recoverableFallback: true,
+                        failureKind: "source_unavailable",
+                      },
+                      durationMs: 30_100,
+                      envelope: { status: "error" },
+                    },
+                    response: {
+                      schemaVersion: "neoworker_tool_host_v1",
+                      requestId: "request-1",
+                      toolCallId: "tool-1",
+                      status: "error",
+                    },
+                  }),
+                30_100,
+              );
+            }),
+        ),
+      });
+
+      const resultPromise = TaskExecutor.prototype.executeToolWithHeartbeat.call(
+        executor,
+        "web_fetch",
+        { url: "https://example.com" },
+        30_000,
+        "tool-1",
+      );
+      await vi.advanceTimersByTimeAsync(30_100);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        result: {
+          success: false,
+          nonBlocking: true,
+          recoverableFallback: true,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gives orchestrate_agents enough time to wait for child agents", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = { agentConfig: { deepWorkMode: false } };

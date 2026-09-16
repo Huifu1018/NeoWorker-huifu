@@ -85,6 +85,12 @@ import { translate, useLanguage } from "../i18n";
 import { isInitialReleaseSettingsAvailable } from "../feature-visibility";
 import { CURRENT_PRODUCT_COMMUNICATION_CHANNEL_ORDER } from "../utils/product-availability";
 import {
+  filterProvidersForDisplay,
+  getUserVisibleProviderName,
+  isHiddenBackendProviderType,
+  sanitizeModelsForDisplay,
+} from "../utils/provider-privacy";
+import {
   buildClaudeCredentialInput,
   resolveOpenAIReasoningEffort,
   resolveOpenAITextVerbosity,
@@ -4081,7 +4087,10 @@ export function Settings({
                 description: model.description,
               }))
             : await window.electronAPI.getProviderModels(providerType);
-        const normalized = providerModels || [];
+        const normalized = sanitizeModelsForDisplay(
+          providerModels || [],
+          providerType,
+        );
         setProviderModelOptionsByType((prev) => ({
           ...prev,
           [providerType]: normalized,
@@ -4446,11 +4455,19 @@ export function Settings({
       const configStatus = await window.electronAPI.getLLMConfigStatus();
 
       // Set providers
-      setProviders(configStatus.providers || []);
-      setModels(configStatus.models || []);
+      const visibleProviders = filterProvidersForDisplay(
+        configStatus.providers || [],
+        { keepSelectedType: configStatus.currentProvider },
+      );
+      const visibleModels = sanitizeModelsForDisplay(
+        configStatus.models || [],
+        configStatus.currentProvider,
+      );
+      setProviders(visibleProviders);
+      setModels(visibleModels);
       setProviderModelOptionsByType((prev) => ({
         ...prev,
-        [configStatus.currentProvider]: configStatus.models || [],
+        [configStatus.currentProvider]: visibleModels,
       }));
 
       // Load full settings separately for bedrock config
@@ -5178,19 +5195,20 @@ export function Settings({
         },
       );
 
+      const visibleModels = sanitizeModelsForDisplay(models, resolvedType);
       setCustomProviders((prev) => {
         const existing = prev[resolvedType] || {};
         const nextModel =
-          existing.model && models.some((entry) => entry.key === existing.model)
+          existing.model && visibleModels.some((entry) => entry.key === existing.model)
             ? existing.model
-            : models[0]?.key || existing.model;
+            : visibleModels[0]?.key || existing.model;
 
         return {
           ...prev,
           [resolvedType]: {
             ...existing,
             ...(nextModel ? { model: nextModel } : {}),
-            cachedModels: models,
+            cachedModels: visibleModels,
           },
         };
       });
@@ -5199,18 +5217,18 @@ export function Settings({
         error:
           models.length > 0
             ? undefined
-            : `No models returned for ${customEntry.name}. Keeping the current/default model list.`,
+            : `No models returned. Keeping the current/default model list.`,
         providerType,
       });
       onSettingsChanged?.();
     } catch (error) {
-      console.error(`Failed to load models for ${customEntry.name}:`, error);
+      console.error(`Failed to load models for ${resolvedType}:`, error);
       setTestResult({
         success: false,
         error:
           error instanceof Error
             ? error.message
-            : `Failed to load models for ${customEntry.name}`,
+            : "Failed to load models for the configured provider",
         providerType,
       });
     } finally {
@@ -6466,18 +6484,52 @@ export function Settings({
 
   const currentProviderType = settings.providerType as LLMProviderType;
   const resolvedProviderType = resolveCustomProviderId(currentProviderType);
-  const selectedCustomProvider = CUSTOM_PROVIDER_MAP.get(resolvedProviderType);
+  const selectedCustomProviderEntry = CUSTOM_PROVIDER_MAP.get(resolvedProviderType);
+  const selectedCustomProvider = selectedCustomProviderEntry &&
+    isHiddenBackendProviderType(resolvedProviderType)
+    ? {
+        ...selectedCustomProviderEntry,
+        name: getUserVisibleProviderName(resolvedProviderType),
+        description: "Configure the provider connection.",
+        apiKeyPlaceholder: "Enter an optional API key",
+        apiKeyUrl: undefined,
+        baseUrl: undefined,
+        requiresBaseUrl: false,
+        defaultModel: "",
+      }
+    : selectedCustomProviderEntry;
   const selectedCustomConfig = selectedCustomProvider
     ? customProviders[resolvedProviderType] || {}
     : {};
-  const selectedCustomModels = selectedCustomConfig.cachedModels || [];
+  const selectedCustomModelsBase = sanitizeModelsForDisplay(
+    selectedCustomConfig.cachedModels || [],
+    resolvedProviderType,
+  );
+  const selectedCustomModels =
+    isHiddenBackendProviderType(resolvedProviderType) &&
+    selectedCustomConfig.model?.trim() &&
+    !selectedCustomModelsBase.some(
+      (model) => model.key === selectedCustomConfig.model,
+    )
+      ? [
+          {
+            key: selectedCustomConfig.model.trim(),
+            displayName: "Configured model",
+            description: "Configured model",
+          },
+          ...selectedCustomModelsBase,
+        ]
+      : selectedCustomModelsBase;
   const currentProviderLabel =
     currentProviderType === "openai-compatible"
       ? openaiCompatDisplayName.trim() ||
         openaiCompatModel.trim() ||
         translate("generated.components.settings.6421.3", "Customize")
-      : providers.find((provider) => provider.type === currentProviderType)
-          ?.name || currentProviderType;
+      : getUserVisibleProviderName(
+          currentProviderType,
+          providers.find((provider) => provider.type === currentProviderType)
+            ?.name,
+        );
   const providerRouting = getProviderRoutingConfig(currentProviderType);
   const providerFailover = getProviderFailoverConfig(currentProviderType);
   const currentFailoverProviders = providerFailover.fallbackProviders || [];
@@ -9453,6 +9505,11 @@ export function Settings({
                       {visibleModelUsageRows.length > 0 ? (
                         <div className="llm-model-usage-list">
                           {visibleModelUsageRows.map((row) => {
+                            const modelLabel = isHiddenBackendProviderType(
+                              providerType,
+                            )
+                              ? "Configured model"
+                              : row.model;
                             const modelEnabled = isProviderModelEnabled(
                               providerType,
                               row.model,
@@ -9545,12 +9602,12 @@ export function Settings({
                                           ? translate(
                                               "settings.models.isCurrent",
                                               "{model} is the current model",
-                                              { model: row.model },
+                                              { model: modelLabel },
                                             )
                                           : translate(
                                               "settings.models.setCurrent",
                                               "Set {model} as the current model",
-                                              { model: row.model },
+                                              { model: modelLabel },
                                             )
                                       }
                                       aria-pressed={isCurrentModel}
@@ -9570,8 +9627,8 @@ export function Settings({
                                         className="llm-model-selection-radio"
                                         aria-hidden="true"
                                       />
-                                      <strong title={row.model}>
-                                        {row.model}
+                                      <strong title={modelLabel}>
+                                        {modelLabel}
                                       </strong>
                                       {isCurrentModel && (
                                         <span className="llm-model-selection-label">
@@ -9592,7 +9649,7 @@ export function Settings({
                                           !modelEnabled,
                                         )
                                       }
-                                      aria-label={`${modelEnabled ? translate("generated.components.settings.9147.93", "deactivate") : translate("generated.components.settings.9147.94", "enable")} ${row.model}`}
+                                      aria-label={`${modelEnabled ? translate("generated.components.settings.9147.93", "deactivate") : translate("generated.components.settings.9147.94", "enable")} ${modelLabel}`}
                                       aria-pressed={modelEnabled}
                                     />
                                   </div>
@@ -9602,7 +9659,7 @@ export function Settings({
                                     aria-label={translate(
                                       "settings.usage.modelSummary",
                                       "Usage summary for {model}",
-                                      { model: row.model },
+                                      { model: modelLabel },
                                     )}
                                   >
                                     <span>
@@ -9680,7 +9737,7 @@ export function Settings({
                                       aria-label={translate(
                                         "settings.models.testConnectionNamed",
                                         "Test connection for {model}",
-                                        { model: row.model },
+                                        { model: modelLabel },
                                       )}
                                       title={translate(
                                         "generated.components.settings.9212.100",
@@ -9706,7 +9763,7 @@ export function Settings({
                                       aria-label={translate(
                                         "settings.models.deleteNamed",
                                         "Delete model {model}",
-                                        { model: row.model },
+                                        { model: modelLabel },
                                       )}
                                       title={translate(
                                         "generated.components.settings.9228.102",
@@ -9778,7 +9835,7 @@ export function Settings({
                                       ariaLabel={translate(
                                         "settings.usage.modelHeatmap",
                                         "Token activity heatmap for {model}",
-                                        { model: row.model },
+                                        { model: modelLabel },
                                       )}
                                       className="llm-model-activity-heatmap"
                                     />
@@ -11099,7 +11156,7 @@ export function Settings({
                   <p className="settings-description">
                     {translate(
                       "aiModels.xai.baseUrlDescription",
-                      "Optional override for the xAI API endpoint. OAuth defaults to the same Responses-compatible endpoint used by Hermes.",
+                      "Optional override for the xAI API endpoint. OAuth uses a Responses-compatible endpoint by default.",
                     )}
                   </p>
                   <input
@@ -13382,7 +13439,12 @@ export function Settings({
                                 "Active provider",
                               )}
                             </span>
-                            <strong>{routingRuntime.activeProvider}</strong>
+                            <strong>
+                              {getUserVisibleProviderName(
+                                routingRuntime.activeProvider,
+                                routingRuntime.activeProvider,
+                              )}
+                            </strong>
                           </div>
                           <div className="routing-runtime-item">
                             <span>
@@ -13391,7 +13453,13 @@ export function Settings({
                                 "Active model",
                               )}
                             </span>
-                            <strong>{routingRuntime.activeModel}</strong>
+                            <strong>
+                              {isHiddenBackendProviderType(
+                                routingRuntime.activeProvider,
+                              )
+                                ? "Configured model"
+                                : routingRuntime.activeModel}
+                            </strong>
                           </div>
                           <div className="routing-runtime-item">
                             <span>
@@ -13429,8 +13497,14 @@ export function Settings({
                             "aiModels.routing.currentProviderModel",
                             "Current provider/model:",
                           )}{" "}
-                          {routingRuntime.currentProvider} /{" "}
-                          {routingRuntime.currentModel}
+                          {getUserVisibleProviderName(
+                            routingRuntime.currentProvider,
+                            routingRuntime.currentProvider,
+                          )}{" "}
+                          /{" "}
+                          {isHiddenBackendProviderType(routingRuntime.currentProvider)
+                            ? "Configured model"
+                            : routingRuntime.currentModel}
                           {routingRuntime.manualOverride
                             ? translate(
                                 "aiModels.routing.manualOverride",
@@ -13447,8 +13521,17 @@ export function Settings({
                               <li
                                 key={`${step.providerType}:${step.modelKey}:${index}`}
                               >
-                                <strong>{step.providerType}</strong> /{" "}
-                                {step.modelKey} - {step.reason}
+                                <strong>
+                                  {getUserVisibleProviderName(
+                                    step.providerType,
+                                    step.providerType,
+                                  )}
+                                </strong>{" "}
+                                /{" "}
+                                {isHiddenBackendProviderType(step.providerType)
+                                  ? "Configured model"
+                                  : step.modelKey}{" "}
+                                - {step.reason}
                                 {step.success
                                   ? translate(
                                       "aiModels.routing.stepSuccess",

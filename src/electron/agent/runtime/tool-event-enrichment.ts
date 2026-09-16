@@ -1,5 +1,8 @@
 import type { ToolPolicyTrace } from "../../../shared/types";
-import { buildToolResultEnvelope } from "./tool-result-envelope";
+import {
+  buildToolResultEnvelope,
+  getToolErrorMessage,
+} from "./tool-result-envelope";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -9,8 +12,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asToolError(error: unknown): Error {
   if (error instanceof Error) return error;
-  if (typeof error === "string" && error.trim()) return new Error(error);
-  return new Error("Tool execution failed");
+  return new Error(getToolErrorMessage(error));
 }
 
 export function enrichToolEventPayload(

@@ -13,6 +13,7 @@ import { TavilyProvider } from "./tavily-provider";
 import { ExaProvider } from "./exa-provider";
 import { BraveProvider } from "./brave-provider";
 import { SerpApiProvider } from "./serpapi-provider";
+import { SerperProvider } from "./serper-provider";
 import { GoogleProvider } from "./google-provider";
 import { DuckDuckGoProvider } from "./duckduckgo-provider";
 import { SecureSettingsRepository } from "../../database/SecureSettingsRepository";
@@ -37,6 +38,9 @@ export interface SearchSettings {
     apiKey?: string;
   };
   serpapi?: {
+    apiKey?: string;
+  };
+  serper?: {
     apiKey?: string;
   };
   google?: {
@@ -357,6 +361,10 @@ export class SearchProviderFactory {
     if (settings.serpapi?.apiKey) {
       configured.push("serpapi");
     }
+    // Check Serper
+    if (settings.serper?.apiKey) {
+      configured.push("serper");
+    }
     // Check Google (requires both API key and Search Engine ID)
     if (settings.google?.apiKey && settings.google?.searchEngineId) {
       configured.push("google");
@@ -391,6 +399,7 @@ export class SearchProviderFactory {
         exa: settings.exa?.apiKey ? settings.exa : existingSettings.exa,
         brave: settings.brave?.apiKey ? settings.brave : existingSettings.brave,
         serpapi: settings.serpapi?.apiKey ? settings.serpapi : existingSettings.serpapi,
+        serper: settings.serper?.apiKey ? settings.serper : existingSettings.serper,
         google:
           settings.google?.apiKey || settings.google?.searchEngineId
             ? { ...existingSettings.google, ...settings.google }
@@ -428,6 +437,7 @@ export class SearchProviderFactory {
       exaApiKey: settings.exa?.apiKey,
       braveApiKey: settings.brave?.apiKey,
       serpApiKey: settings.serpapi?.apiKey,
+      serperApiKey: settings.serper?.apiKey,
       googleApiKey: settings.google?.apiKey,
       googleSearchEngineId: settings.google?.searchEngineId,
     };
@@ -462,6 +472,8 @@ export class SearchProviderFactory {
         return new BraveProvider(config);
       case "serpapi":
         return new SerpApiProvider(config);
+      case "serper":
+        return new SerperProvider(config);
       case "google":
         return new GoogleProvider(config);
       case "duckduckgo":
@@ -631,6 +643,13 @@ export class SearchProviderFactory {
         description: SEARCH_PROVIDER_INFO.serpapi.description,
         configured: !!settings.serpapi?.apiKey,
         supportedTypes: [...SEARCH_PROVIDER_INFO.serpapi.supportedTypes],
+      },
+      {
+        type: "serper",
+        name: SEARCH_PROVIDER_INFO.serper.displayName,
+        description: SEARCH_PROVIDER_INFO.serper.description,
+        configured: !!settings.serper?.apiKey,
+        supportedTypes: [...SEARCH_PROVIDER_INFO.serper.supportedTypes],
       },
       {
         type: "google",

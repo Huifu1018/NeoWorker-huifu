@@ -74,6 +74,33 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "error.tokenBudgetExceeded":
       "Token budget exceeded: {used}/{limit} tokens. Estimated cost: {cost}",
     "error.withDetails": "Error: {error}",
+    "error.executionService.preferredUnavailableFallback":
+      "Preferred execution service unavailable; continuing with available execution.",
+    "error.executionService.preferredUnavailableNoFallback":
+      "Preferred execution service unavailable; automatic fallback is unavailable.",
+    "error.executionService.turnFailed":
+      "The task execution service encountered an error. This turn has ended and your context was preserved. Please try again.",
+    "error.executionService.unavailableNoFallback":
+      "Task execution service unavailable. Automatic fallback is disabled for this task.",
+    "error.office.sharedContentSnapshotRequired":
+      "Multi-format Office requests require one shared contentSnapshot before generating DOCX, PPTX, or XLSX.",
+    "error.office.slideRequired": "At least one slide is required.",
+    "error.office.unsupportedPresentationField":
+      "Unsupported presentation field at {field}.",
+    "error.office.worksheetRequired": "At least one worksheet is required.",
+    "error.output.requestedFormatMissing":
+      "Completion blocked: requested output was not generated ({formats}).",
+    "error.taskCompletedWithoutFinalResponse":
+      "Task completed without a final response.",
+    "error.tool.commandExitCode": "Command exited with code {code}.",
+    "error.tool.executionFailed": "Tool execution failed.",
+    "error.tool.timedOut": "Tool {tool} timed out after {duration}.",
+    "error.tool.workspaceShellDisabled":
+      "Tool {tool} blocked by policy: Workspace shell capability is disabled.",
+    "error.web.connectionClosed":
+      "The website closed the connection; NeoWorker will use another source.",
+    "error.web.httpStatus":
+      "The website rejected the request (HTTP {status}); NeoWorker will use another source.",
     "error.project.noArchiveTarget": "No project is available to archive.",
     "error.wechat.alreadyConfigured":
       "A WeChat channel is already configured. Disconnect or remove the existing connection first.",
@@ -6197,7 +6224,7 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "aiModels.xai.apiKeyTitle": "xAI API Key",
     "aiModels.xai.apiKeyDescription": "输入来自",
     "aiModels.xai.baseUrlDescription":
-      "可选：覆盖 xAI API 端点。OAuth 默认使用 Hermes 的 Responses 兼容端点。",
+      "可选：覆盖 xAI API 端点。OAuth 默认使用 Responses 兼容端点。",
     "aiModels.xai.modelDescription":
       "选择 Grok 模型。OAuth 默认使用 Grok 4.3。",
     "aiModels.deepseek.apiKeyTitle": "DeepSeek API Key",
@@ -9349,6 +9376,7 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "searchSettings.description":
       "添加 API 密钥以启用网页搜索。默认使用自动路由：优先使用已配置服务商，DuckDuckGo/Bing 仅作为无配置时的免费兜底。",
     "searchSettings.supports": "支持：{types}",
+    "searchSettings.provider.notConfigured": "未配置",
     "searchSettings.getApiKeyFrom": "从这里获取 API 密钥：",
     "searchSettings.getCredentialsFrom": "从这里获取凭据：",
     "searchSettings.placeholder.enterApiKey": "输入 API 密钥",
@@ -9670,6 +9698,8 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
       "所选项目已不存在，请重新选择项目后再试。",
     "app.error.createTask.workspaceNotFound":
       "当前工作区已不存在，请重新选择工作区后再试。",
+    "app.error.createTask.workspacePathUnavailable":
+      "工作区文件夹已被移动、删除或替换，请重新选择文件夹后再继续。",
     "app.error.sendSideMessage": "发送侧边消息失败",
     "app.error.openSideChat": "打开侧边聊天失败",
     "app.error.sendMessage": "发送消息失败",
@@ -9706,6 +9736,33 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
       "请求频率已超出限制。请等待一分钟后重试，或在设置中添加 API 密钥以提高限额。",
     "error.taskExecutionFailed": "任务执行失败：{error}",
     "error.withDetails": "错误：{error}",
+    "error.executionService.preferredUnavailableFallback":
+      "首选执行服务暂时不可用，已切换到当前可用的执行方式。",
+    "error.executionService.preferredUnavailableNoFallback":
+      "首选执行服务暂时不可用，当前无法自动切换到备用执行方式。",
+    "error.executionService.turnFailed":
+      "任务执行服务发生错误，本轮已结束，当前上下文已保留。请重试。",
+    "error.executionService.unavailableNoFallback":
+      "任务执行服务暂时不可用，并且该任务已禁用自动回退。请重新打开应用后重试。",
+    "error.office.sharedContentSnapshotRequired":
+      "生成多种 Office 文件前，必须先提供一份共享内容快照（contentSnapshot）。",
+    "error.office.slideRequired": "演示文稿参数无效：至少需要一张幻灯片。",
+    "error.office.unsupportedPresentationField":
+      "演示文稿参数格式不受支持：{field}。",
+    "error.office.worksheetRequired": "表格参数无效：至少需要一个工作表。",
+    "error.output.requestedFormatMissing":
+      "任务未完成：没有生成请求的输出文件（{formats}）。",
+    "error.taskCompletedWithoutFinalResponse":
+      "任务已结束，但没有生成最终回复。",
+    "error.tool.commandExitCode": "命令执行失败（退出码 {code}）。",
+    "error.tool.executionFailed": "工具执行失败。",
+    "error.tool.timedOut": "工具 {tool} 执行超时（{duration}）。",
+    "error.tool.workspaceShellDisabled":
+      "工具 {tool} 被权限策略拦截：当前工作区未启用 Shell。",
+    "error.web.connectionClosed":
+      "网页连接被对方服务器中断，NeoWorker 将改用其他来源。",
+    "error.web.httpStatus":
+      "该网站拒绝了访问请求（HTTP {status}），NeoWorker 将改用其他来源。",
     "error.project.noArchiveTarget": "找不到可归档的项目。",
     "error.wechat.alreadyConfigured":
       "微信渠道已经配置，请先断开或移除现有连接。",
@@ -14623,6 +14680,13 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "documentViewer.heading": "一级标题",
     "documentViewer.subheading": "二级标题",
     "documentViewer.font": "字体",
+    "documentViewer.layoutLoading": "正在加载文档排版…",
+    "documentViewer.layoutFailed": "暂时无法显示文档排版，请在外部应用中打开。",
+    "documentViewer.layoutPreview": "文档排版预览",
+    "documentViewer.simplifiedEdit": "简化编辑",
+    "documentViewer.simplifiedEditNotice": "简化编辑视图，不代表原文档排版。",
+    "documentViewer.layoutCompatibility": "兼容预览：复杂分页及字体可能与 Word 存在差异。",
+    "documentViewer.textOnlyNotice": "当前仅为文本预览，未显示原文档排版。",
     "documentViewer.smallerText": "缩小文字",
     "documentViewer.normalSize": "正常字号",
     "documentViewer.largerText": "放大文字",
@@ -14906,6 +14970,7 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "composer.selectWorkspaceFolder": "选择工作区文件夹",
     "composer.recentFolders": "最近文件夹",
     "composer.workInAnotherFolder": "在其他文件夹中工作...",
+    "composer.workspaceFolderUnavailable": "文件夹缺失或已被替换，请重新选择",
     "composer.addFiles": "添加文件",
     "composer.moreOptions": "更多选项",
     "composer.permissionMode": "权限模式",
@@ -15018,7 +15083,7 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "composer.domainHint.media": "视频生成模式，会优先使用视频工具",
     "taskHeader.activity": "活动",
     "taskHeader.workingFor": "已工作 {duration}",
-    "taskHeader.workedFor": "工作了 {duration}",
+    "taskHeader.workedFor": "用时 {duration}",
     "welcome.card.inbox-triage.title": "整理收件箱",
     "welcome.card.inbox-triage.desc": "找出紧急邮件、草稿和待跟进事项",
     "welcome.card.setup-more-channels.title": "连接更多渠道",
@@ -15821,6 +15886,9 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "presentationViewer.firstRenderHint":
       "首次渲染需要一点时间，完成后再次打开会更快。",
     "presentationViewer.textPreview": "文本预览",
+    "presentationViewer.compatibilityPreview": "兼容预览：复杂字体、表格和特效可能与 PowerPoint 存在差异，原文件未被修改。",
+    "presentationViewer.layoutUnavailable": "暂时无法预览原版式。以下仅为提取的文字，不代表幻灯片的实际样式。",
+    "presentationViewer.previewUnavailableHint": "原文件未被修改。可在 PowerPoint 中打开，查看原始版式。",
     "presentationViewer.slides": "幻灯片",
     "presentationViewer.slideTitle": "幻灯片 {index}",
     "presentationViewer.blankSlide": "空白幻灯片",
@@ -16213,6 +16281,13 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "timeline.webFetch.responseData": "响应数据",
     "timeline.webFetch.responseContent": "内容状态",
     "timeline.toolPayload.technicalDetails": "查看技术详情",
+    "timeline.recoveredAttempt": "已恢复的尝试：{message}",
+    "timeline.recoveredAttemptDetail":
+      "后续步骤已成功，因此这次中间错误没有影响最终产物：{message}",
+    "timeline.recoveryInProgress": "正在尝试其他方式：{message}",
+    "timeline.recoveryInProgressDetail":
+      "当前任务仍在执行，NeoWorker 正在改用其他方式处理：{message}",
+    "timeline.repeatedFailureCount": "重复 {count} 次",
     "timeline.toolPayload.legacyEncodingHidden":
       "此历史页面使用了不支持的文本编码，已隐藏无法恢复的乱码；重新抓取后可正常显示。",
     "timeline.phaseLabel": "阶段",

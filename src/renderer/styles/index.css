@@ -16447,7 +16447,18 @@ a,
   font-size: 14px;
   line-height: 1.7;
   color: #18202d;
+  overflow-wrap: anywhere;
   transform-origin: top center;
+}
+
+.file-viewer-docx img,
+.file-viewer-docx svg,
+.file-viewer-docx canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1em auto;
+  object-fit: contain;
 }
 
 .file-viewer-document-text {
@@ -16490,6 +16501,7 @@ a,
 .file-viewer-docx table {
   border-collapse: collapse;
   width: 100%;
+  max-width: 100%;
   margin: 1em 0;
 }
 
@@ -22703,6 +22715,13 @@ a,
   border-radius: 50%;
   background: var(--color-success);
   margin-left: 4px;
+}
+
+.llm-provider-tab-muted {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.72;
 }
 
 .more-channels-content,
@@ -29568,7 +29587,7 @@ a,
     min-width: 22px;
     height: 22px;
     flex: 0 0 22px;
-    justify-content: flex-end;
+    justify-content: center;
     gap: 4px;
     min-height: 20px;
   }
@@ -29586,7 +29605,7 @@ a,
   }
 
   .task-completion-dot {
-    margin-left: auto;
+    margin: 0 auto;
   }
 
   .task-completion-dot {
@@ -33023,8 +33042,8 @@ html
 
 .theme-light .chat-message.user-message .chat-bubble.user-bubble,
 .theme-light .chat-message.user-message .quoted-follow-up-reply {
-  background: #f4f4f5;
-  border-color: #e5e7eb;
+  background: #eef6ff;
+  border-color: #dceaf8;
 }
 
 .conversation-flow .chat-message,

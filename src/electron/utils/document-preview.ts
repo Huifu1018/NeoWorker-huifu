@@ -22,6 +22,7 @@ type CommandRunner = (
 
 type BuildDocumentPreviewOptions = {
   runCommand?: CommandRunner;
+  includeDocxBase64?: boolean;
 };
 
 function decodeXmlText(text: string): string {
@@ -75,6 +76,7 @@ function extractOdtTextFromXml(xml: string): string {
 async function buildDocxLikePreview(
   filePath: string,
   format: string,
+  includeDocxBase64 = false,
 ): Promise<DocumentPreview> {
   const buffer = await fs.readFile(filePath);
   const htmlResult = await mammoth.convertToHtml({ buffer });
@@ -100,6 +102,8 @@ async function buildDocxLikePreview(
     previewMode: htmlContent ? "html" : "text",
     text,
     htmlContent: htmlContent || undefined,
+    docxDataBase64: includeDocxBase64 && buffer.length <= 32 * 1024 * 1024
+      ? buffer.toString("base64") : undefined,
     blocks,
     canEdit: canEditDocumentInApp(filePath),
     conversionStatus: "native",
@@ -216,7 +220,7 @@ export async function buildDocumentPreviewFromFile(
     });
 
   if (extension === ".docx" || extension === ".docm" || extension === ".dotx" || extension === ".dotm") {
-    return buildDocxLikePreview(filePath, format);
+    return buildDocxLikePreview(filePath, format, options.includeDocxBase64);
   }
 
   if (extension === ".rtf") {

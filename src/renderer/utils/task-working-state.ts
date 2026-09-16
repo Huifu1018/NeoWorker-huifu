@@ -16,24 +16,72 @@ const ACTIVE_WORK_EVENT_TYPES: EventType[] = [
   "llm_streaming",
 ];
 
-const TERMINAL_WORK_EVENT_TYPES = new Set<
-  EventType | "task_paused" | "task_cancelled" | "follow_up_failed"
->([
+const TERMINAL_WORK_EVENT_TYPES = new Set<string>([
   "task_paused",
   "approval_requested",
   "task_completed",
   "task_cancelled",
+  "task_failed",
   "follow_up_completed",
   "follow_up_failed",
 ]);
 
 export function isTerminalWorkEvent(event: TaskEvent): boolean {
   const type = getEffectiveTaskEventType(event);
-  return TERMINAL_WORK_EVENT_TYPES.has(type as EventType) ||
+  const payload = event.payload || {};
+  const legacyType = event.legacyType || payload.legacyType;
+  // Error rows deliberately keep their presentation type. Recover only an
+  // explicit terminal signal here; ordinary tool errors must not stop time.
+  const terminalError = type === "timeline_error" && (
+    legacyType === "follow_up_failed" ||
+    legacyType === "task_failed" ||
+    payload.terminal === true ||
+    payload.terminalFailure === true ||
+    payload.terminalStatus === "failed" ||
+    (typeof payload.terminal_failure_fingerprint === "string" &&
+      payload.terminal_failure_fingerprint.trim().length > 0)
+  );
+  return (
+    terminalError ||
+    TERMINAL_WORK_EVENT_TYPES.has(type) ||
     (type === "task_status" &&
       ["completed", "failed", "cancelled", "paused", "blocked"].includes(
         String(event.payload?.status),
-      ));
+      ))
+  );
+}
+
+export function shouldEndOptimisticFollowUp(
+  event: TaskEvent,
+  startedAt: number,
+): boolean {
+  if (!Number.isFinite(event.timestamp) || event.timestamp < startedAt) {
+    return false;
+  }
+  const type = getEffectiveTaskEventType(event);
+  return (
+    isTerminalWorkEvent(event) ||
+    type === "input_request_created" ||
+    type === "task_interrupted" ||
+    (type === "task_status" && event.payload?.status === "interrupted")
+  );
+}
+
+export function shouldEndOptimisticFollowUpFromTask(
+  task: Task,
+  startedAt: number,
+): boolean {
+  const status = deriveCanonicalTaskStatus(task);
+  if (
+    !["completed", "failed", "cancelled", "paused", "blocked"].includes(status)
+  ) {
+    return false;
+  }
+
+  // Sending a follow-up updates task.updatedAt to startedAt before the daemon
+  // changes the persisted status. Only a later terminal-row update can be a
+  // fallback end signal when the explicit terminal event was missed.
+  return Math.max(task.completedAt ?? 0, task.updatedAt ?? 0) > startedAt;
 }
 
 /** Timing belongs to the current turn, not the parent task's first result. */
@@ -57,20 +105,37 @@ export function deriveTaskWorkTiming(
     }
   }
   const status = deriveCanonicalTaskStatus(task);
-  const terminalRowAt = ["completed", "failed", "cancelled", "paused", "blocked"].includes(status)
+  const terminalRowAt = [
+    "completed",
+    "failed",
+    "cancelled",
+    "paused",
+    "blocked",
+  ].includes(status)
     ? Math.max(task.completedAt ?? 0, task.updatedAt ?? 0)
     : 0;
-  const optimisticActive = optimisticStartedAt !== null &&
-    optimisticStartedAt > Math.max(latestTerminalAt ?? 0, terminalRowAt);
-  const startedAt = (optimisticActive ? optimisticStartedAt : latestUserAt) ?? task.createdAt;
-  const isActive = optimisticActive || isTaskActivelyWorking(task, events, hasActiveChildren, now);
+  // handleSendMessage intentionally updates task.updatedAt at the same instant
+  // that it creates the optimistic marker. Equality therefore identifies the
+  // new turn; only a later terminal row (or an explicit terminal event) may
+  // close it.
+  const optimisticActive =
+    optimisticStartedAt !== null &&
+    optimisticStartedAt >= Math.max(latestTerminalAt ?? 0, terminalRowAt);
+  const startedAt =
+    (optimisticActive ? optimisticStartedAt : latestUserAt) ?? task.createdAt;
+  const isActive =
+    optimisticActive ||
+    isTaskActivelyWorking(task, events, hasActiveChildren, now);
   // Prefer this turn's explicit end event. Failed follow-ups intentionally
   // preserve the parent's completedAt, which can be earlier than startedAt.
-  const endAt = latestTerminalAt !== undefined && latestTerminalAt >= startedAt
-    ? latestTerminalAt
-    : task.completedAt !== undefined && task.completedAt >= startedAt
-      ? task.completedAt
-      : terminalRowAt >= startedAt ? terminalRowAt : undefined;
+  const endAt =
+    latestTerminalAt !== undefined && latestTerminalAt >= startedAt
+      ? latestTerminalAt
+      : task.completedAt !== undefined && task.completedAt >= startedAt
+        ? task.completedAt
+        : terminalRowAt >= startedAt
+          ? terminalRowAt
+          : undefined;
   return {
     startedAt,
     completedAt: isActive ? undefined : endAt,
@@ -148,14 +213,16 @@ export function isTaskActivelyWorking(
           task.completedAt ?? Number.NEGATIVE_INFINITY,
           task.updatedAt ?? Number.NEGATIVE_INFINITY,
         )
-      : task.completedAt ?? Number.NEGATIVE_INFINITY;
-  const previousCompletionTimestamp = Math.max(
-    terminalTaskMarker,
-    latestTerminalTimestamp ?? Number.NEGATIVE_INFINITY,
-  );
+      : (task.completedAt ?? Number.NEGATIVE_INFINITY);
+  // The renderer can stamp the optimistic task-row update and the persisted
+  // user_message in the same millisecond. Treat equality with the task row as
+  // a new turn, while still requiring the message to follow any explicit
+  // terminal event from the timeline.
   const hasNewerFollowUp =
     latestUserMessageTimestamp !== null &&
-    latestUserMessageTimestamp > previousCompletionTimestamp;
+    latestUserMessageTimestamp >= terminalTaskMarker &&
+    latestUserMessageTimestamp >
+      (latestTerminalTimestamp ?? Number.NEGATIVE_INFINITY);
   if (hasNewerFollowUp) return true;
 
   if (canonicalStatus === "executing" || canonicalStatus === "planning") {

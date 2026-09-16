@@ -1,12 +1,8 @@
 import * as path from "path";
 import { isVerificationStepDescription } from "../../shared/plan-utils";
 import type { CompletionContract } from "./executor-helpers";
-import { extractArtifactExtensionsFromText } from "./step-contract";
+import { parseArtifactOutputExtensions } from "./artifact-output-intent";
 
-const ARTIFACT_CREATION_VERB_REGEX =
-  /\b(create|build|write|generate|produce|draft|prepare|save|export|compile|synthesize|combine|merge|join|stitch|concatenate|concat|transcode|remux)\b/;
-const CJK_ARTIFACT_CREATION_VERB_REGEX =
-  /(?:创建|生成|制作|产出|编制|撰写|起草|保存|导出|输出|写入|整理成|转换成|转成)/;
 const STRATEGY_CONTEXT_BLOCK_REGEX =
   /\[AGENT_STRATEGY_CONTEXT_V1\][\s\S]*?\[\/AGENT_STRATEGY_CONTEXT_V1\]/g;
 const ADDITIONAL_CONTEXT_HEADER = "ADDITIONAL CONTEXT:";
@@ -272,16 +268,12 @@ export function normalizePromptForContracts(taskPrompt: string): string {
     .trim();
 }
 
-function hasArtifactCreationIntent(prompt: string): boolean {
-  return ARTIFACT_CREATION_VERB_REGEX.test(prompt) || CJK_ARTIFACT_CREATION_VERB_REGEX.test(prompt);
-}
-
 export function shouldRequireExecutionEvidence(taskTitle: string, taskPrompt: string): boolean {
   const prompt = `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase();
   return (
-    /\b(create|build|write|generate|transcribe|summarize|analyze|review|fix|implement|run|execute)\b/.test(
+    /\b(create|build|write|generate|transcribe|translate|localize|summarize|analyze|review|fix|implement|run|execute)\b/.test(
       prompt,
-    ) || /(?:创建|生成|制作|导出|保存|输出|写入|整理|汇总|分析|审阅|修复|执行)/.test(prompt)
+    ) || /(?:创建|生成|制作|导出|保存|输出|写入|整理|汇总|分析|审阅|修复|翻译|汉化|本地化|执行)/.test(prompt)
   );
 }
 
@@ -334,49 +326,11 @@ export function promptRequestsArtifactOutput(taskTitle: string, taskPrompt: stri
   );
 }
 
-function promptRequestsVideoArtifactOutput(taskTitle: string, taskPrompt: string): boolean {
-  const prompt = `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase();
-  if (!prompt.trim()) return false;
-  const hasVideoNoun = /\b(video|videos|clip|clips|movie|footage)\b/.test(prompt);
-  if (!hasVideoNoun) return false;
-  return hasArtifactCreationIntent(prompt);
-}
-
 export function promptRequestsPresentationArtifactOutput(
   taskTitle: string,
   taskPrompt: string,
 ): boolean {
-  const prompt = `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase();
-  if (!prompt.trim()) return false;
-
-  const presentationNoun = String.raw`(?:presentation|slide\s+deck|pitch\s+deck|deck|powerpoint|pptx|ppt|slides?)`;
-  const directCreation = new RegExp(
-    String.raw`\b(?:create|build|make|generate|produce|draft|prepare|design|author|compose)\b[\s\S]{0,40}\b(?:a|an|the|concise|short|brief|full|complete|polished|powerpoint|pptx|slide\s+deck|pitch\s+deck|deck|presentation|slides?)\b[\s\S]{0,40}\b${presentationNoun}\b`,
-    "i",
-  ).test(prompt);
-  const createNounImmediately = new RegExp(
-    String.raw`\b(?:create|build|make|generate|produce|draft|prepare|design|author|compose)\s+(?:a\s+|an\s+|the\s+)?(?:concise\s+|short\s+|brief\s+|full\s+|complete\s+|polished\s+)?${presentationNoun}\b`,
-    "i",
-  ).test(prompt);
-  const transformIntoPresentation = new RegExp(
-    String.raw`\b(?:turn|convert|transform)\b[\s\S]{0,60}\binto\s+(?:a\s+|an\s+|the\s+)?${presentationNoun}\b`,
-    "i",
-  ).test(prompt);
-  const explicitPptxOutput =
-    /\b(?:create|build|make|generate|produce|draft|prepare|design|author|compose|export|save)\b/.test(
-      prompt,
-    ) && /\b(?:pptx|ppt)\b|\.pptx\b/.test(prompt);
-  const cjkPresentationOutput =
-    CJK_ARTIFACT_CREATION_VERB_REGEX.test(prompt) &&
-    /(?:pptx|powerpoint|ppt|演示文稿|幻灯片)/i.test(prompt);
-
-  return (
-    directCreation ||
-    createNounImmediately ||
-    transformIntoPresentation ||
-    explicitPptxOutput ||
-    cjkPresentationOutput
-  );
+  return extractExplicitOutputExtensions(taskTitle, taskPrompt).includes(".pptx");
 }
 
 export function promptRequestsCanvasArtifactOutput(taskTitle: string, taskPrompt: string): boolean {
@@ -436,183 +390,15 @@ export function promptIsMultiFileWebAppCreation(prompt: string): boolean {
   );
 }
 
+/** All callers share destination-only output requirements. */
 export function inferRequiredArtifactExtensions(taskTitle: string, taskPrompt: string): string[] {
-  const prompt = `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase();
-  const hasCreateIntent = hasArtifactCreationIntent(prompt);
-  if (!hasCreateIntent) return [];
-
-  const extensions = new Set<string>(extractArtifactExtensionsFromText(prompt));
-  for (const extension of extractExplicitOutputExtensions(taskTitle, taskPrompt)) {
-    extensions.add(extension);
-  }
-  if (promptRequestsPresentationArtifactOutput(taskTitle, taskPrompt)) {
-    extensions.add(".pptx");
-  }
-  if (promptRequestsVideoArtifactOutput(taskTitle, taskPrompt) && extensions.size === 0) {
-    extensions.add(".mp4");
-  }
-
-  return Array.from(extensions);
+  return extractExplicitOutputExtensions(taskTitle, taskPrompt);
 }
 
-const EXPLICIT_OUTPUT_EXTENSION_SET = new Set([
-  "pdf",
-  "docx",
-  "md",
-  "csv",
-  "xlsx",
-  "json",
-  "jsonl",
-  "txt",
-  "pptx",
-  "mp4",
-  "mov",
-  "webm",
-  "html",
-]);
-
-/**
- * Extracts artifact extensions ONLY from explicit output-intent patterns —
- * e.g. "save as .pdf", "export to .xlsx", "create a PDF report".
- * Unlike inferRequiredArtifactExtensions() which scans the full prompt text,
- * this function does NOT pick up extensions from input-context references
- * like "read PRIORITIES.md".
- */
 export function extractExplicitOutputExtensions(taskTitle: string, taskPrompt: string): string[] {
-  const prompt = `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase();
-  const extensions = new Set<string>();
-
-  // Chinese users sometimes write “生动PDF文档” when they mean either
-  // “生成PDF文档” (a common IME typo) or “a vivid PDF document”. In both
-  // readings the format is an explicitly requested deliverable. Keep this
-  // narrow so a source attachment named *.pdf is not mistaken for output.
-  const cjkVividArtifactFormats: Array<[RegExp, string]> = [
-    [/生动\s*(?:pdf|\.pdf)\s*(?:文件|文档|报告)/i, ".pdf"],
-    [/生动\s*(?:word|docx|\.docx)\s*(?:文件|文档|报告)/i, ".docx"],
-    [/生动\s*(?:excel|xlsx|\.xlsx)\s*(?:文件|文档|工作簿|表格)/i, ".xlsx"],
-    [
-      /生动\s*(?:powerpoint|pptx|\.pptx|ppt)\s*(?:文件|文档|演示文稿|幻灯片)/i,
-      ".pptx",
-    ],
-  ];
-  for (const [pattern, ext] of cjkVividArtifactFormats) {
-    if (pattern.test(prompt)) extensions.add(ext);
-  }
-
-  // Pattern 1: "save/export/write/output ... to/as ... .ext"
-  const saveAsPattern =
-    /\b(?:save|export|write|output)\b[^.!?\n]{0,80}\b(?:to|as)\b[^.!?\n]{0,80}\.(\w{2,5})\b/gi;
-  let match = saveAsPattern.exec(prompt);
-  while (match) {
-    const ext = match[1]!;
-    if (EXPLICIT_OUTPUT_EXTENSION_SET.has(ext)) extensions.add(`.${ext}`);
-    match = saveAsPattern.exec(prompt);
-  }
-
-  // Pattern 2: "create/generate a PDF/DOCX/CSV file/document/report"
-  const createFormatPattern =
-    /\b(?:create|generate|produce|draft|build|write)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}(pdf|docx|xlsx|csv|pptx|txt|markdown|md|html)\s+(?:file|document|report|spreadsheet|deck|page|webpage)\b/gi;
-  match = createFormatPattern.exec(prompt);
-  while (match) {
-    let ext = match[1]!;
-    if (ext === "markdown") ext = "md";
-    if (EXPLICIT_OUTPUT_EXTENSION_SET.has(ext)) extensions.add(`.${ext}`);
-    match = createFormatPattern.exec(prompt);
-  }
-
-  // Pattern 3: "write ... as a markdown file" / "write the findings as a markdown file"
-  const writeAsFormatPattern =
-    /\b(?:write|save|export)\b[^.!?\n]{0,60}\bas\s+(?:a\s+|an\s+)?(?:\w+\s+){0,2}(markdown|md|pdf|csv|json|txt|docx|xlsx|pptx)\s+(?:file|document|report)\b/gi;
-  match = writeAsFormatPattern.exec(prompt);
-  while (match) {
-    let ext = match[1]!;
-    if (ext === "markdown") ext = "md";
-    if (EXPLICIT_OUTPUT_EXTENSION_SET.has(ext)) extensions.add(`.${ext}`);
-    match = writeAsFormatPattern.exec(prompt);
-  }
-
-  // Pattern 4: Semantic format nouns in output-intent context
-  // "create a spreadsheet" → .xlsx, "generate a PDF" → .pdf, etc.
-  const semanticFormats: Array<[RegExp, string]> = [
-    [
-      /\b(?:create|generate|build|produce)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}spreadsheet\b/i,
-      ".xlsx",
-    ],
-    [
-      /\b(?:create|generate|build|produce)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}excel\s+(?:file|workbook|spreadsheet|document)\b/i,
-      ".xlsx",
-    ],
-    [
-      /\b(?:create|generate|build|produce|export)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}pdf\b/i,
-      ".pdf",
-    ],
-    [
-      /\b(?:create|generate|build|produce|export)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}docx?\b/i,
-      ".docx",
-    ],
-    [
-      /\b(?:create|generate|build|produce|export|write)\s+(?:a\s+|an\s+|the\s+)?(?:\w+\s+){0,3}(?:html(?:\s+(?:file|page))?|web\s*page|webpage)\b/i,
-      ".html",
-    ],
-  ];
-  for (const [pattern, ext] of semanticFormats) {
-    if (pattern.test(prompt)) extensions.add(ext);
-  }
-
-  // Pattern 5: Chinese output-intent followed by an explicit format.
-  // Handles direct requests such as “生成 Word 文件” and follow-ups such as
-  // “生成对比报告，word” without treating an earlier input filename as output.
-  const cjkOutputFormats: Array<[RegExp, string]> = [
-    [
-      /(?:创建|生成|制作|产出|编制|撰写|起草|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:word|docx|\.docx)/i,
-      ".docx",
-    ],
-    [
-      /(?:创建|生成|制作|产出|编制|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:excel|xlsx|\.xlsx|电子表格|工作簿|台账|数据表|表格文件)/i,
-      ".xlsx",
-    ],
-    [
-      /(?:创建|生成|制作|产出|编制|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:powerpoint|pptx|\.pptx|ppt|演示文稿|幻灯片)/i,
-      ".pptx",
-    ],
-    [
-      /(?:创建|生成|制作|产出|编制|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:pdf|\.pdf)/i,
-      ".pdf",
-    ],
-    [
-      /(?:创建|生成|制作|产出|编制|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:csv|\.csv)/i,
-      ".csv",
-    ],
-    [
-      /(?:创建|生成|制作|产出|编制|保存|导出|输出|写入|整理成|转换成|转成)[^。！？\n]{0,80}(?:html|\.html|网页|页面)/i,
-      ".html",
-    ],
-  ];
-  for (const [pattern, ext] of cjkOutputFormats) {
-    if (pattern.test(prompt)) extensions.add(ext);
-  }
-
-  // Chinese prompts commonly describe the deliverable as a presentation form
-  // rather than placing a creation verb immediately before the format, e.g.
-  // “内容以 HTML 形式展现运行”.  This is still an explicit HTML output request,
-  // not a reference to an input file.
-  if (
-    /(?:内容|结果|页面|动画)?\s*(?:以|用|采用)\s*(?:html|\.html)\s*(?:格式|形式)?\s*(?:展现|展示|呈现|运行|输出|交付)/i.test(
-      prompt,
-    )
-  ) {
-    extensions.add(".html");
-  }
-
-  // Presentation detection still uses the dedicated function
-  if (promptRequestsPresentationArtifactOutput(taskTitle, taskPrompt)) {
-    extensions.add(".pptx");
-  }
-  if (promptRequestsVideoArtifactOutput(taskTitle, taskPrompt) && extensions.size === 0) {
-    extensions.add(".mp4");
-  }
-
-  return Array.from(extensions);
+  return parseArtifactOutputExtensions(
+    `${taskTitle}\n${normalizePromptForContracts(taskPrompt)}`.toLowerCase(),
+  );
 }
 
 /**

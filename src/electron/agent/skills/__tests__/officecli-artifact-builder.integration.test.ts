@@ -7,6 +7,7 @@ import { promisify } from "util";
 import { resolveBundledOfficeCliExecutable } from "../../../utils/officecli-runtime";
 import { runOfficeDocumentQualityCheck } from "../../../utils/office-document-quality";
 import { buildAndPublishOfficeArtifact } from "../../../utils/office-artifact-publisher";
+import { SkillTools } from "../../tools/skill-tools";
 import { OfficeCliArtifactBuilder } from "../officecli-artifact-builder";
 
 const execFileAsync = promisify(execFile);
@@ -126,6 +127,56 @@ describe("OfficeCliArtifactBuilder integration", () => {
         expect.objectContaining({ message: expect.stringContaining("text overflow") }),
       ]),
     );
+  }, 60_000);
+
+  maybeIt("fills a user PPTX template through the PPT Master host adapter without optional Python renderers", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-ppt-master-template-fill-"));
+    const templatePath = path.join(tempDir, "source-template.pptx");
+    const builder = new OfficeCliArtifactBuilder();
+    await builder.createPresentation(
+      templatePath,
+      [
+        { title: "模板封面", slideType: "cover", subtitle: "原生模板" },
+        { title: "模板目录", slideType: "section", content: ["第一部分", "第二部分"] },
+        { title: "模板内容", content: ["占位内容 A", "占位内容 B"] },
+      ],
+      { visualMode: "premium", title: "模板" },
+    );
+
+    const daemon = {
+      logEvent: () => undefined,
+      registerArtifact: () => undefined,
+    };
+    const tools = new SkillTools(
+      {
+        id: "workspace-template-fill",
+        path: tempDir,
+        permissions: { read: true, write: true, shell: true },
+      } as never,
+      daemon as never,
+      "task-template-fill",
+    );
+    const result = await tools.createPresentation({
+      filename: "ignored-by-ppt-master.pptx",
+      sourcePath: templatePath,
+      generationMode: "ppt-master",
+      presentationWorkflow: "ppt-master",
+      workflowArtifactRoot: path.join(tempDir, "artifacts", "skills", "task-template-fill", "ppt-master"),
+      title: "基于模板的新汇报",
+      slides: [
+        { title: "基于模板的新汇报", slideType: "cover", subtitle: "验证模板填充" },
+        { title: "核心结论", content: ["保留模板结构", "写入新内容", "通过交付验证"] },
+      ],
+    });
+
+    const outputPath = path.join(tempDir, result.path);
+    await validate(executable!, outputPath);
+    expect(result.success).toBe(true);
+    expect(result.path).toBe("artifacts/skills/task-template-fill/ppt-master/output/presentation.pptx");
+    expect(result.qualityCheck.validation?.passed).toBe(true);
+    await expect(
+      fs.stat(path.join(tempDir, "artifacts", "skills", "task-template-fill", "ppt-master", "validation", "pptx-delivery-check.json")),
+    ).resolves.toMatchObject({ size: expect.any(Number) });
   }, 60_000);
 
   maybeIt("publishes DOCX blocks with advisory mixed-language content and preserves every bullet", async () => {

@@ -259,14 +259,8 @@ export function PresentationViewer({
           ) : (
             <div className="presentation-viewer-slide-text">
               <div className="presentation-viewer-slide-text-kicker">
-                {t("presentationViewer.slideTitle", "Slide {index}", {
-                  index: activeSlide?.index ?? 0,
-                })}
+                {t("presentationViewer.layoutUnavailable", "Original layout preview is unavailable. The text below does not represent the slide layout.")}
               </div>
-              <h3>
-                {activeSlide?.title ||
-                  t("presentationViewer.untitledSlide", "Untitled slide")}
-              </h3>
               <pre>
                 {activeSlide?.text ||
                   t(
@@ -277,6 +271,12 @@ export function PresentationViewer({
             </div>
           )}
         </div>
+
+        {preview.renderer === "officecli" && renderedCount > 0 ? (
+          <div className="presentation-viewer-render-note" role="note">
+            {t("presentationViewer.compatibilityPreview", "Compatibility preview: complex fonts, tables and effects may differ from PowerPoint. The original file is unchanged.")}
+          </div>
+        ) : null}
 
         {!isRenderingHighFidelity ? (
           <div className="presentation-viewer-notes">
@@ -294,7 +294,9 @@ export function PresentationViewer({
         preview.renderStatus !== "cached" &&
         preview.renderMessage ? (
           <div className="presentation-viewer-render-note">
-            {preview.renderMessage}
+            {isRenderingHighFidelity
+              ? t("presentationViewer.preparingPreview", "Preparing slide preview")
+              : t("presentationViewer.previewUnavailableHint", "The file has not been changed. Open it in PowerPoint to view the original layout.")}
           </div>
         ) : null}
       </section>

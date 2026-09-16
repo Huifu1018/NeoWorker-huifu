@@ -13,7 +13,7 @@ const ROOT = path.resolve(import.meta.dirname, "..");
 const DEFAULT_RELEASE_DIR = path.join(ROOT, "release");
 const MIN_DMG_BYTES = 50 * 1024 * 1024;
 const MIN_EXE_BYTES = 100 * 1024 * 1024;
-const MAC_LAUNCH_MS = 8_000;
+const MAC_LAUNCH_MS = 20_000;
 const WINDOWS_LAUNCH_MS = 20_000;
 
 function parseArgs(argv) {
@@ -367,7 +367,8 @@ async function validatePackagedNeoWorkerRuntime(asarPath) {
   if (
     runtimeCheckResult?.ok !== true ||
     runtimeCheckResult?.frozen !== true ||
-    runtimeCheckResult?.hermesAgentVersion !== hermesManifest.hermesAgentVersion
+    runtimeCheckResult?.hermesAgentVersion !== hermesManifest.hermesAgentVersion ||
+    runtimeCheckResult?.mcpFailureIsolation !== true
   ) {
     throw new Error(`Packaged Hermes runtime check failed: ${JSON.stringify(runtimeCheckResult)}`);
   }
@@ -459,10 +460,16 @@ function assertMacCodeSignature(appPath, allowUnsigned) {
 async function smokeLaunchMac(executablePath) {
   let spawnError = null;
   let output = "";
-  const child = spawn(executablePath, [], {
+  const smokeUserDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-mac-launch-"));
+  const child = spawn(executablePath, ["--enable-logging=stderr"], {
     env: {
       ...process.env,
       NEOWORKER_DESKTOP_SMOKE: "1",
+      NEOWORKER_USER_DATA_DIR: smokeUserDataDir,
+      // The launch probe is non-interactive. Avoid blocking on a macOS
+      // Keychain permission prompt for the temporary unsigned app identity.
+      NEOWORKER_DISABLE_OS_KEYCHAIN: "1",
+      ELECTRON_ENABLE_LOGGING: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -477,23 +484,58 @@ async function smokeLaunchMac(executablePath) {
     output += chunk;
   });
 
-  await new Promise((resolve) => setTimeout(resolve, MAC_LAUNCH_MS));
-  if (spawnError) {
-    throw spawnError;
-  }
-  if (child.exitCode !== null && child.exitCode !== 0) {
-    throw new Error(
-      `macOS app exited during smoke launch with code ${child.exitCode}:\n${output.trim()}`,
-    );
-  }
-  if (child.exitCode === 0) {
-    return;
-  }
+  const waitForExit = (timeoutMs) =>
+    new Promise((resolve) => {
+      if (child.exitCode !== null) {
+        resolve();
+        return;
+      }
+      let timer;
+      const finish = () => {
+        if (timer) clearTimeout(timer);
+        child.removeListener("exit", finish);
+        resolve();
+      };
+      child.once("exit", finish);
+      timer = setTimeout(finish, timeoutMs);
+    });
 
-  child.kill("SIGTERM");
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  if (child.exitCode === null) {
-    child.kill("SIGKILL");
+  try {
+    const deadline = Date.now() + MAC_LAUNCH_MS;
+    while (Date.now() < deadline) {
+      if (spawnError) throw spawnError;
+      if (/\[RendererErrorBoundary\]|Unhandled renderer error/.test(output)) {
+        throw new Error(`macOS renderer entered its fatal error boundary:\n${output.trim()}`);
+      }
+      if (child.exitCode !== null) {
+        throw new Error(
+          `macOS app exited during smoke launch with code ${child.exitCode}:\n${output.trim()}`,
+        );
+      }
+      if (/\bApp mounted\b/.test(output)) {
+        console.log("[desktop-smoke] macOS renderer mounted successfully.");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(
+      `macOS renderer did not report a successful mount within ${MAC_LAUNCH_MS} ms:\n${output.trim()}`,
+    );
+  } finally {
+    if (child.exitCode === null) {
+      child.kill("SIGTERM");
+      await waitForExit(2_000);
+    }
+    if (child.exitCode === null) {
+      child.kill("SIGKILL");
+      await waitForExit(2_000);
+    }
+    await fs.rm(smokeUserDataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 150,
+    });
   }
 }
 

@@ -14,9 +14,11 @@ import {
   getProjectFileVisual,
   mergeWorkspaceBrowserFiles,
   ProjectContextPanel,
+  scopeTaskOutputFilesToLatestTurn,
   shouldDisplayWorkspaceFile,
   shouldPublishTaskOutputs,
 } from "../ProjectContextPanel";
+import { deriveSharedTaskEventUiState } from "../../utils/task-event-derived";
 import type { Task, TaskEvent, Workspace } from "../../../shared/types";
 
 const stylesPath = fileURLToPath(
@@ -52,6 +54,74 @@ const events = [
 ] as TaskEvent[];
 
 describe("ProjectContextPanel", () => {
+  it("scopes this-turn outputs away from stale files in a later completion summary", () => {
+    const turnEvents = [
+      {
+        id: "pdf-user",
+        taskId: task.id,
+        type: "user_message",
+        timestamp: 100,
+        payload: { message: "输出 PDF" },
+      },
+      {
+        id: "pdf-completed",
+        taskId: task.id,
+        type: "task_completed",
+        timestamp: 200,
+        payload: {
+          resultSummary: "交付文件：安装指南_中文.pdf",
+          outputSummary: {
+            created: ["安装指南_中文.pdf"],
+            primaryOutputPath: "安装指南_中文.pdf",
+            outputCount: 1,
+          },
+        },
+      },
+      {
+        id: "excel-user",
+        taskId: task.id,
+        type: "user_message",
+        timestamp: 300,
+        payload: { message: "翻译表格，输出 Excel" },
+      },
+      {
+        id: "excel-assistant",
+        taskId: task.id,
+        type: "assistant_message",
+        timestamp: 400,
+        payload: { message: "完成。交付文件：项目进展_EN_KO.xlsx" },
+      },
+      {
+        id: "excel-completed",
+        taskId: task.id,
+        type: "task_completed",
+        timestamp: 500,
+        payload: {
+          resultSummary: "完成。交付文件：项目进展_EN_KO.xlsx",
+          outputSummary: {
+            created: ["安装指南_中文.pdf"],
+            modifiedFallback: ["项目进展_EN_KO.xlsx"],
+            primaryOutputPath: "安装指南_中文.pdf",
+            outputCount: 1,
+          },
+        },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      scopeTaskOutputFilesToLatestTurn({
+        workspacePath: workspace.path,
+        events: turnEvents,
+        files: [
+          { path: "安装指南_中文.pdf", action: "created", timestamp: 500 },
+          { path: "项目进展_EN_KO.xlsx", action: "created", timestamp: 500 },
+        ],
+      }),
+    ).toEqual([
+      { path: "项目进展_EN_KO.xlsx", action: "created", timestamp: 500 },
+    ]);
+  });
+
   it("uses a four-column project navigation with an inset active indicator", () => {
     const source = readFileSync(stylesPath, "utf8");
 
@@ -382,6 +452,223 @@ describe("ProjectContextPanel", () => {
     );
   });
 
+  it("recovers current outputs from full events when shared state missed a late artifact", () => {
+    const completedTask = { ...task, status: "completed" } as Task;
+    const completed = {
+      id: "completed",
+      taskId: task.id,
+      type: "task_completed",
+      timestamp: 100,
+      payload: {
+        resultSummary: "已完成，正式 PPT 已生成。",
+        outputSummary: {
+          created: [],
+          outputCount: 0,
+          folders: [],
+        },
+      },
+    } as TaskEvent;
+    const artifact = {
+      id: "artifact",
+      taskId: task.id,
+      type: "artifact_created",
+      timestamp: 200,
+      payload: {
+        path: "上海-广州航班查询_2026-09-14.pptx",
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      },
+    } as TaskEvent;
+    const staleSharedState = deriveSharedTaskEventUiState({
+      rawEvents: [completed],
+      task: completedTask,
+      workspace,
+      projectionMode: "inspect",
+    });
+
+    const markup = renderToStaticMarkup(
+      React.createElement(ProjectContextPanel, {
+        task: completedTask,
+        workspace,
+        events: [completed, artifact],
+        sharedTaskEventUi: staleSharedState,
+        onOpenBrowser: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain("本次产物");
+    expect(markup).toContain("上海-广州航班查询_2026-09-14.pptx");
+    expect(markup).not.toContain("本次任务没有写入文件");
+  });
+
+  it("recovers a completed current-turn deliverable that exists on disk but missed its file event", () => {
+    const completedTask = {
+      ...task,
+      status: "completed",
+      createdAt: 100,
+      updatedAt: 500,
+      completedAt: 500,
+      error: undefined,
+    } as Task;
+    const currentTurnEvents = [
+      {
+        id: "previous-user",
+        taskId: task.id,
+        type: "user_message",
+        timestamp: 120,
+        payload: { message: "翻译成韩文" },
+      },
+      {
+        id: "previous-assistant",
+        taskId: task.id,
+        type: "assistant_message",
+        timestamp: 180,
+        payload: { message: "交付文件：previous-output.pptx" },
+      },
+      {
+        id: "current-user",
+        taskId: task.id,
+        type: "user_message",
+        timestamp: 300,
+        payload: { message: "输出日文版，PDF文件，保留图片" },
+      },
+      {
+        id: "current-assistant",
+        taskId: task.id,
+        type: "assistant_message",
+        timestamp: 450,
+        payload: {
+          message: "已完成。交付文件：华为AI CloudMatrix 384-日英对照版.pdf",
+        },
+      },
+      {
+        id: "current-completed",
+        taskId: task.id,
+        type: "task_completed",
+        timestamp: 500,
+        payload: {
+          resultSummary:
+            "已完成。交付文件：华为AI CloudMatrix 384-日英对照版.pdf",
+          outputSummary: { created: [], outputCount: 0, folders: [] },
+        },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      deriveRecoveredTemporaryWorkspaceOutputs({
+        task: completedTask,
+        workspace: { ...workspace, isTemp: true },
+        events: currentTurnEvents,
+        files: [
+          {
+            id: "previous-output",
+            name: "previous-output.pptx",
+            path: "/tmp/finance-workspace/previous-output.pptx",
+            source: "local",
+            modifiedAt: 180,
+          },
+          {
+            id: "uploaded-source",
+            name: "source.pdf",
+            path: "/tmp/finance-workspace/source.pdf",
+            source: "local",
+            modifiedAt: 320,
+          },
+          {
+            id: "current-output",
+            name: "华为AI CloudMatrix 384-日英对照版.pdf",
+            path:
+              "/tmp/finance-workspace/华为AI CloudMatrix 384-日英对照版.pdf",
+            source: "local",
+            modifiedAt: 460,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        path:
+          "/tmp/finance-workspace/华为AI CloudMatrix 384-日英对照版.pdf",
+        action: "created",
+        timestamp: 460,
+      },
+    ]);
+  });
+
+  it("recovers only current-turn durable artifacts for the active task", () => {
+    const completedTask = {
+      ...task,
+      status: "completed",
+      createdAt: 100,
+      updatedAt: 500,
+      completedAt: 500,
+      error: undefined,
+    } as Task;
+    const currentTurnEvents = [
+      {
+        id: "current-user",
+        taskId: task.id,
+        type: "user_message",
+        timestamp: 300,
+        payload: { message: "生成PDF" },
+      },
+      {
+        id: "current-completed",
+        taskId: task.id,
+        type: "task_completed",
+        timestamp: 500,
+        payload: {
+          resultSummary: "已经完成。",
+          outputSummary: { created: [], outputCount: 0, folders: [] },
+        },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      deriveRecoveredTemporaryWorkspaceOutputs({
+        task: completedTask,
+        workspace: { ...workspace, isTemp: true },
+        events: currentTurnEvents,
+        files: [
+          {
+            id: "old-artifact",
+            name: "old.pptx",
+            path: "/tmp/finance-workspace/old.pptx",
+            source: "artifacts",
+            modifiedAt: 200,
+          },
+          {
+            id: "current-artifact",
+            name: "current.pdf",
+            path: "/tmp/finance-workspace/current.pdf",
+            source: "artifacts",
+            modifiedAt: 450,
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        path: "/tmp/finance-workspace/current.pdf",
+        action: "created",
+        timestamp: 450,
+      },
+    ]);
+  });
+
+  it("scopes asynchronous recovered outputs to the active task and workspace", () => {
+    const source = readFileSync(sourcePath, "utf8");
+
+    expect(source).toContain(
+      'const recoveredOutputScopeKey = `${task?.id || "no-task"}:${workspace?.path || "no-workspace"}`',
+    );
+    expect(source).toContain("const requestId = ++recoveredOutputsRequestRef.current");
+    expect(source).toContain(
+      "if (requestId !== recoveredOutputsRequestRef.current) return",
+    );
+    expect(source).toContain(
+      "recoveredOutputState.scopeKey === recoveredOutputScopeKey",
+    );
+  });
+
   it("restores the selected tab and scroll position for each session", () => {
     const source = readFileSync(sourcePath, "utf8");
 
@@ -611,6 +898,165 @@ describe("ProjectContextPanel", () => {
         timestamp: 300,
         status: "completed",
       },
+    ]);
+  });
+
+  it("coalesces the started and user-message events emitted for one follow-up", () => {
+    const followUpText =
+      "帮我翻译成中文和韩文，要中韩文对照，输出 PDF，保留图片";
+    const conversationEvents = [
+      {
+        id: "initial-user",
+        taskId: task.id,
+        timestamp: 100,
+        type: "user_message",
+        payload: { message: "明天上海飞深圳的航班，帮我查一下" },
+      },
+      {
+        id: "initial-completed",
+        taskId: task.id,
+        timestamp: 200,
+        type: "task_completed",
+        payload: { resultSummary: "航班查询完成。" },
+      },
+      {
+        id: "follow-up-started",
+        taskId: task.id,
+        timestamp: 300,
+        type: "follow_up_started",
+        payload: { followUpMessage: followUpText },
+      },
+      {
+        id: "follow-up-user",
+        taskId: task.id,
+        timestamp: 301,
+        type: "user_message",
+        payload: { message: followUpText },
+      },
+      {
+        id: "follow-up-assistant",
+        taskId: task.id,
+        timestamp: 400,
+        type: "assistant_message",
+        payload: { message: "中韩文对照 PDF 已生成。" },
+      },
+      {
+        id: "follow-up-completed",
+        taskId: task.id,
+        timestamp: 500,
+        type: "task_completed",
+        payload: {},
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(conversationEvents, {
+        ...task,
+        prompt: "明天上海飞深圳的航班，帮我查一下",
+        createdAt: 50,
+        status: "completed",
+      } as Task),
+    ).toEqual([
+      {
+        id: "initial-user",
+        turnId: "initial",
+        userText: "明天上海飞深圳的航班，帮我查一下",
+        assistantText: "航班查询完成。",
+        timestamp: 100,
+        status: "completed",
+      },
+      {
+        id: "follow-up-user",
+        turnId: "event:follow-up-user",
+        userText: followUpText,
+        assistantText: "中韩文对照 PDF 已生成。",
+        timestamp: 301,
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("keeps attachment metadata out of conversation round titles", () => {
+    const message = [
+      "输出日文版，PDF文件，保留图片",
+      "",
+      "Attached files (relative to workspace):",
+      "- 华为AI CloudMatrix 384-中英对照版.pdf (.neoworker/uploads/123/source.pdf)",
+      "  Attachment metadata: size=7892999; mime=application/pdf",
+    ].join("\n");
+    const conversationEvents = [
+      {
+        id: "follow-up-started",
+        taskId: task.id,
+        timestamp: 300,
+        type: "follow_up_started",
+        payload: { followUpMessage: message, turnId: "turn-pdf" },
+      },
+      {
+        id: "follow-up-user",
+        taskId: task.id,
+        timestamp: 301,
+        type: "user_message",
+        payload: { message },
+      },
+      {
+        id: "follow-up-completed",
+        taskId: task.id,
+        timestamp: 400,
+        type: "task_completed",
+        payload: { resultSummary: "日文 PDF 已完成。" },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(conversationEvents, {
+        ...task,
+        prompt: "",
+        rawPrompt: "",
+        userPrompt: "",
+        createdAt: 50,
+        status: "completed",
+      } as Task),
+    ).toEqual([
+      {
+        id: "follow-up-user",
+        turnId: "event:follow-up-user",
+        userText: "输出日文版，PDF文件，保留图片",
+        assistantText: "日文 PDF 已完成。",
+        timestamp: 301,
+        status: "completed",
+      },
+    ]);
+  });
+
+  it("keeps two intentional user messages even when their text is identical", () => {
+    const conversationEvents = [
+      {
+        id: "user-1",
+        taskId: task.id,
+        timestamp: 100,
+        type: "user_message",
+        payload: { message: "继续" },
+      },
+      {
+        id: "user-2",
+        taskId: task.id,
+        timestamp: 200,
+        type: "user_message",
+        payload: { message: "继续" },
+      },
+    ] as TaskEvent[];
+
+    expect(
+      buildSessionConversationRounds(conversationEvents, {
+        ...task,
+        prompt: "继续",
+        createdAt: 50,
+        status: "executing",
+      } as Task),
+    ).toMatchObject([
+      { id: "user-1", userText: "继续", status: "waiting" },
+      { id: "user-2", userText: "继续", status: "working" },
     ]);
   });
 

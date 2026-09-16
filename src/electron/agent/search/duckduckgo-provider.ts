@@ -6,7 +6,10 @@ import {
   SearchResult,
   SearchType,
 } from "./types";
-import { extractFlightRoute } from "./flight-query";
+import {
+  extractFlightRoute,
+  matchesFlightRouteDirection,
+} from "./flight-query";
 
 type SearchFetch = typeof fetch;
 
@@ -221,21 +224,7 @@ export class DuckDuckGoProvider implements SearchProvider {
         return false;
       }
       if (!flightRoute) return true;
-      const fromSignals = [flightRoute.fromCode, flightRoute.fromCity].map((signal) =>
-        signal.toLowerCase(),
-      );
-      const toSignals = [flightRoute.toCode, flightRoute.toCity].map((signal) =>
-        signal.toLowerCase(),
-      );
-      return fields.some((field) =>
-        fromSignals.some((from) =>
-          toSignals.some((to) => {
-            const fromIndex = field.indexOf(from);
-            const toIndex = field.indexOf(to, fromIndex + from.length);
-            return fromIndex >= 0 && toIndex >= 0 && toIndex - fromIndex <= 180;
-          }),
-        ),
-      );
+      return matchesFlightRouteDirection({ title, url, snippet }, flightRoute);
     };
     let lastError: Any = null;
     for (const host of hosts) {

@@ -5,7 +5,10 @@ import type {
   ToolLifecycleEmitter,
   ToolLifecycleStatus,
 } from "./ToolInvocationContext";
-import { buildToolResultEnvelope } from "./tool-result-envelope";
+import {
+  buildToolResultEnvelope,
+  getToolErrorMessage,
+} from "./tool-result-envelope";
 import { stableJsonStringify } from "../../utils/json-utils";
 
 export interface CoordinatedToolExecutionResult {
@@ -49,9 +52,21 @@ export class ToolExecutionCoordinator {
   }
 
   private getModelReminder(result: unknown): string | undefined {
-    if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
-    const reminder = (result as { immediateReminder?: unknown }).immediateReminder;
-    return typeof reminder === "string" && reminder.trim().length > 0 ? reminder.trim() : undefined;
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      return undefined;
+    const reminder = (result as { immediateReminder?: unknown })
+      .immediateReminder;
+    return typeof reminder === "string" && reminder.trim().length > 0
+      ? reminder.trim()
+      : undefined;
+  }
+
+  private isAdvisoryFailure(result: unknown): boolean {
+    const record = this.getResultRecord(result);
+    return (
+      record.success === false &&
+      (record.nonBlocking === true || record.recoverableFallback === true)
+    );
   }
 
   async executeTool(
@@ -61,12 +76,16 @@ export class ToolExecutionCoordinator {
     toolUseId = `${toolName}:${Date.now()}`,
   ): Promise<CoordinatedToolExecutionResult> {
     const startedAt = Date.now();
-    const toolTimeoutMs = context.timeoutMsResolver?.(toolName, input) ?? 30_000;
-    const idempotencyKey = stableJsonStringify(
-      [context.taskId, toolUseId],
-      { sortKeys: false },
+    const toolTimeoutMs =
+      context.timeoutMsResolver?.(toolName, input) ?? 30_000;
+    const idempotencyKey = stableJsonStringify([context.taskId, toolUseId], {
+      sortKeys: false,
+    });
+    const stopHeartbeat = context.beginHeartbeat?.(
+      toolName,
+      toolTimeoutMs,
+      input,
     );
-    const stopHeartbeat = context.beginHeartbeat?.(toolName, toolTimeoutMs, input);
     const emitLifecycle: ToolLifecycleEmitter = (
       status: ToolLifecycleStatus,
       extra: Record<string, unknown> = {},
@@ -118,24 +137,40 @@ export class ToolExecutionCoordinator {
       const result = executionWithRuntime?.result;
       const policyTrace = executionWithRuntime?.policyTrace;
       const modelReminder = this.getModelReminder(result);
+      const advisoryFailure = this.isAdvisoryFailure(result);
       const cancelled =
         context.signal?.aborted === true ||
         (result &&
           typeof result === "object" &&
           !Array.isArray(result) &&
-          ((result as { terminationReason?: unknown }).terminationReason === "user_stopped" ||
-            (result as { terminationReason?: unknown }).terminationReason === "cancelled"));
+          ((result as { terminationReason?: unknown }).terminationReason ===
+            "user_stopped" ||
+            (result as { terminationReason?: unknown }).terminationReason ===
+              "cancelled"));
       const envelope = buildToolResultEnvelope({
         toolUseId,
         toolName,
-        status: cancelled ? "cancelled" : result?.success === false ? "error" : "success",
+        status: cancelled
+          ? "cancelled"
+          : result?.success === false && !advisoryFailure
+            ? "error"
+            : "success",
         result,
         retryable: false,
         policyTrace,
         modelReminder,
-        userSummary: `${toolName} ${cancelled ? "cancelled" : result?.success === false ? "failed" : "completed"}`,
+        userSummary: `${toolName} ${
+          cancelled
+            ? "cancelled"
+            : advisoryFailure
+              ? "source unavailable; use another source"
+              : result?.success === false
+                ? "failed"
+                : "completed"
+        }`,
       });
-      const succeeded = !cancelled && result?.success !== false;
+      const succeeded =
+        !cancelled && (result?.success !== false || advisoryFailure);
       const endedAt = Date.now();
       emitLifecycle(cancelled ? "cancelled" : succeeded ? "result" : "failed", {
         endedAt,
@@ -145,6 +180,9 @@ export class ToolExecutionCoordinator {
           : {}),
         ...(this.getResultTerminationReason(result)
           ? { terminationReason: this.getResultTerminationReason(result) }
+          : {}),
+        ...(advisoryFailure
+          ? { advisory: true, recoverableFallback: true }
           : {}),
         ...(succeeded ? {} : { error: this.getResultError(result) }),
         ...(succeeded ? {} : { errorType: "tool_result_error" }),
@@ -166,8 +204,9 @@ export class ToolExecutionCoordinator {
         envelope,
       };
     } catch (error) {
-      const errorMessage = String((error as { message?: string })?.message || error || "Tool execution failed");
-      const initiallyCancelled = context.signal?.aborted === true || /cancel|abort/i.test(errorMessage);
+      const errorMessage = getToolErrorMessage(error);
+      const initiallyCancelled =
+        context.signal?.aborted === true || /cancel|abort/i.test(errorMessage);
       const timedOut = /timed? ?out|timeout/i.test(errorMessage);
       // Cancellation is a terminal control-flow decision. Do not enter path
       // recovery after an abort: recovery can perform filesystem probes or
@@ -178,7 +217,7 @@ export class ToolExecutionCoordinator {
         : await context.workspaceRecovery?.({
             toolName,
             input,
-            errorMessage: String((error as { message?: string })?.message || error || ""),
+            errorMessage: getToolErrorMessage(error, ""),
             toolTimeoutMs,
             stepId: context.stepId,
             targetPaths: context.targetPaths,
@@ -224,14 +263,17 @@ export class ToolExecutionCoordinator {
         userSummary: `${toolName} failed`,
       });
       const endedAt = Date.now();
-      emitLifecycle(cancelled ? "cancelled" : timedOut ? "timed_out" : "failed", {
-        endedAt,
-        durationMs: endedAt - startedAt,
-        error: errorMessage,
-        ...(this.getErrorType(error)
-          ? { errorType: this.getErrorType(error) }
-          : {}),
-      });
+      emitLifecycle(
+        cancelled ? "cancelled" : timedOut ? "timed_out" : "failed",
+        {
+          endedAt,
+          durationMs: endedAt - startedAt,
+          error: errorMessage,
+          ...(this.getErrorType(error)
+            ? { errorType: this.getErrorType(error) }
+            : {}),
+        },
+      );
       context.emitEvent?.("log", {
         metric: "tool_runtime_trace",
         taskId: context.taskId,
@@ -254,9 +296,11 @@ export class ToolExecutionCoordinator {
   }
 
   private getResultError(result: unknown): string | undefined {
-    if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
-    const value = (result as { error?: unknown; message?: unknown }).error ??
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      return undefined;
+    const value =
+      (result as { error?: unknown; message?: unknown }).error ??
       (result as { message?: unknown }).message;
-    return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    return getToolErrorMessage(value, "") || undefined;
   }
 }

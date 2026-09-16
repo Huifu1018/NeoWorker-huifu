@@ -1125,7 +1125,7 @@ export const LLMSettingsSchema = z.object({
 // ============ Search Settings Schemas ============
 
 export const SearchProviderTypeSchema = z
-  .enum(["tavily", "exa", "brave", "serpapi", "google", "duckduckgo"])
+  .enum(["tavily", "exa", "brave", "serpapi", "serper", "google", "duckduckgo"])
   .nullable();
 
 export const SearchSettingsSchema = z.object({
@@ -1147,6 +1147,11 @@ export const SearchSettingsSchema = z.object({
     })
     .optional(),
   serpapi: z
+    .object({
+      apiKey: z.string().max(500).optional(),
+    })
+    .optional(),
+  serper: z
     .object({
       apiKey: z.string().max(500).optional(),
     })

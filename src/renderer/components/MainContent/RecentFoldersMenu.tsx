@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
-import { ChevronRight, Folder, FolderPlus } from "lucide-react";
+import { ChevronRight, Folder, FolderPlus, TriangleAlert } from "lucide-react";
 import type { Workspace } from "../../../shared/types";
 import { translate, useLanguage } from "../../i18n";
 
@@ -83,21 +83,29 @@ export function RecentFoldersMenu({
           <div className="workspace-dropdown-list">
             {visibleWorkspaces.map((workspace, index) => {
               const isActive = workspace.id === activeWorkspaceId;
+              const isUnavailable =
+                workspace.availability !== undefined &&
+                workspace.availability !== "available";
               return (
                 <button
                   aria-current={isActive ? "true" : undefined}
-                  className={`workspace-dropdown-item ${isActive ? "active" : ""}`}
+                  aria-disabled={isUnavailable || undefined}
+                  className={`workspace-dropdown-item ${isActive ? "active" : ""} ${isUnavailable ? "unavailable" : ""}`}
                   key={workspace.id}
                   onClick={() => onSelect(workspace)}
                   ref={(element) => {
                     itemRefs.current[index] = element;
                   }}
                   role="menuitem"
-                  title={workspace.path}
+                  title={workspace.availabilityReason || workspace.path}
                   type="button"
                 >
                   <span className="workspace-item-icon" aria-hidden="true">
-                    <Folder size={18} strokeWidth={1.8} />
+                    {isUnavailable ? (
+                      <TriangleAlert size={18} strokeWidth={1.8} />
+                    ) : (
+                      <Folder size={18} strokeWidth={1.8} />
+                    )}
                   </span>
                   <span className="workspace-item-info">
                     <span className="workspace-item-name">
@@ -106,6 +114,14 @@ export function RecentFoldersMenu({
                     <span className="workspace-item-path">
                       {workspace.path}
                     </span>
+                    {isUnavailable && (
+                      <span className="workspace-item-status">
+                        {translate(
+                          "composer.workspaceFolderUnavailable",
+                          "Folder missing or replaced - choose it again",
+                        )}
+                      </span>
+                    )}
                   </span>
                   <ChevronRight
                     aria-hidden="true"

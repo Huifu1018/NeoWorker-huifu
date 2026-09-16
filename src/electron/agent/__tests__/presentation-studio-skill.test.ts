@@ -80,6 +80,30 @@ Attached files (relative to workspace):
     expect(loader.matchesSkillRoutingQuery(loadSkill(), query)).toBe(true);
   });
 
+  it("routes multi-deck translation through the existing-deck workflow", () => {
+    const loader = new CustomSkillLoader({
+      bundledSkillsDir: BUNDLED_SKILLS_DIR,
+      managedSkillsDir: "/tmp/neoworker-presentation-studio-test-skills",
+    });
+    const query = buildCanonicalTaskIntentQuery({
+      rawPrompt: "帮我把这几个 PPT 翻译成中文",
+    });
+
+    expect(loader.matchesSkillRoutingQuery(loadSkill(), query)).toBe(true);
+    expect(loadSkill().prompt).toContain("mode");
+  });
+
+  it("declares native template preservation for translation", () => {
+    const instructions = fs.readFileSync(
+      path.join(BUNDLED_SKILLS_DIR, "presentation-studio", "SKILL.md"),
+      "utf-8",
+    );
+
+    expect(instructions).toContain("Translating existing decks");
+    expect(instructions).toContain("always editing operations");
+    expect(instructions).toContain("Never merge them or bootstrap a blank project");
+  });
+
   it("does not route the source deck skill for a PPT-to-Excel conversion", () => {
     const loader = new CustomSkillLoader({
       bundledSkillsDir: BUNDLED_SKILLS_DIR,

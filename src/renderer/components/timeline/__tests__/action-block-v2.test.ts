@@ -253,6 +253,25 @@ describe("ActionBlock V2 projection", () => {
     expect(summary.status).toBe("recovered");
   });
 
+  it("clears a malformed Office attempt when a compatible alias later succeeds", () => {
+    const summary = buildActionBlockSummary([
+      event("bad-create", "tool_error", 1000, {
+        tool: "create_presentation",
+        toolUseId: "presentation-1",
+        error: "Unsupported presentation field at slides[0].0",
+      }),
+      event("good-generate", "tool_result", 1200, {
+        tool: "generate_presentation",
+        toolUseId: "presentation-2",
+        result: { success: true, path: "comparison.pptx" },
+      }),
+    ]);
+
+    expect(summary.errorCount).toBe(0);
+    expect(summary.recoveredErrorCount).toBe(1);
+    expect(summary.status).toBe("recovered");
+  });
+
   it("does not count a failed tool-batch summary in addition to its tool failures", () => {
     const summary = buildActionBlockSummary([
       event("error-1", "tool_error", 1000, {

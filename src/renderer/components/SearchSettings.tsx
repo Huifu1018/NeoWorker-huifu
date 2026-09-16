@@ -36,6 +36,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
   const [exaApiKey, setExaApiKey] = useState("");
   const [braveApiKey, setBraveApiKey] = useState("");
   const [serpapiApiKey, setSerpapiApiKey] = useState("");
+  const [serperApiKey, setSerperApiKey] = useState("");
   const [googleApiKey, setGoogleApiKey] = useState("");
   const [googleSearchEngineId, setGoogleSearchEngineId] = useState("");
 
@@ -56,9 +57,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
       setFallbackProvider(
         status.primaryProvider === null ? null : status.fallbackProvider,
       );
-      const visibleProviders = status.providers.filter(
-        (provider) => provider.configured && provider.type !== "duckduckgo",
-      );
+      const visibleProviders = status.providers;
       setActiveProvider((prev) => {
         if (
           prev &&
@@ -66,12 +65,21 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
         ) {
           return prev;
         }
-        return (
-          (status.primaryProvider &&
+        if (
+          status.primaryProvider &&
           visibleProviders.some((provider) => provider.type === status.primaryProvider)
-            ? status.primaryProvider
-            : visibleProviders[0]?.type) ?? null
-        );
+        ) {
+          return status.primaryProvider;
+        }
+
+        const configuredProvider =
+          visibleProviders.find(
+            (provider) => provider.configured && provider.type !== "duckduckgo",
+          ) ||
+          visibleProviders.find((provider) => provider.type === "duckduckgo") ||
+          visibleProviders[0];
+
+        return configuredProvider?.type ?? null;
       });
       onStatusChange?.(status.isConfigured);
     } catch (error) {
@@ -92,6 +100,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
         exa: exaApiKey ? { apiKey: exaApiKey } : undefined,
         brave: braveApiKey ? { apiKey: braveApiKey } : undefined,
         serpapi: serpapiApiKey ? { apiKey: serpapiApiKey } : undefined,
+        serper: serperApiKey ? { apiKey: serperApiKey } : undefined,
         google:
           googleApiKey || googleSearchEngineId
             ? {
@@ -105,6 +114,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
       setExaApiKey("");
       setBraveApiKey("");
       setSerpapiApiKey("");
+      setSerperApiKey("");
       setGoogleApiKey("");
       setGoogleSearchEngineId("");
       await loadConfig();
@@ -157,14 +167,11 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
     }
   };
 
-  // DuckDuckGo is an internal fallback route, not a user-configurable provider.
-  const selectableProviders =
-    configStatus?.providers.filter(
-      (p) => p.configured && p.type !== "duckduckgo",
-    ) || [];
+  const providerTabs = configStatus?.providers || [];
+  const selectableProviders = providerTabs.filter((p) => p.configured);
   const hasMultipleProviders = selectableProviders.length > 1;
   const activeProviderConfig =
-    configStatus?.providers.find((p) => p.type === activeProvider) || null;
+    providerTabs.find((p) => p.type === activeProvider) || null;
 
   if (loading) {
     return (
@@ -188,7 +195,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
         </div>
 
         <div className="llm-provider-tabs">
-          {selectableProviders.map((provider) => (
+          {providerTabs.map((provider) => (
             <button
               key={provider.type}
               className={`llm-provider-tab ${activeProvider === provider.type ? "active" : ""}`}
@@ -200,6 +207,11 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
               <span className="llm-provider-tab-label">{provider.name}</span>
               {provider.configured && (
                 <span className="llm-provider-tab-status" />
+              )}
+              {!provider.configured && (
+                <span className="llm-provider-tab-muted">
+                  {t("searchSettings.provider.notConfigured", "Not configured")}
+                </span>
               )}
             </button>
           ))}
@@ -323,6 +335,36 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
                       rel="noopener noreferrer"
                     >
                       serpapi.com
+                    </a>
+                  </p>
+                </div>
+              )}
+
+              {activeProviderConfig.type === "serper" && (
+                <div className="settings-field">
+                  <label>Serper API Key</label>
+                  <input
+                    type="password"
+                    className="settings-input"
+                    placeholder={
+                      activeProviderConfig.configured
+                        ? "••••••••••••••••"
+                        : t(
+                            "searchSettings.placeholder.enterApiKey",
+                            "Enter API key",
+                          )
+                    }
+                    value={serperApiKey}
+                    onChange={(e) => setSerperApiKey(e.target.value)}
+                  />
+                  <p className="settings-hint">
+                    {t("searchSettings.getApiKeyFrom", "Get your API key from")}{" "}
+                    <a
+                      href="https://serper.dev/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      serper.dev
                     </a>
                   </p>
                 </div>
