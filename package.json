@@ -63,7 +63,7 @@
     "numbat:verify": "node scripts/build_numbat_runtime.mjs --verify-only",
     "setup:officecli": "node scripts/setup_officecli.mjs",
     "package": "npm run build:with-numbat && npm run build:hermes-runtime && node scripts/run_electron_builder.mjs --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
-    "package:win:x64": "npm run numbat:build -- --target=win32-x64 && npm run build && npm run build:hermes-runtime -- --target=win32-x64 && node scripts/run_electron_builder.mjs --win --x64 --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
+    "package:win:x64": "npm run numbat:build -- --target=win32-x64 && npm run setup:officecli -- --platform win32 --arch x64 && npm run build && npm run build:hermes-runtime -- --target=win32-x64 && node scripts/run_electron_builder.mjs --win --x64 --publish never && node scripts/release-artifact-names.mjs && node scripts/release-artifact-names.mjs --check",
     "package:mac": "node scripts/package-mac-with-env.mjs",
     "package:mac:unsigned": "cross-env NEOWORKER_MAC_UNSIGNED=1 node scripts/package-mac-with-env.mjs",
     "package:linux:server": "npm run numbat:build && npm run build:daemon && npm run build:connectors && node scripts/package-linux-server.mjs",
