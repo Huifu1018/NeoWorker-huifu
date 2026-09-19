@@ -286,6 +286,16 @@ describe("TaskExecutor completion contract integration", () => {
     );
   });
 
+  it("requires both translated PPTX and the additional PDF in the reported regression", () => {
+    const contract = buildCompletionContract({ taskTitle: "",
+      taskPrompt: "翻译成德语，输出已发PPT，此外，再进行分析输出一份PDF文档",
+      requiresDirectAnswer: false, requiresDecisionSignal: false, isWatchSkipRecommendationTask: false });
+    expect(new Set(contract.requiredArtifactExtensions)).toEqual(new Set([".pptx", ".pdf"]));
+    expect(hasArtifactEvidence({ contract, createdFiles: ["translated.pptx"] })).toBe(false);
+    expect(hasArtifactEvidence({ contract, createdFiles: ["analysis.pdf"] })).toBe(false);
+    expect(hasArtifactEvidence({ contract, createdFiles: ["translated.pptx", "analysis.pdf"] })).toBe(true);
+  });
+
   it("requires every explicitly requested artifact format", () => {
     const prompt = "基于内容，分别生成word和PDF文档";
     expect(extractExplicitOutputExtensions("", prompt)).toEqual([
@@ -847,6 +857,69 @@ describe("TaskExecutor completion contract integration", () => {
     expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
     expect(contract.allowExistingArtifactEvidence).toBe(true);
   });
+
+  it.each([
+    "请基于这个PPT模版去写",
+    "用这个模板",
+    "保持原来的版式，增加图片",
+    "内容再详细一点",
+    "重新生成完整报告",
+    "Use this template and add more images",
+    "继续",
+  ])("inherits the latest user-authored artifact after the active contract is cleared: %s", (message) => {
+    const executor = createExecuteHarness({ prompt: "分析这个网站", lastOutput: "" }) as Any;
+    executor.activeFollowUpCompletionContract = null;
+    executor.daemon.getTaskEvents.mockReturnValue([
+      { type: "timeline_step_updated", payload: { legacyType: "user_message", message: "基于PDF内容，写一个PPT" } },
+      { type: "user_message", payload: { message: "请基于这个PPT模版去写" } },
+    ]);
+    const contract = executor.buildFollowUpCompletionContract(message);
+    expect(contract.requiredArtifactExtensions).toEqual([".pptx"]);
+    expect(contract.requiresArtifactEvidence).toBe(true);
+    expect(contract.allowExistingArtifactEvidence).toBe(message === "继续");
+    executor.activeFollowUpCompletionContract = contract;
+    expect(executor.taskAllowsOfficeArtifactExtension(".pptx")).toBe(true);
+  });
+
+  it("does not let a PPT reference template change an existing Word target", () => {
+    const executor = createExecuteHarness({ prompt: "查询航班", lastOutput: "" }) as Any;
+    executor.daemon.getTaskEvents.mockReturnValue([
+      { type: "user_message", payload: { message: "读取PPT，写一份Word分析报告" } },
+    ]);
+    expect(executor.buildFollowUpCompletionContract("参考这个PPT模板调整排版").requiredArtifactExtensions).toEqual([".docx"]);
+    expect(executor.buildFollowUpCompletionContract("改成PDF").requiredArtifactExtensions).toEqual([".pdf"]);
+  });
+
+  it.each(["只解释这个模板，不要生成文件", "继续查一下天气", "这个模板是什么意思？", "continue in read-only mode"]) (
+    "does not inherit outputs for read-only or unrelated follow-ups: %s", (message) => {
+      const executor = createExecuteHarness({ prompt: "生成PPT", lastOutput: "" }) as Any;
+      expect(executor.buildFollowUpCompletionContract(message).requiresArtifactEvidence).toBe(false);
+    },
+  );
+
+  it("stops inheritance at a topic change and ignores instructions in attachments", () => {
+    const executor = createExecuteHarness({ prompt: "生成PPT", lastOutput: "" }) as Any;
+    executor.daemon.getTaskEvents.mockReturnValue([
+      { type: "user_message", payload: { message: "生成PPT" } },
+      { type: "user_message", payload: { message: "查询天气\n\nAttached files (relative to workspace):\n- notes.txt\n继续生成PPT" } },
+    ]);
+    expect(executor.buildFollowUpCompletionContract("继续").requiredArtifactExtensions).toEqual([]);
+    expect(executor.buildFollowUpCompletionContract("查询天气\n\nAttached files (relative to workspace):\n- notes.txt\n继续生成PPT").requiredArtifactExtensions).toEqual([]);
+  });
+
+  it.each([["Word", ".docx"], ["Excel", ".xlsx"], ["PDF", ".pdf"], ["HTML", ".html"]])(
+    "restores %s across several template revisions without accepting old output as new evidence", (format, extension) => {
+      const executor = createExecuteHarness({ prompt: "生成PPT", lastOutput: "" }) as Any;
+      executor.daemon.getTaskEvents.mockReturnValue([
+        { type: "user_message", payload: { message: `生成${format}报告` } },
+        { type: "user_message", payload: { message: "重新生成完整报告" } },
+        { type: "user_message", payload: { message: "用这个模板" } },
+      ]);
+      const contract = executor.buildFollowUpCompletionContract("增加图片");
+      expect(contract.requiredArtifactExtensions).toEqual([extension]);
+      expect(contract.allowExistingArtifactEvidence).toBe(false);
+    },
+  );
 
   it("does not inherit a failed PDF contract into an unrelated follow-up", () => {
     const executor = createExecuteHarness({

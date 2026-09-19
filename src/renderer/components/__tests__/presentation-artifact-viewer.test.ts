@@ -10,6 +10,17 @@ function render(element: React.ReactElement): string {
 }
 
 describe("PresentationArtifactViewer", () => {
+  it("shows a text warning without discarding rendered slide images", () => {
+    const markup = render(React.createElement(PresentationViewer, {
+      fileName: "sample.pptx",
+      preview: { slideCount: 1, renderStatus: "rendered", renderMessage: "Text encoding warning on slide(s): 1.", textWarningPages: [1],
+        slides: [{ index: 1, text: "Text", imageUrl: "media://local/slide-token" }] },
+      onOpenExternal: () => {}, onShowInFinder: () => {},
+    }));
+    expect(markup).toContain("media://local/slide-token");
+    expect(markup).toMatch(/Possible text encoding issues on slide\(s\) 1|第 1 页文字可能存在编码异常/);
+    expect(markup).not.toMatch(/Original layout preview is unavailable|暂时无法预览原版式/);
+  });
   it("shows the presentation filename only in the header", () => {
     const markup = render(
       React.createElement(PresentationArtifactViewer, {

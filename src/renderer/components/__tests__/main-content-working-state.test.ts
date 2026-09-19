@@ -2321,7 +2321,7 @@ describe("isTaskActivelyWorking", () => {
     ).toBe(true);
   });
 
-  it("defaults transcript mode to live only while a non-chat task is actively working", () => {
+  it("uses the execution record switch consistently for active and completed tasks", () => {
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: true,
@@ -2329,20 +2329,12 @@ describe("isTaskActivelyWorking", () => {
         verboseSteps: false,
         isChatTask: false,
       }),
-    ).toBe("live");
+    ).toBe("delivery");
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: true,
         isReplayMode: false,
         verboseSteps: true,
-        isChatTask: false,
-      }),
-    ).toBe("live");
-    expect(
-      getDefaultTranscriptMode({
-        isTaskWorking: false,
-        isReplayMode: false,
-        verboseSteps: false,
         isChatTask: false,
       }),
     ).toBe("inspect");
@@ -2352,6 +2344,14 @@ describe("isTaskActivelyWorking", () => {
         isReplayMode: false,
         verboseSteps: false,
         isChatTask: false,
+      }),
+    ).toBe("delivery");
+    expect(
+      getDefaultTranscriptMode({
+        isTaskWorking: false,
+        isReplayMode: false,
+        verboseSteps: false,
+        isChatTask: false,
         taskStatus: "completed",
       }),
     ).toBe("delivery");
@@ -2363,7 +2363,7 @@ describe("isTaskActivelyWorking", () => {
         isChatTask: false,
         taskStatus: "completed",
       }),
-    ).toBe("delivery");
+    ).toBe("inspect");
     expect(
       getDefaultTranscriptMode({
         isTaskWorking: false,
@@ -2381,24 +2381,24 @@ describe("isTaskActivelyWorking", () => {
         isChatTask: true,
         taskStatus: "completed",
       }),
-    ).toBe("inspect");
+    ).toBe("delivery");
   });
 
-  it("bypasses the filtered live projection only for explicit inspect mode", () => {
+  it("keeps all conversation turns available regardless of execution record visibility", () => {
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
         transcriptModeOverride: null,
         verboseSteps: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
         transcriptModeOverride: null,
         verboseSteps: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       shouldBypassLiveTaskEventProjection({
         projectionMode: "live",
@@ -2588,6 +2588,27 @@ describe("isTaskActivelyWorking", () => {
         "task-1",
       ),
     ).toBe("");
+  });
+
+  it("shows saved translation counts and reports silence without claiming a hang", () => {
+    const events = [makeEvent("saved", 1000, "progress_update", {
+      phase: "translation", completed: 160, total: 2661,
+    })];
+    expect(deriveProgressHeartbeat(events, "task-1", 2000)).toBe("翻译已保存：160/2661 个文本单元");
+    expect(deriveProgressHeartbeat(events, "task-1", 62000)).toBe("翻译已保存：160/2661 个文本单元 61 秒未收到新进展");
+    events.push(makeEvent("response", 62000, "progress_update", { phase: "model_response", heartbeat: true }));
+    expect(deriveProgressHeartbeat(events, "task-1", 63000)).toBe("模型正在响应...");
+  });
+
+  it("does not carry an earlier turn's activity or translation progress into a new request", () => {
+    const events = [
+      makeEvent("saved", 100, "progress_update", { phase: "translation", completed: 160, total: 2661 }),
+      makeEvent("user", 200, "user_message", { message: "write a report" }),
+      makeEvent("create", 300, "tool_call", { tool: "create_document" }),
+    ];
+    expect(deriveProgressHeartbeat(events.slice(0, 2), "task-1")).toBe("正在理解问题并制定方案...");
+    expect(deriveProgressHeartbeat(events, "task-1")).toBe("正在生成文档...");
+    expect(deriveProgressHeartbeat([...events, makeEvent("end", 400, "task_completed", {})], "task-1", 90000)).toBe("");
   });
 
   it("clears a retry heartbeat after an artifact follow-up fails", () => {
@@ -3311,6 +3332,30 @@ describe("isTaskActivelyWorking", () => {
       "needs-action",
       "error-1",
     ]);
+  });
+
+  it.each([false, true])("keeps requests and terminal warnings with execution records off (projected=%s)", (projected) => {
+    const events = [
+      makeEvent("input", 100, "input_request_created", { question: "Choose a file" }),
+      makeEvent("approval", 200, "approval_requested", { autoApproved: false }),
+      makeEvent("automatic", 300, "approval_requested", { autoApproved: true }),
+      makeEvent("paused", 400, "task_paused", {}),
+      makeEvent("cancelled", 500, "task_cancelled", {}),
+      makeEvent("failed", 600, "task_failed" as TaskEvent["type"], {}),
+    ];
+    const rows = events.map((event, index) => ({
+      kind: "timeline",
+      key: event.id,
+      estimatedHeight: 100,
+      timelineIndex: index,
+      visiblePerfEventId: event.id,
+      revision: event.id,
+      item: { kind: "event", event: projected
+        ? { ...event, type: "timeline_step_updated", payload: { ...event.payload, legacyType: event.type } }
+        : event },
+    })) as Any[];
+    expect(selectVisibleTaskFeedRows(rows, "delivery").visibleFeedRows.map((row) => row.key))
+      .toEqual(["input", "approval", "paused", "cancelled", "failed"]);
   });
 
   it("keeps collapsed action block estimates compact for virtualized history views", () => {

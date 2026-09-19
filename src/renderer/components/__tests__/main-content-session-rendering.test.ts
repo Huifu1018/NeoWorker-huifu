@@ -13,6 +13,22 @@ const globalStylesPath = fileURLToPath(
 );
 
 describe("session conversation rendering", () => {
+  it("has one execution-record switch instead of a second full-timeline override", () => {
+    const source = readFileSync(mainContentPath, "utf8");
+    expect(source).not.toContain("setTranscriptModeOverride");
+    expect(source).not.toContain("Show full timeline");
+    expect(source).not.toContain("Load earlier history");
+    expect(source).not.toContain('translate("task.history.loadEarlier", "Load earlier messages")');
+    expect(source).toContain("useHistoryPagination({");
+    expect(source).toContain("onClick={history.retry}");
+  });
+  it("does not animate internal session restoration or bottom-follow", () => {
+    const styles = readFileSync(mainContentStylesPath, "utf8");
+    const bodyRule = styles.match(/\.main-body\s*\{([^}]+)\}/)?.[1];
+    expect(bodyRule).toMatch(/scroll-behavior:\s*auto;/);
+    const source = readFileSync(mainContentPath, "utf8");
+    expect(source).toMatch(/useLayoutEffect\(\(\) => \{\s*if \(!autoScroll \|\| restoringComposerScrollRef\.current/);
+  });
   it("keeps welcome and session composers free of animated border beams", () => {
     const source = readFileSync(mainContentPath, "utf8");
 

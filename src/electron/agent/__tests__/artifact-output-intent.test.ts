@@ -8,6 +8,19 @@ import {
 } from "../executor-completion-utils";
 
 export const conversionCases: Array<[string, string[]]> = [
+  ["帮我基于PDF内容，写一个PPT，参考第二个PPT模版，要中文的PPT，要有文字、有图片等等，内容要详尽", [".pptx"]],
+  ["帮我做一份中文PPT，参考这个PDF", [".pptx"]],
+  ["给我一个中文的PPT，要有图片", [".pptx"]],
+  ["我要一份Word分析报告，基于这个PPT", [".docx"]],
+  ["帮我写一个PDF报告", [".pdf"]],
+  ["做个Excel表格", [".xlsx"]],
+  ["写一份Word并导出PDF", [".docx", ".pdf"]],
+  ["不要写PPT，只做Word报告", [".docx"]],
+  ["别做PPT，写一个Word报告", [".docx"]],
+  ["帮我写一段关于PPT的说明", []],
+  ["帮我写一段关于PDF的说明", []],
+  ["请基于这个PPT模版去写", []],
+  ["分析这个PPT模板，不要生成文件", []],
   ["基于PPT内容，转型word，进行详细分析", [".docx"]],
   ["基于PPT内容，转成word，进行详细分析", [".docx"]],
   ["基于PPT内容，转为Word，进行详细分析", [".docx"]],
@@ -70,7 +83,7 @@ describe("output intent is independent of source formats", () => {
   });
 
   it("exposes Word generation tools, not presentation tools, for the reported query", () => {
-    expect(getExplicitArtifactToolNames("", conversionCases[0][0])).toEqual([
+    expect(getExplicitArtifactToolNames("", "基于PPT内容，转型word，进行详细分析")).toEqual([
       "create_document", "generate_document",
     ]);
   });

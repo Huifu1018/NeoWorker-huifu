@@ -3,6 +3,12 @@ import { getLocalizedSkillNameFromIdentifier } from "./localized-skills";
 import { normalizeInternalToolNamesForDisplay } from "./internal-tool-display";
 
 const ZH_EXACT_PROGRESS_TEXT: Record<string, string> = {
+  "the model is responding...": "模型正在响应...",
+  "processing the translation checkpoint...": "正在处理翻译进度...",
+  "writing files...": "正在写入文件...",
+  "generating the document...": "正在生成文档...",
+  "generating the presentation...": "正在生成演示文稿...",
+  "processing the spreadsheet...": "正在处理表格...",
   activity: "活动",
   "action required": "需要操作",
   "adjusting approach": "正在调整方法",
@@ -185,6 +191,10 @@ export function localizeProgressText(n: string): string {
   if (getCurrentLanguage() !== "zh-CN") return n;
   const s = n.trim();
   if (!s) return n;
+  const translation = s.match(/^Translation saved: (\d+)\/(\d+) text units$/);
+  if (translation) return `翻译已保存：${translation[1]}/${translation[2]} 个文本单元`;
+  const silent = s.match(/^No new progress for (\d+)s$/);
+  if (silent) return `${silent[1]} 秒未收到新进展`;
   const i = localizeCountLabel(s);
   if (i) return i;
   const r = localizeActionSummary(s);

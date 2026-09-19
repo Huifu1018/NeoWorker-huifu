@@ -2324,7 +2324,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px 32px;
-  scroll-behavior: smooth;
+  /* Session restoration and live-follow are positioning, not scroll animations. */
+  scroll-behavior: auto;
   position: relative;
   z-index: 1;
 }
@@ -5548,13 +5549,31 @@
 }
 
 .timeline-history-control {
+  position: relative;
+  height: 0;
+  overflow-anchor: none;
+}
+
+.timeline-history-control.is-loading > span {
+  position: absolute;
+  top: -18px;
+  width: 100%;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.timeline-history-control.is-active {
+  height: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 40px;
+  min-height: 32px;
   margin-bottom: 6px;
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
 .timeline-history-error {

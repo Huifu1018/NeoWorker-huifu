@@ -266,7 +266,10 @@ function hasTechnicalHermesContext(text: string): boolean {
  * Ordinary prose containing only the product name is left unchanged.
  */
 export function sanitizeHermesText(value: unknown): string {
-  const text = typeof value === "string" ? value : String(value ?? "");
+  // Older translation guards exposed the runtime-specific tool alias in Chinese.
+  // Remove only that exact implementation note, preserving ordinary Hermes prose.
+  const text = (typeof value === "string" ? value : String(value ?? ""))
+    .replace(/[（(]Hermes\s*中为\s*mcp_neoworker_[a-z_]+[）)]/gi, "");
   if (!text) return "";
   const fallback = knownHermesFallback(text);
   if (fallback !== text) return fallback;

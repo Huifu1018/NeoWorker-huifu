@@ -5,8 +5,8 @@
   "platform": "darwin",
   "arch": "arm64",
   "executable": "hermes-acp-neoworker-host",
-  "sha256": "551c76b1cad2729e2c963d0a0edb1f445dcee302b4a29d36c6539e6c07996972",
+  "sha256": "49d0601d443c39276c09d58d239afac2f37718531d9b3f737ff207d33e82277e",
   "license": "MIT",
   "source": "https://github.com/NousResearch/hermes-agent",
-  "builtAt": "2026-09-15T23:09:21.548Z"
+  "builtAt": "2026-09-19T14:48:58.324Z"
 }

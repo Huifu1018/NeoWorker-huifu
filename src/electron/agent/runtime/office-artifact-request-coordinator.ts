@@ -75,7 +75,10 @@ function buildPresentationVariantIdentity(
     .filter(Boolean)
     .join("|");
 
-  return variant ? `:variant:${variant}` : "";
+  // Source identity is case-sensitive on some supported filesystems.
+  const source = String(input?.sourcePath || "").trim().normalize("NFC").replace(/\\/g, "/");
+  const template = source ? `:template:${JSON.stringify([source, input?.sourceTemplateHash || ""])}` : "";
+  return `${variant ? `:variant:${variant}` : ""}${template}`;
 }
 
 /**
@@ -183,17 +186,20 @@ export class OfficeArtifactRequestCoordinator {
     }
 
     const promise = operation();
-    this.jobs.set(jobKey, { promise });
+    const job = { promise };
+    this.jobs.set(jobKey, job);
     try {
       const result = await promise;
-      if (result?.success === false) {
+      if (result?.success === false && this.jobs.get(jobKey) === job) {
         this.jobs.delete(jobKey);
         if (this.jobs.size === 0) this.resetContentBinding();
       }
       return result;
     } catch (error) {
-      this.jobs.delete(jobKey);
-      if (this.jobs.size === 0) this.resetContentBinding();
+      if (this.jobs.get(jobKey) === job) {
+        this.jobs.delete(jobKey);
+        if (this.jobs.size === 0) this.resetContentBinding();
+      }
       throw error;
     }
   }

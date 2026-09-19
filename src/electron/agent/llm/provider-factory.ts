@@ -47,9 +47,8 @@ import { GitHubCopilotProvider } from "./github-copilot-provider";
 import { isOpenCodeGoBaseUrl } from "./opencode-go-routing";
 import { SecureSettingsRepository } from "../../database/SecureSettingsRepository";
 import {
-  CUSTOM_PROVIDER_CATALOG,
-  CUSTOM_PROVIDER_MAP,
-  CUSTOM_PROVIDER_IDS,
+  getCustomProviderCatalog,
+  getCustomProviderDefinition,
   type ProviderCatalogEntry,
 } from "../../../shared/llm-provider-catalog";
 import { withLlmModelSelectionMetadata } from "../../../shared/llm-model-selection";
@@ -420,7 +419,7 @@ function resolveCustomProviderId(
 function getCustomProviderEntry(
   providerType: LLMProviderType,
 ): ProviderCatalogEntry | undefined {
-  return CUSTOM_PROVIDER_MAP.get(resolveCustomProviderId(providerType));
+  return getCustomProviderDefinition(resolveCustomProviderId(providerType));
 }
 
 function getKnownCustomProviderModels(
@@ -1751,7 +1750,7 @@ export class LLMProviderFactory {
     createIfMissing = false,
   ): ProviderRoutingSettings | undefined {
     const resolvedProviderType = resolveCustomProviderId(providerType);
-    if (CUSTOM_PROVIDER_IDS.has(resolvedProviderType as Any)) {
+    if (getCustomProviderDefinition(resolvedProviderType as Any)) {
       if (!settings.customProviders) {
         if (!createIfMissing) return undefined;
         settings.customProviders = {};
@@ -2545,7 +2544,7 @@ export class LLMProviderFactory {
     }
 
     if (settings.customProviders) {
-      for (const entry of CUSTOM_PROVIDER_CATALOG) {
+      for (const entry of getCustomProviderCatalog(settings.customProviders)) {
         const config = getCustomProviderConfig(
           settings.customProviders,
           entry.id,
@@ -3175,7 +3174,7 @@ export class LLMProviderFactory {
       },
     ];
 
-    const customProviders = CUSTOM_PROVIDER_CATALOG.map(
+    const customProviders = getCustomProviderCatalog(settings.customProviders).map(
       (entry: ProviderCatalogEntry) => {
         const config = getCustomProviderConfig(
           settings.customProviders,
@@ -3321,7 +3320,7 @@ export class LLMProviderFactory {
     const resolvedProviderType = resolveCustomProviderId(settings.providerType);
     const attachMetadata = (models: CachedModelInfo[]) =>
       withLlmModelSelectionMetadata(settings.providerType, models);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedProviderType as Any);
+    const customEntry = getCustomProviderDefinition(resolvedProviderType as Any);
     const ensureCurrentModel = (
       modelList: CachedModelInfo[],
       modelKey: string,
@@ -3823,7 +3822,7 @@ export class LLMProviderFactory {
     const updated: LLMSettings = { ...settings, providerType };
     const resolvedProviderType = resolveCustomProviderId(providerType);
 
-    if (CUSTOM_PROVIDER_IDS.has(resolvedProviderType as Any)) {
+    if (getCustomProviderDefinition(resolvedProviderType as Any)) {
       const existing = settings.customProviders?.[resolvedProviderType] || {};
       updated.customProviders = {
         ...settings.customProviders,
@@ -3960,7 +3959,7 @@ export class LLMProviderFactory {
     }
 
     const resolvedProviderType = resolveCustomProviderId(providerType);
-    if (CUSTOM_PROVIDER_IDS.has(resolvedProviderType as Any)) {
+    if (getCustomProviderDefinition(resolvedProviderType as Any)) {
       const existing = settings.customProviders?.[resolvedProviderType] || {};
       return {
         ...settings,

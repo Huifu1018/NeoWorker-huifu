@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 export async function runTimerChecks(page, output) {
-  const start = Date.now();
-  await page.clock.install({ time: new Date(start) });
+  const start = Date.now() + 1000;
+  // Leave room for the install round trip before freezing the clock.
+  await page.clock.install({ time: new Date(start - 1000) });
   await page.clock.pauseAt(new Date(start));
   const event = (type, timestamp, payload = {}) => ({
     id: `${type}:${timestamp}`,
@@ -26,8 +27,9 @@ export async function runTimerChecks(page, output) {
     updatedAt: start,
   };
   const label = page.locator(".timeline-controls-label.with-duration");
+  let optimisticFollowUpStartedAt = null;
   const mount = async () => {
-    await page.evaluate((data) => window.renderData(data), { task, events });
+    await page.evaluate((data) => window.renderData(data), { task, events, optimisticFollowUpStartedAt });
     await page.clock.runFor(100);
   };
   const seconds = async () => {
@@ -42,6 +44,16 @@ export async function runTimerChecks(page, output) {
   for (let turn = 1; turn <= 5; turn++) {
     if (turn === 3) await page.setViewportSize({ width: 760, height: 1000 });
     const now = await page.evaluate(() => Date.now());
+    if (turn > 1) {
+      // The renderer accepts the send before any backend event arrives.
+      optimisticFollowUpStartedAt = now;
+      task = { ...task, updatedAt: now };
+      await mount();
+      assert.ok((await seconds()) <= 1, "Follow-up did not start immediately");
+      await page.clock.runFor(2000);
+      assert.ok((await seconds()) >= 2, "Waiting for backend acknowledgement froze the timer");
+      checks++;
+    }
     events = [
       ...events,
       event("user_message", now, {
@@ -50,9 +62,29 @@ export async function runTimerChecks(page, output) {
     ];
     // Keep the previous completedAt on later executing task rows, as happens in IPC updates.
     task = { ...task, status: "executing", updatedAt: now };
+    if (turn > 1) {
+      // Reproduce the screenshot's resume -> automatic approval -> slow runtime
+      // initialization, including a reload with no optimistic send marker.
+      const approvalAt = await page.evaluate(() => Date.now());
+      task = { ...task, completedAt: undefined, updatedAt: approvalAt + 1 };
+      events.push(
+        event("approval_requested", approvalAt, { autoApproved: true }),
+        event("approval_granted", approvalAt + 1, { autoApproved: true }),
+        event("hermes_runtime_transport", approvalAt + 2, { phase: "request_started" }),
+      );
+      optimisticFollowUpStartedAt = null;
+    }
     await mount();
     const before = await seconds();
-    assert.ok(before <= 1, `Turn ${turn} did not reset: ${before}s`);
+    assert.ok(before <= 3, `Turn ${turn} did not reset: ${before}s`);
+    if (turn > 1) {
+      for (let second = 1; second <= 40; second++) {
+        await page.clock.runFor(1000);
+        assert.ok((await seconds()) >= before + second - 1, `Turn ${turn} froze during initialization at ${second}s`);
+        assert.equal(await page.locator(".timeline-controls-label.is-working").count(), 1);
+      }
+      checks++;
+    }
     await page.clock.runFor(5000);
     const after = await seconds();
     await page.screenshot({

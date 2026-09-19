@@ -165,6 +165,13 @@ describe("tool failure normalization", () => {
     ).toBe("HTTP 404 Not Found");
   });
 
+  it("reports an actionable structured failure message instead of the generic fallback", () => {
+    expect(getToolFailureReason({ success: false, message: "请修复返回的 nextUnits", retryable: true },
+      "Tool execution failed")).toBe("请修复返回的 nextUnits");
+    expect(getToolFailureReason({ success: false, error: "Explicit error", message: "Additional detail" },
+      "Tool execution failed")).toBe("Explicit error");
+  });
+
   it("uses non-generic status text for status-zero request failures", () => {
     expect(
       getToolFailureReason(

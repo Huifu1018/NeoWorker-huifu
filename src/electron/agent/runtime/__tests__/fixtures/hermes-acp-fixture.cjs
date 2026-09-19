@@ -27,6 +27,11 @@ readline.createInterface({input:process.stdin}).on('line', line => {
    result(id, {}); break;
  case 'session/prompt':
    promptId=id;
+   if (params.prompt[0].text === 'progress-until-done' || params.prompt[0].text === 'progress-never-done') {
+     const interval = setInterval(() => send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'.'}}}}), 30);
+     if (params.prompt[0].text === 'progress-until-done') setTimeout(() => { clearInterval(interval); result(id,{stopReason:'end_turn'}); }, 300);
+     break;
+   }
    if (params.prompt[0].text === 'provider-error') {
      send({method:'session/update',params:{sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'HTTP 402: Insufficient Balance'}}}});
      result(id,{stopReason:'end_turn',_meta:{neoworker:{runtimeError:{code:'HERMES_RUNTIME_ERROR',message:'HTTP 402: Insufficient Balance',retryable:false}}}});

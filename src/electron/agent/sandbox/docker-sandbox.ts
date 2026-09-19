@@ -373,6 +373,8 @@ export class DockerSandbox implements ISandbox {
 
     // Add tmpfs for /tmp
     args.push("--tmpfs", "/tmp:rw,noexec,nosuid,size=100m");
+    // Package managers must not try writing caches into the read-only /root.
+    args.push("-e", "HOME=/tmp", "-e", "NPM_CONFIG_CACHE=/tmp/.npm", "-e", "PIP_CACHE_DIR=/tmp/.pip");
 
     // Network isolation
     const networkMode = options.allowNetwork ? "bridge" : "none";

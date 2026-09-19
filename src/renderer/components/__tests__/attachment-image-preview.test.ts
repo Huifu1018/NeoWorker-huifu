@@ -19,6 +19,13 @@ const unifiedComposerSource = readFileSync(
 );
 
 describe("AttachmentImagePreview", () => {
+  it("gives transparent thumbnails and enlarged images an opaque light backing", () => {
+    const css = readFileSync(new URL("../attachment-image-preview.css", import.meta.url), "utf8");
+    for (const selector of [".attachment-image-preview-media img", ".attachment-image-lightbox-stage img"]) {
+      const declarations = css.slice(css.indexOf(`${selector} {`)).split("}")[0];
+      expect(declarations).toContain("background: #fff;");
+    }
+  });
   it("recognizes image attachments from MIME type or file extension", () => {
     expect(isPreviewableImageAttachment("screen.PNG")).toBe(true);
     expect(isPreviewableImageAttachment("capture", "image/webp")).toBe(true);

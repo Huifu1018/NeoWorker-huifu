@@ -1049,6 +1049,10 @@ export function normalizeToolFailureReason(result: Any, fallback: string): Norma
     return { message: result.reason.trim() };
   }
 
+  if (typeof result?.message === "string" && result.message.trim()) {
+    return { message: result.message.trim() };
+  }
+
   if (typeof result?.terminationReason === "string" && result.terminationReason.trim()) {
     const terminationReason = result.terminationReason.trim();
     if (terminationReason === "normal" && typeof result?.exitCode === "number" && result.exitCode !== 0) {

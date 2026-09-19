@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import JSZip from "jszip";
 import { PptxPreviewService } from "../PptxPreviewService";
 
 const PNG_BYTES = Buffer.from("presentation-preview");
@@ -51,9 +52,35 @@ async function createDeck(filePath: string): Promise<void> {
 }
 
 describe("PptxPreviewService", () => {
+  it("preserves local text warnings with rendered images and across cache reloads", async () => {
+    const deckPath = path.join(tempRoot, "warning.pptx");
+    await createDeck(deckPath);
+    const options = {
+      cacheRoot: path.join(tempRoot, "cache"),
+      commandRunner: async () => { throw new Error("No external renderer"); },
+      artifactToolRunner: null,
+      officeCliRunner: async ({ outputDir }: { outputDir: string }) => {
+        await fs.writeFile(path.join(outputDir, "slide-1.png"), PNG_BYTES);
+        await fs.writeFile(path.join(outputDir, "slide-2.png"), PNG_BYTES);
+        return { message: "Text encoding warning on slide(s): 2.", textWarningPages: [2] };
+      },
+    };
+    const preview = await new PptxPreviewService(options).buildPreview({ filePath: deckPath, renderMode: "full" });
+    expect(preview.renderStatus).toBe("rendered");
+    expect(preview.renderMessage).toContain("2");
+    expect(preview.slides.every((slide) => slide.imageDataUrl)).toBe(true);
+    const cached = await new PptxPreviewService(options).buildPreview({ filePath: deckPath, renderMode: "fast" });
+    expect(cached.renderMessage).toBe(preview.renderMessage);
+    expect(cached.textWarningPages).toEqual([2]);
+    expect(cached.renderStatus).toBe("cached");
+  });
   it("uses the bundled renderer without external dependencies, deduplicates requests and caches every slide", async () => {
     const deckPath = path.join(tempRoot, "deck.pptx");
     await createDeck(deckPath);
+    const zip = await JSZip.loadAsync(await fs.readFile(deckPath));
+    const xml = await zip.file("ppt/presentation.xml")!.async("string");
+    zip.file("ppt/presentation.xml", xml.replace("</p:presentation>", '<p:extLst><p:ext uri="sections"><p14:sectionLst xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main"><p14:section name="Intro" id="section-1"><p14:sldIdLst><p14:sldId id="256"/><p14:sldId id="257"/></p14:sldIdLst></p14:section></p14:sectionLst></p:ext></p:extLst></p:presentation>'));
+    await fs.writeFile(deckPath, await zip.generateAsync({ type: "nodebuffer" }));
     const source = await fs.readFile(deckPath);
     let calls = 0;
     const service = new PptxPreviewService({
@@ -73,12 +100,17 @@ describe("PptxPreviewService", () => {
     expect(calls).toBe(1);
     expect(preview.renderStatus).toBe("rendered");
     expect(preview.renderer).toBe("officecli");
+    expect(preview.slideCount).toBe(2);
+    expect(preview.slides[0].text).toContain("Intro");
+    expect(preview.slides[1].text).toContain("Findings");
     expect(concurrent.slides).toEqual(preview.slides);
     expect(preview.slides.every((slide) => slide.imageDataUrl)).toBe(true);
     expect(preview.slides[0].imageDataUrl).not.toBe(preview.slides[1].imageDataUrl);
     const cached = await service.buildPreview({ filePath: deckPath, renderMode: "fast" });
     expect(cached.renderStatus).toBe("cached");
     expect(cached.renderer).toBe("officecli");
+    expect(cached.slideCount).toBe(2);
+    expect(cached.slides).toEqual(preview.slides);
     expect(calls).toBe(1);
     expect(await fs.readFile(deckPath)).toEqual(source);
     expect((await fs.readdir(path.join(tempRoot, "cache"))).some((name) => name.startsWith("officecli-"))).toBe(false);
@@ -149,6 +181,12 @@ describe("PptxPreviewService", () => {
     expect(preview.renderStatus).toBe("rendered");
     expect(preview.slides[0].imageDataUrl).toContain("data:image/png;base64,");
     expect(preview.slides[1].imageDataUrl).toContain("data:image/png;base64,");
+    for (const renderMode of ["fast", "full"] as const) {
+      const cached = await service.buildPreview({ filePath: deckPath, workspaceRoot: workspace, renderMode });
+      expect(cached.slideCount).toBe(2);
+      expect(cached.slides).toHaveLength(2);
+      expect(cached.slides.every((slide) => slide.imageDataUrl)).toBe(true);
+    }
   });
 
   it("returns fast text preview without rendering slide images", async () => {

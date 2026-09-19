@@ -18,7 +18,7 @@ import {
 const execFileAsync = promisify(execFile);
 const DEFAULT_RENDER_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_RENDERED_SLIDES = 80;
-const PPTX_PREVIEW_CACHE_VERSION = "5-bundled-officecli";
+const PPTX_PREVIEW_CACHE_VERSION = "7-text-warning-preview";
 const PPTX_FONTCONFIG_VERSION = "2-cjk-font-aliases";
 
 export type PptxPreviewRenderMode = "fast" | "full";
@@ -40,6 +40,7 @@ export interface PptxPresentationPreview {
   slides: PptxPreviewSlide[];
   renderStatus: PptxPreviewRenderStatus;
   renderMessage?: string;
+  textWarningPages?: number[];
   renderer?: "officecli" | "libreoffice" | "artifact_tool";
 }
 
@@ -61,7 +62,7 @@ type ArtifactToolRunner = (
     maxSlides: number;
   },
   options: { timeout: number },
-) => Promise<void>;
+) => Promise<void | { message?: string; textWarningPages?: number[] }>;
 
 interface PptxPreviewServiceOptions {
   cacheRoot?: string;
@@ -74,6 +75,8 @@ interface PptxPreviewServiceOptions {
 }
 
 interface CachedRenderManifest {
+  message?: string;
+  textWarningPages?: number[];
   sourcePath: string;
   sourceSize: number;
   sourceMtimeMs: number;
@@ -172,7 +175,7 @@ export class PptxPreviewService {
     const stats = await fs.stat(resolvedPath);
     const cacheDir = this.getCacheDir(resolvedPath, stats);
     const cacheKey = cacheDir;
-    const cachedImagesPromise = this.readCachedImages(
+    const cachedImages = await this.readCachedImages(
       cacheDir,
       resolvedPath,
       stats,
@@ -180,9 +183,8 @@ export class PptxPreviewService {
     const structuredPromise = this.getStructuredContent(
       cacheKey,
       resolvedPath,
-      0,
+      cachedImages.size,
     );
-    const cachedImages = await cachedImagesPromise;
     if (cachedImages.size > 0) {
       const structured = await structuredPromise;
       return {
@@ -190,8 +192,10 @@ export class PptxPreviewService {
           structured,
           cachedImages,
           input.renderMode === "fast" ? "cached" : "rendered",
+          await this.readRenderMessage(cacheDir),
         ),
         renderer: await this.readRenderer(cacheDir),
+        textWarningPages: await this.readTextWarningPages(cacheDir),
       };
     }
 
@@ -226,6 +230,7 @@ export class PptxPreviewService {
         renderResult.message,
       ),
       renderer: renderResult.images.size > 0 ? await this.readRenderer(cacheDir) : undefined,
+      textWarningPages: renderResult.images.size > 0 ? await this.readTextWarningPages(cacheDir) : undefined,
     };
   }
 
@@ -236,6 +241,20 @@ export class PptxPreviewService {
     } catch {
       return undefined;
     }
+  }
+
+  private async readRenderMessage(cacheDir: string): Promise<string | undefined> {
+    try {
+      const manifest: CachedRenderManifest = JSON.parse(await fs.readFile(path.join(cacheDir, "manifest.json"), "utf8"));
+      return manifest.message;
+    } catch { return undefined; }
+  }
+
+  private async readTextWarningPages(cacheDir: string): Promise<number[] | undefined> {
+    try {
+      const manifest: CachedRenderManifest = JSON.parse(await fs.readFile(path.join(cacheDir, "manifest.json"), "utf8"));
+      return manifest.textWarningPages?.filter((page) => Number.isInteger(page) && page > 0);
+    } catch { return undefined; }
   }
 
   private getStructuredContent(
@@ -427,7 +446,7 @@ export class PptxPreviewService {
     try {
       await fs.mkdir(this.cacheRoot, { recursive: true });
       staging = await fs.mkdtemp(path.join(this.cacheRoot, "officecli-"));
-      await this.officeCliRunner(
+      const result = await this.officeCliRunner(
         { sourcePath: resolvedPath, outputDir: staging, maxSlides: this.maxRenderedSlides },
         { timeout: this.renderTimeoutMs },
       );
@@ -443,8 +462,9 @@ export class PptxPreviewService {
         await fs.copyFile(file.path, path.join(cacheDir, path.basename(file.path)));
       }
       const imageFiles = await listRenderedSlideFiles(cacheDir, this.maxRenderedSlides);
-      await this.writeRenderManifest(cacheDir, resolvedPath, stats, imageFiles, "officecli");
-      return { images: await this.readRenderedImages(imageFiles) };
+      const message = result ? result.message : undefined;
+      await this.writeRenderManifest(cacheDir, resolvedPath, stats, imageFiles, "officecli", message, result ? result.textWarningPages : undefined);
+      return { images: await this.readRenderedImages(imageFiles), message };
     } catch (error) {
       return { images: new Map(), message: `Bundled presentation renderer failed: ${error instanceof Error ? error.message : String(error)}` };
     } finally {
@@ -601,12 +621,16 @@ export class PptxPreviewService {
     stats: { size: number; mtimeMs: number },
     imageFiles: Array<{ index: number; path: string }>,
     renderer: CachedRenderManifest["renderer"],
+    message?: string,
+    textWarningPages?: number[],
   ): Promise<void> {
     const manifest: CachedRenderManifest = {
       sourcePath: resolvedPath,
       sourceSize: stats.size,
       sourceMtimeMs: stats.mtimeMs,
       renderer,
+      message,
+      textWarningPages,
       imageFiles: imageFiles.map((image) => ({
         index: image.index,
         fileName: path.basename(image.path),
@@ -651,7 +675,7 @@ async function runBundledOfficeCliRenderer(
   commandRunner: CommandRunner,
   input: { sourcePath: string; outputDir: string; maxSlides: number },
   options: { timeout: number },
-): Promise<void> {
+): Promise<{ message?: string; textWarningPages?: number[] }> {
   const executable = resolveBundledOfficeCliExecutable();
   if (!executable) throw new Error("Bundled OfficeCLI is not available.");
   const startedAt = Date.now();
@@ -666,10 +690,14 @@ async function runBundledOfficeCliRenderer(
     outputPath: path.join(input.outputDir, "preview.png"),
     maxPages: input.maxSlides,
     timeoutMs: Math.max(1, options.timeout - (Date.now() - startedAt)),
+    textValidation: "warn",
   });
   for (const [index, imagePath] of result.imagePaths.entries()) {
     await fs.copyFile(imagePath, path.join(input.outputDir, `slide-${index + 1}.png`));
   }
+  return { textWarningPages: result.textWarningPages, message: result.textWarningPages?.length
+    ? `Text encoding warning on slide(s): ${result.textWarningPages.join(", ")}. Original layout is shown; the file has not been modified.`
+    : undefined };
 }
 
 async function createPresentationFontconfigEnvironment(

@@ -46,6 +46,21 @@ import {
 } from "../skill-tools";
 
 describe("Office artifact retry policy", () => {
+  it("keeps content defects visible even after structural release gates pass", () => {
+    const reminder = buildPublishedOfficeArtifactReminder({
+      available: true, engine: "officecli", status: "passed",
+      warnings: [], durationMs: 1, summary: "Rendered", modelGuidance: "Review source evidence.",
+      contentReview: {
+        status: "issues", message: "Check source figures",
+        findings: [{ type: "repeated-figure-caption", severity: "warning", path: "word/document.xml", message: "Repeated captions" }],
+      },
+    }, { status: "published", quality: { score: { hardGatePassed: true } } });
+    expect(reminder).toContain("contentReview.findings");
+    expect(reminder).toContain("without regenerating unchanged content");
+    expect(reminder).toContain("do not claim a fully verified report");
+    expect(reminder).not.toContain("published successfully");
+  });
+
   it("never repeats integrity or quality failures without a source mutation", () => {
     expect(shouldRetryOfficeArtifactBuild("INTEGRITY_FAILED")).toBe(false);
     expect(shouldRetryOfficeArtifactBuild("QUALITY_FAILED")).toBe(false);
@@ -88,6 +103,35 @@ describe("SkillTools artifact registration", () => {
     vi.clearAllMocks();
     if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
     tempDir = "";
+  });
+
+  it("fills a source template without generationMode and isolates later outputs", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-template-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { read: true, write: true } } as Workspace, daemon as never, "task-template");
+    const fill = vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockImplementation(async (_source: string, root: string, _slides: unknown[], filename: string) => ({ outputPath: path.join(root, "output", filename), size: 200 }));
+    vi.spyOn(tools as Any, "inspectOfficeArtifact").mockResolvedValue({ status: "passed", validation: { passed: true } });
+    const builder = vi.spyOn(tools as Any, "createOfficeArtifactBuilder");
+    const input = { filename: "analysis.pptx", sourcePath: "template(2).pptx", slides: [{ title: "Title", content: ["Body"], imagePath: "figure.png" }] };
+    const first = await tools.createPresentation(input);
+    const second = await tools.createPresentation(input);
+    expect(fill).toHaveBeenCalledTimes(2);
+    expect(fill.mock.calls[0][2]).toEqual(expect.arrayContaining([expect.objectContaining({ imagePath: path.join(tempDir, "figure.png") })]));
+    expect(first.path).toMatch(/analysis\.pptx$/);
+    expect(second.path).not.toBe(first.path);
+    expect(builder).not.toHaveBeenCalled();
+    expect(daemon.registerArtifact).toHaveBeenCalledTimes(2);
+  });
+
+  it("never substitutes a built-in deck after native filling fails", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-template-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { write: true } } as Workspace, daemon as never, "task-template");
+    vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockRejectedValue(new Error("invalid template"));
+    const builder = vi.spyOn(tools as Any, "createOfficeArtifactBuilder");
+    await expect(tools.createPresentation({ filename: "analysis.pptx", sourcePath: "template.pptx", slides: [{ title: "Title" }] })).rejects.toThrow("invalid template");
+    expect(builder).not.toHaveBeenCalled();
+    expect(daemon.registerArtifact).not.toHaveBeenCalled();
   });
 
   it("preserves managed subdirectories and registers a generated presentation", async () => {

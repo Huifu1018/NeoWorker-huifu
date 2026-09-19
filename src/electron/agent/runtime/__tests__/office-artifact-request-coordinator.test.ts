@@ -40,6 +40,29 @@ function makeSnapshot(value = 100) {
 }
 
 describe("OfficeArtifactRequestCoordinator", () => {
+  it("includes the template path and bytes even with an explicit delivery key", () => {
+    const key = (sourcePath?: string, sourceTemplateHash?: string) => buildOfficeArtifactRequestIdentity("pptx", {
+      filename: "report.pptx", deliveryKey: "report", sourcePath, sourceTemplateHash,
+    });
+    expect(key("/a.pptx", "1")).not.toBe(key());
+    expect(key("/a.pptx", "1")).not.toBe(key("/b.pptx", "1"));
+    expect(key("/a.pptx", "1")).not.toBe(key("/a.pptx", "2"));
+    expect(key("/a.pptx", "1")).not.toBe(key("/A.pptx", "1"));
+  });
+
+  it("does not let an old failing writer delete the next turn's cached result", async () => {
+    const coordinator = new OfficeArtifactRequestCoordinator();
+    let reject!: (error: Error) => void;
+    const old = coordinator.run("pptx", () => new Promise((_, fail) => { reject = fail; }));
+    const rejected = expect(old).rejects.toThrow("old turn");
+    coordinator.clear();
+    await coordinator.run("pptx", async () => ({ success: true, path: "new.pptx" }));
+    reject(new Error("old turn"));
+    await rejected;
+    const writer = vi.fn();
+    expect(await coordinator.run("pptx", writer)).toMatchObject({ path: "new.pptx", reusedExistingArtifact: true });
+    expect(writer).not.toHaveBeenCalled();
+  });
   it("keeps standard and ppt-master variants as separate deliveries", () => {
     const standard = buildOfficeArtifactRequestIdentity("pptx", {
       filename: "广州-北京航班速览.pptx",

@@ -1,5 +1,5 @@
 import type { LLMProviderType } from "../../../shared/types";
-import { CUSTOM_PROVIDER_MAP } from "../../../shared/llm-provider-catalog";
+import { getCustomProviderDefinition } from "../../../shared/llm-provider-catalog";
 import type { LLMSettings } from "../llm/provider-factory";
 
 export type HermesAcpApiMode =
@@ -164,7 +164,7 @@ function buildCustomProviderBridge(
         "Select a concrete upstream provider first.",
     );
   }
-  const catalogEntry = CUSTOM_PROVIDER_MAP.get(normalizedProvider);
+  const catalogEntry = getCustomProviderDefinition(normalizedProvider);
   if (!catalogEntry) {
     throw new Error(
       `Hermes Harness does not have a provider bridge for "${providerType}".`,

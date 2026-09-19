@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { buildToolResultEnvelope } from "../tool-result-envelope";
 
 describe("buildToolResultEnvelope", () => {
+  it.each([true, false])("retains translation repair state with retryable=%s when the host adds an error", retryable => {
+    const result = { success: false, translationId: "checkpoint.json", batchId: "repair-batch",
+      remaining: 2, retryable, needsAttention: !retryable,
+      nextUnits: retryable ? [{ key: "u1", text: "原文", previousTranslation: "이전 번역" }] : [],
+      textFit: { status: "needs_repair", issues: [{ slide: 11, reason: "translation_too_long" }] } };
+    const envelope = buildToolResultEnvelope({ toolUseId: "repair", toolName: "office_translation",
+      status: "error", result, error: { message: "译文超出原文本框" } });
+    expect(JSON.parse(envelope.modelPayload)).toEqual({ ...result, error: "译文超出原文本框" });
+    expect(envelope.structuredData).toBe(result);
+  });
+
   it("derives file and policy evidence from structured results", () => {
     const envelope = buildToolResultEnvelope({
       toolUseId: "tool-1",

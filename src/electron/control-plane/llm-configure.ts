@@ -1,9 +1,8 @@
 import { LLMProviderFactory } from "../agent/llm";
 import { ErrorCodes, type ErrorCode } from "./protocol";
 import type { LLMProviderType } from "../../shared/types";
-import { LLM_PROVIDER_TYPES } from "../../shared/types";
+import { isLLMProviderType } from "../../shared/types";
 
-const VALID_LLM_PROVIDER_TYPES = new Set<string>(LLM_PROVIDER_TYPES as readonly string[]);
 const BASE_URL_PROVIDER_KEYS = new Set<string>([
   "openrouter",
   "deepseek",
@@ -48,7 +47,7 @@ function sanitizeLlmConfigureParams(params: unknown): SanitizedLlmConfigureParam
   if (!providerTypeRaw) {
     throw createInvalidParamsError("providerType is required");
   }
-  if (!VALID_LLM_PROVIDER_TYPES.has(providerTypeRaw)) {
+  if (!isLLMProviderType(providerTypeRaw)) {
     throw createInvalidParamsError(`Unsupported providerType: ${providerTypeRaw}`);
   }
 

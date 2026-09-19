@@ -7,6 +7,9 @@ import path from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 import { runTimerChecks } from "./task-timer-rendering.mjs";
+import { runSessionScrollChecks } from "./session-scroll-rendering.mjs";
+import { runExecutionRecordChecks } from "./execution-record-rendering.mjs";
+import { runHistoryPaginationChecks } from "./history-pagination.mjs";
 import { createRequire } from "node:module";
 const { recoverVerifiedDeliveryEvents } = createRequire(import.meta.url)("../../dist/electron/electron/agent/verified-delivery-artifacts.js");
 
@@ -28,9 +31,9 @@ window.electronAPI = new Proxy({}, {get: (_, key) => {
 const root = createRoot(document.getElementById('root'));
 const noop = () => {};
 document.body.classList.add('theme-light');
-window.renderData = ({task,events,optimisticFollowUpStartedAt}) => root.render(React.createElement(MainContent, {task,selectedTaskId:task.id,optimisticFollowUpStartedAt,
+window.renderData = ({task,events,optimisticFollowUpStartedAt,qaProps={}}) => root.render(React.createElement(MainContent, {task,selectedTaskId:task.id,optimisticFollowUpStartedAt,
   events:reconcileTaskDeliveryEvents(task,events),workspace:{id:'qa-workspace',name:'QA',path:'/tmp/artifact-qa',permissions:{read:true,write:true}},
-  onSendMessage:noop,onModelChange:noop,selectedModel:'qa',selectedProvider:'openai',availableModels:[]}));
+  onSendMessage:noop,onModelChange:noop,selectedModel:'qa',selectedProvider:'openai',availableModels:[],...qaProps}));
 window.renderCase = ({extension='pptx', stale=true, next=false, late=false, differing=false}) => {
   const output = (name) => ({created:[name], primaryOutputPath:name, outputCount:1, folders:['.']});
   const event = (id, seq, type, payload) => ({id,eventId:id,taskId:'qa',seq,timestamp:1789470000000+seq*1000,type,legacyType:type,payload});
@@ -107,10 +110,19 @@ try {
     timeout: 60000,
   });
   let checks = 0;
+  if (process.env.NEOWORKER_QA_HISTORY_ONLY) {
+    checks += await runHistoryPaginationChecks(page, output);
+  }
   if (process.env.NEOWORKER_QA_TIMING_ONLY) {
     checks += await runTimerChecks(page, output);
   }
-  for (const width of process.env.NEOWORKER_QA_TIMING_ONLY ? [] : [1365, 760]) {
+  if (process.env.NEOWORKER_QA_SCROLL_ONLY) {
+    checks += await runSessionScrollChecks(page, output);
+  }
+  if (process.env.NEOWORKER_QA_RECORD_ONLY) {
+    checks += await runExecutionRecordChecks(page, output);
+  }
+  for (const width of process.env.NEOWORKER_QA_HISTORY_ONLY || process.env.NEOWORKER_QA_TIMING_ONLY || process.env.NEOWORKER_QA_SCROLL_ONLY || process.env.NEOWORKER_QA_RECORD_ONLY ? [] : [1365, 760]) {
     await page.setViewportSize({ width, height: 1000 });
     for (const extension of ["pptx", "pdf", "xlsx", "docx"]) {
       for (const variation of [

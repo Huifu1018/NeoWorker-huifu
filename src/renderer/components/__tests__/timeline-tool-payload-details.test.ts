@@ -9,6 +9,7 @@ import {
   renderEventTitle,
   renderEventDetails,
   shouldAutoExpandActiveTimelineEvent,
+  isFailureTimelineEvent,
 } from "../MainContent/timeline-event-rendering";
 
 function event(
@@ -261,7 +262,8 @@ describe("timeline tool payload details", () => {
       result: { success: false, error: "Write timed out" },
     });
 
-    expect(shouldAutoExpandActiveTimelineEvent(failure)).toBe(true);
+    expect(isFailureTimelineEvent(failure)).toBe(true);
+    expect(shouldAutoExpandActiveTimelineEvent(failure)).toBe(false);
     const markup = renderToStaticMarkup(
       React.createElement(
         React.Fragment,
@@ -272,6 +274,15 @@ describe("timeline tool payload details", () => {
     expect(markup).toContain("is-error");
     expect(markup).toContain("Write timed out");
     expect(markup).not.toContain("<details open");
+  });
+
+  it("keeps timeline errors collapsed while preserving the failure row", () => {
+    const failure = event("timeline_error", {
+      legacyType: "tool_error",
+      error: "Tool execution failed",
+    });
+    expect(isFailureTimelineEvent(failure)).toBe(true);
+    expect(shouldAutoExpandActiveTimelineEvent(failure)).toBe(false);
   });
 
   it("does not treat an automatic capability fallback as a fatal tool error", () => {

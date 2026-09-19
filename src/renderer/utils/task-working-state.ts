@@ -1,11 +1,14 @@
-import type { EventType, Task, TaskEvent } from "../../shared/types";
+import type { Task, TaskEvent } from "../../shared/types";
 import { deriveCanonicalTaskStatus } from "../../shared/task-status";
 import { getEffectiveTaskEventType } from "./task-event-compat";
 
 const ACTIVE_WORK_SIGNAL_WINDOW_MS = 30_000;
 
-const ACTIVE_WORK_EVENT_TYPES: EventType[] = [
+const ACTIVE_WORK_EVENT_TYPES: string[] = [
   "executing",
+  "task_resumed",
+  "follow_up_started",
+  "approval_granted",
   "step_started",
   "step_completed",
   "progress_update",
@@ -29,6 +32,11 @@ const TERMINAL_WORK_EVENT_TYPES = new Set<string>([
 export function isTerminalWorkEvent(event: TaskEvent): boolean {
   const type = getEffectiveTaskEventType(event);
   const payload = event.payload || {};
+  // Automatic approval never pauses execution. Treating its request as a
+  // terminal marker hides the timer throughout runtime initialization.
+  if (type === "approval_requested" && payload.autoApproved === true) {
+    return false;
+  }
   const legacyType = event.legacyType || payload.legacyType;
   // Error rows deliberately keep their presentation type. Recover only an
   // explicit terminal signal here; ordinary tool errors must not stop time.
@@ -155,7 +163,7 @@ function isActiveWorkSignal(event: TaskEvent, effectiveType: string): boolean {
     event.type === "timeline_step_updated";
   return (
     isTimelineActiveLifecycle ||
-    ACTIVE_WORK_EVENT_TYPES.includes(effectiveType as EventType) ||
+    ACTIVE_WORK_EVENT_TYPES.includes(effectiveType) ||
     isActiveProgressSignal
   );
 }

@@ -4258,6 +4258,16 @@
   min-height: 420px;
 }
 
+.model-add-custom-provider {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-shrink: 0;
+  width: 100%;
+  min-height: 34px;
+}
+
 .model-add-provider-rail {
   display: flex;
   flex-direction: column;
@@ -9325,6 +9335,62 @@
 .settings-page .model-add-provider-option:focus-visible {
   outline: none;
   box-shadow: inset 0 0 0 2px rgba(35, 131, 255, 0.28);
+}
+
+.settings-page .model-add-provider-row {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.settings-page .model-add-provider-row.has-delete .model-add-provider-option {
+  padding-right: 34px;
+}
+
+.settings-page .model-add-provider-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-muted, #858c97);
+  cursor: pointer;
+}
+
+.settings-page .model-add-provider-delete:hover:not(:disabled),
+.settings-page .model-add-provider-delete:focus-visible {
+  background: rgba(220, 38, 38, 0.1);
+  color: #dc2626;
+}
+
+.settings-page .model-add-provider-delete:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: -2px;
+}
+
+.settings-page .model-add-provider-delete:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.settings-page .model-add-provider-delete-confirm {
+  padding: 8px;
+  color: var(--color-text-secondary, #6b7280);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-page .model-add-provider-delete-confirm > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 /* Codex-aligned AI model settings.

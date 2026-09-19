@@ -25,6 +25,11 @@ function event(overrides: Partial<TaskEvent> = {}): TaskEvent {
 }
 
 describe("runtime privacy display boundary", () => {
+  it("removes the persisted Chinese translation runtime alias without hiding the error", () => {
+    expect(sanitizeHermesText('请调用 office_translation（Hermes 中为 mcp_neoworker_office_translation），先传 action="inspect"。'))
+      .toBe('请调用 office_translation，先传 action="inspect"。');
+    expect(sanitizeHermesText("介绍 Hermes 品牌")).toBe("介绍 Hermes 品牌");
+  });
   it("recognizes structured Hermes metadata without scanning user prose", () => {
     expect(
       isHermesRuntimePayload({

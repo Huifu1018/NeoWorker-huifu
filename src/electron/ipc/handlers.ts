@@ -1,3 +1,4 @@
+import { LLMProviderTypeSchema } from "../utils/validation";
 import { ipcMain, shell, BrowserWindow, dialog, app as _app } from "electron";
 import { normalizeTaskEvents } from "../agent/timeline/timeline-normalizer";
 import * as path from "path";
@@ -19,6 +20,7 @@ import { resolveImageOcrChars, runOcrFromImagePath, shouldRunImageOcr } from "./
 import { resolveRealPathWithinWorkspace } from "./viewer-path-security";
 import { recoverVerifiedDeliveryEvents } from "../agent/verified-delivery-artifacts";
 import { buildWebPagePreviewFromPath } from "../utils/web-preview";
+import { createExternalWebPreviewUrl } from "../web-preview/external-web-preview";
 import {
   PptxPreviewService,
   type PptxPresentationPreview,
@@ -145,7 +147,6 @@ import {
   isTempWorkspaceId,
   AgentConfig,
   LLMReasoningEffort,
-  LLM_PROVIDER_TYPES,
   PdfReviewSummary,
   TaskLearningProgress,
   UnifiedRecallQuery,
@@ -2124,7 +2125,12 @@ export async function setupIpcHandlers(
       return "File not found";
     }
 
-    return shell.openPath(realPath || resolvedPath);
+    const target = realPath || resolvedPath;
+    if (/\.html?$/i.test(target)) {
+      await shell.openExternal(await createExternalWebPreviewUrl(target));
+      return "";
+    }
+    return shell.openPath(target);
   });
 
   ipcMain.handle(
@@ -11388,7 +11394,7 @@ function setupCouncilHandlers(): void {
   const ListCouncilsSchema = z.object({ workspaceId: WorkspaceIdSchema }).strict();
   const CouncilParticipantSchema = z
     .object({
-      providerType: z.enum(LLM_PROVIDER_TYPES),
+      providerType: LLMProviderTypeSchema,
       modelKey: z.string().trim().min(1),
       seatLabel: z.string().trim().min(1),
       roleInstruction: z.string().optional(),
