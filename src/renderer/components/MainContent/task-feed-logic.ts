@@ -70,10 +70,8 @@ export function shouldBypassLiveTaskEventProjection(args: {
   transcriptModeOverride: TranscriptMode | null;
   verboseSteps: boolean;
 }): boolean {
-  return (
-    args.projectionMode === "live" &&
-    args.transcriptModeOverride === "inspect"
-  );
+  // Both views need the conversation history; only execution details differ.
+  return args.projectionMode === "live";
 }
 
 export function shouldShowChatTaskExecutionRows(args: {
@@ -149,6 +147,26 @@ const PROGRESS_HEARTBEAT_TEXT = {
 export function deriveProgressHeartbeat(
   events: TaskEvent[],
   taskId?: string | null,
+  now?: number,
+): string {
+  const scoped = taskId ? events.filter((event) => event.taskId === taskId) : events;
+  const boundary = scoped.map(getEffectiveTaskEventType).lastIndexOf("user_message");
+  const current = boundary >= 0 ? scoped.slice(boundary) : scoped;
+  const label = deriveCurrentProgressHeartbeat(current);
+  if (!label || now === undefined) return label;
+  const lastSignal = current.filter((event) => [
+    "user_message", "tool_call", "tool_result", "tool_error", "progress_update",
+    "llm_streaming", "step_started", "step_completed", "approval_requested",
+  ].includes(getEffectiveTaskEventType(event))).at(-1);
+  const silentMs = lastSignal ? now - lastSignal.timestamp : 0;
+  return silentMs >= 45_000
+    ? `${label} ${localizeProgressText(`No new progress for ${Math.floor(silentMs / 1000)}s`)}`
+    : label;
+}
+
+function deriveCurrentProgressHeartbeat(
+  events: TaskEvent[],
+  taskId?: string | null,
 ): string {
   const scopedEvents = taskId
     ? events.filter((event) => event.taskId === taskId)
@@ -195,6 +213,30 @@ export function deriveProgressHeartbeat(
       return latestUserMessageIndex > index
         ? localizeProgressText(PROGRESS_HEARTBEAT_TEXT.planning)
         : "";
+    }
+    if (effectiveType === "progress_update" && payload.phase === "model_response") {
+      return localizeProgressText("The model is responding...");
+    }
+    const result = payload.result && typeof payload.result === "object"
+      ? payload.result as Record<string, unknown> : {};
+    const progress = payload.phase === "translation" ? payload
+      : payload.tool === "office_translation" && effectiveType === "tool_result" ? result : null;
+    if (progress && Number.isSafeInteger(progress.completed) && Number.isSafeInteger(progress.total)
+      && Number(progress.total) > 0 && Number(progress.completed) >= 0
+      && Number(progress.completed) <= Number(progress.total)) {
+      return localizeProgressText(`Translation saved: ${progress.completed}/${progress.total} text units`);
+    }
+    if (effectiveType === "tool_call") {
+      const tool = String(payload.tool || "");
+      const labels: Record<string, string> = {
+        office_translation: "Processing the translation checkpoint...",
+        read_file: "Reading files...", parse_document: "Reading files...",
+        run_command: "Running commands...", write_file: "Writing files...", edit_file: "Editing files...",
+        create_document: "Generating the document...", generate_document: "Generating the document...",
+        create_presentation: "Generating the presentation...", generate_presentation: "Generating the presentation...",
+        create_spreadsheet: "Processing the spreadsheet...", generate_spreadsheet: "Processing the spreadsheet...",
+      };
+      if (labels[tool]) return localizeProgressText(labels[tool]);
     }
     const step =
       payload.step && typeof payload.step === "object" && !Array.isArray(payload.step)
@@ -263,19 +305,10 @@ export function getDefaultTranscriptMode(args: {
   isChatTask: boolean;
   taskStatus?: Task["status"] | null;
 }): TranscriptMode {
-  if (args.isReplayMode || args.isChatTask) {
+  if (args.isReplayMode || (args.verboseSteps && !args.isChatTask)) {
     return "inspect";
   }
-  if (args.isTaskWorking) {
-    return "live";
-  }
-  if (args.taskStatus === "completed") {
-    return "delivery";
-  }
-  if (args.verboseSteps) {
-    return "inspect";
-  }
-  return "inspect";
+  return "delivery";
 }
 
 export function selectVisibleCommandOutputSessions(args: {
@@ -574,6 +607,11 @@ export function isDeliveryCriticalEvent(event: TaskEvent): boolean {
     effectiveType === "step_failed" ||
     effectiveType === "verification_failed" ||
     effectiveType === "verification_pending_user_action" ||
+    effectiveType === "input_request_created" ||
+    (effectiveType === "approval_requested" && event.payload?.autoApproved !== true) ||
+    effectiveType === "task_paused" ||
+    effectiveType === "task_cancelled" ||
+    effectiveType === "task_failed" ||
     event.type === "timeline_error"
   );
 }
@@ -677,7 +715,7 @@ export function selectVisibleTaskFeedRows(
     };
 
     for (const [rowIndex, row] of feedRows.entries()) {
-      if (row.kind === "artifact-stack") {
+      if (row.kind === "artifact-stack" || row.kind === "history-control") {
         pushCandidate(rowIndex, row);
         continue;
       }
@@ -685,6 +723,10 @@ export function selectVisibleTaskFeedRows(
       for (const { event, eventIndex, eventOrder } of rowEvents) {
         const order = rowIndex + eventOrder / 1000;
         const effectiveType = getEffectiveTaskEventType(event);
+        if (effectiveType === "llm_streaming") {
+          pushCandidate(order, createDeliveryEventRow(row, event, eventIndex, eventOrder));
+          continue;
+        }
         // Delivery mode hides internal work, not the conversation itself. Keep
         // every follow-up question and one visible reply for each turn.
         if (effectiveType === "user_message") {

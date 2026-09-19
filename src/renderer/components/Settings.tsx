@@ -66,6 +66,7 @@ import {
   type LLMProviderType,
   type LLMRoutingRuntimeState,
   type CustomProviderConfig,
+  isUserDefinedProviderId,
   type AzureReasoningEffort,
   type OpenAIReasoningEffort,
   type LLMTextVerbosity,
@@ -75,7 +76,7 @@ import {
   type ChannelData,
   type ChannelType,
 } from "../../shared/types";
-import { CUSTOM_PROVIDER_MAP } from "../../shared/llm-provider-catalog";
+import { getCustomProviderDefinition } from "../../shared/llm-provider-catalog";
 import { getLlmModelReasoningEfforts } from "../../shared/llm-model-selection";
 import {
   normalizeKimiApiKey,
@@ -2161,6 +2162,7 @@ const getLLMProviderIcon = (
   providerType: string,
   customEntry?: { compatibility?: string },
 ) => {
+  if (isUserDefinedProviderId(providerType)) return LLM_PROVIDER_ICONS["openai-compatible"];
   if (LLM_PROVIDER_ICONS[providerType]) {
     return LLM_PROVIDER_ICONS[providerType];
   }
@@ -2374,6 +2376,8 @@ export function Settings({
     Record<string, boolean>
   >({});
   const [deleteProviderConfirm, setDeleteProviderConfirm] =
+    useState<LLMProviderType | null>(null);
+  const [deleteCustomProviderConfirm, setDeleteCustomProviderConfirm] =
     useState<LLMProviderType | null>(null);
   const [deleteModelConfirm, setDeleteModelConfirm] = useState<string | null>(
     null,
@@ -2960,6 +2964,7 @@ export function Settings({
   ) => {
     const sanitized: Record<string, CustomProviderConfig> = {};
     Object.entries(providers).forEach(([key, value]) => {
+      const displayName = value.displayName?.trim();
       const apiKey = value.apiKey?.trim();
       const model = value.model?.trim();
       const baseUrl = value.baseUrl?.trim();
@@ -3011,6 +3016,7 @@ export function Settings({
           ? value.preferStrongForVerification
           : undefined;
       if (
+        displayName ||
         apiKey ||
         model ||
         baseUrl ||
@@ -3025,6 +3031,7 @@ export function Settings({
         typeof preferStrongForVerification === "boolean"
       ) {
         sanitized[key] = {
+          ...(displayName ? { displayName } : {}),
           ...(apiKey ? { apiKey } : {}),
           ...(model ? { model } : {}),
           ...(baseUrl ? { baseUrl } : {}),
@@ -3100,7 +3107,7 @@ export function Settings({
     providerType: LLMProviderType,
   ): ProviderRoutingConfig => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       return customProviders[resolvedType] || {};
     }
@@ -3149,7 +3156,7 @@ export function Settings({
     "fallbackProviders" | "failoverPrimaryRetryCooldownSeconds"
   > => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       const config = customProviders[resolvedType] || {};
       return {
@@ -3232,7 +3239,7 @@ export function Settings({
     updates: Partial<ProviderRoutingConfig>,
   ) => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       setCustomProviders((prev) => ({
         ...prev,
@@ -3307,7 +3314,7 @@ export function Settings({
 
   const getProviderPrimaryModel = (providerType: LLMProviderType): string => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       return (
         customProviders[resolvedType]?.model || customEntry.defaultModel || ""
@@ -3386,7 +3393,7 @@ export function Settings({
 
   const getProviderApiAddress = (providerType: LLMProviderType): string => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       return (
         customProviders[resolvedType]?.baseUrl || customEntry.baseUrl || ""
@@ -3429,7 +3436,7 @@ export function Settings({
     value: string,
   ) => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       updateCustomProvider(providerType, { baseUrl: value });
       return;
@@ -3471,7 +3478,7 @@ export function Settings({
 
   const getProviderApiKey = (providerType: LLMProviderType): string => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       return customProviders[resolvedType]?.apiKey || "";
     }
@@ -3511,7 +3518,7 @@ export function Settings({
 
   const setProviderApiKey = (providerType: LLMProviderType, value: string) => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       updateCustomProvider(providerType, { apiKey: value });
       return;
@@ -3570,7 +3577,7 @@ export function Settings({
     value: string,
   ) => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       updateCustomProvider(providerType, { model: value });
       return;
@@ -3633,7 +3640,7 @@ export function Settings({
     modelName: string,
   ): LLMSettingsData => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     const nextSettings: LLMSettingsData = {
       ...sourceSettings,
       providerType: customEntry
@@ -3794,7 +3801,7 @@ export function Settings({
     sourceSettings: LLMSettingsData = settings,
   ): string => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (customEntry) {
       return sourceSettings.customProviders?.[resolvedType]?.model || "";
     }
@@ -3880,7 +3887,7 @@ export function Settings({
     sourceSettings: LLMSettingsData = settings,
   ): boolean => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     const hasText = (value?: string | null) => !!value?.trim();
     if (customEntry) {
       const config = sourceSettings.customProviders?.[resolvedType];
@@ -5180,7 +5187,7 @@ export function Settings({
 
   const loadCustomProviderModels = async (providerType: LLMProviderType) => {
     const resolvedType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+    const customEntry = getCustomProviderDefinition(resolvedType);
     if (!customEntry) return;
 
     try {
@@ -5194,6 +5201,7 @@ export function Settings({
           baseUrl: currentConfig.baseUrl || customEntry.baseUrl,
         },
       );
+      if (isUserDefinedProviderId(resolvedType) && !customProvidersRef.current[resolvedType]) return;
 
       const visibleModels = sanitizeModelsForDisplay(models, resolvedType);
       setCustomProviders((prev) => {
@@ -5257,7 +5265,7 @@ export function Settings({
     });
 
     const resolvedCustomType = resolveCustomProviderId(providerType);
-    const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedCustomType);
+    const customEntry = getCustomProviderDefinition(resolvedCustomType);
     if (customEntry) {
       setCustomProviders((prev) => {
         const existing = prev[resolvedCustomType] || {};
@@ -5862,7 +5870,7 @@ export function Settings({
       const resolvedProviderTypeForSave = resolveCustomProviderId(
         currentSettings.providerType as LLMProviderType,
       );
-      const selectedCustomEntry = CUSTOM_PROVIDER_MAP.get(
+      const selectedCustomEntry = getCustomProviderDefinition(
         resolvedProviderTypeForSave,
       );
       if (selectedCustomEntry) {
@@ -6484,7 +6492,7 @@ export function Settings({
 
   const currentProviderType = settings.providerType as LLMProviderType;
   const resolvedProviderType = resolveCustomProviderId(currentProviderType);
-  const selectedCustomProviderEntry = CUSTOM_PROVIDER_MAP.get(resolvedProviderType);
+  const selectedCustomProviderEntry = getCustomProviderDefinition(resolvedProviderType);
   const selectedCustomProvider = selectedCustomProviderEntry &&
     isHiddenBackendProviderType(resolvedProviderType)
     ? {
@@ -7871,6 +7879,16 @@ export function Settings({
             } satisfies ProviderInfo)
           : undefined),
     ).filter(Boolean) as ProviderInfo[];
+    const userDefinedOptions: ProviderInfo[] = [];
+    for (const [id, config] of Object.entries(customProviders)) {
+      if (!isUserDefinedProviderId(id)) continue;
+      userDefinedOptions.push({
+        type: id,
+        name: config.displayName?.trim() || translate("settings.models.customProvider", "Custom provider"),
+        configured: Boolean(config.baseUrl && config.apiKey && config.model),
+      });
+    }
+    modelAddProviderOptions.splice(1, 0, ...userDefinedOptions);
     const getOpenAICompatibleDisplayName = () =>
       openaiCompatDisplayName.trim() ||
       openaiCompatModel.trim() ||
@@ -7883,6 +7901,7 @@ export function Settings({
       if (resolvedType === "openai-compatible") {
         return getOpenAICompatibleDisplayName();
       }
+      if (isUserDefinedProviderId(resolvedType)) return provider.name;
       return (
         MODEL_ADD_PROVIDER_LABEL_OVERRIDES[resolvedType] ||
         translate(`aiModels.providerName.${provider.type}`, provider.name)
@@ -8136,7 +8155,7 @@ export function Settings({
       providerType: LLMProviderType,
     ): ModelOption[] => {
       const resolvedType = resolveCustomProviderId(providerType);
-      const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedType);
+      const customEntry = getCustomProviderDefinition(resolvedType);
       if (customEntry) {
         return (customProviders[resolvedType]?.cachedModels || []).map(
           (model) => ({
@@ -8191,7 +8210,7 @@ export function Settings({
 
     const isModelCatalogLoading = (providerType: LLMProviderType): boolean => {
       const resolvedType = resolveCustomProviderId(providerType);
-      if (CUSTOM_PROVIDER_MAP.has(resolvedType)) {
+      if (getCustomProviderDefinition(resolvedType)) {
         return loadingCustomProviderModels;
       }
       switch (resolvedType) {
@@ -8220,7 +8239,7 @@ export function Settings({
       providerType: LLMProviderType,
     ): Promise<void> => {
       const resolvedType = resolveCustomProviderId(providerType);
-      if (CUSTOM_PROVIDER_MAP.has(resolvedType)) {
+      if (getCustomProviderDefinition(resolvedType)) {
         await loadCustomProviderModels(providerType);
         return;
       }
@@ -8256,13 +8275,14 @@ export function Settings({
     };
 
     const openAddModelModal = (providerType?: LLMProviderType) => {
+      setDeleteCustomProviderConfirm(null);
       const resolvedProviderType = providerType
         ? resolveCustomProviderId(providerType)
         : undefined;
       const nextProviderType = (
         providerType &&
         resolvedProviderType &&
-        MODEL_ADD_PROVIDER_TYPE_SET.has(resolvedProviderType)
+        (MODEL_ADD_PROVIDER_TYPE_SET.has(resolvedProviderType) || isUserDefinedProviderId(resolvedProviderType))
           ? providerType
           : "openai-compatible"
       ) as LLMProviderType;
@@ -8286,8 +8306,8 @@ export function Settings({
 
     const confirmAddModel = async () => {
       if (
-        selectedProviderType === "openai-compatible" &&
-        !openaiCompatDisplayName.trim()
+        (selectedProviderType === "openai-compatible" && !openaiCompatDisplayName.trim()) ||
+        (isUserDefinedProviderId(selectedProviderType) && !customProviders[selectedProviderType]?.displayName?.trim())
       ) {
         setTestResult({
           success: false,
@@ -8336,6 +8356,8 @@ export function Settings({
     };
 
     const selectProviderForModelAdd = (providerType: LLMProviderType) => {
+      setDeleteCustomProviderConfirm(null);
+      setTestResult(null);
       setAddModelProviderType(providerType);
       const primaryModel = getProviderPrimaryModel(providerType).trim();
       const configuredModels = getProviderSavedConfiguredModels(
@@ -8352,9 +8374,20 @@ export function Settings({
       void loadModelCatalogForAdd(providerType);
     };
 
+    const addCustomProvider = () => {
+      setDeleteCustomProviderConfirm(null);
+      const id = `custom-openai-${crypto.randomUUID()}` as LLMProviderType;
+      updateCustomProvider(id, { displayName: "" });
+      setModelProviderSearch("");
+      setSelectedModelsForAdd([]);
+      setTestResult(null);
+      setAddModelProviderType(id);
+    };
+
     const confirmDeleteProviderModels = async (
       providerType: LLMProviderType,
-    ) => {
+    ): Promise<boolean> => {
+      if (saving || resettingCredentials) return false;
       setDeleteProviderConfirm(null);
       const resolvedProviderType = resolveCustomProviderId(providerType);
       const wasCurrentProvider =
@@ -8383,10 +8416,6 @@ export function Settings({
             (resolvedProviderType === "anthropic" ? "gemini" : "anthropic"),
         };
       }
-      settingsRef.current = nextSettings;
-      setSettings(nextSettings);
-      clearProviderFormState(providerType);
-
       try {
         setResettingCredentials(true);
         setTestResult(null);
@@ -8397,8 +8426,12 @@ export function Settings({
           customProviders: nextSettings.customProviders || {},
           providerModelRegistry: nextSettings.providerModelRegistry || {},
         } as LLMSettingsData);
+        settingsRef.current = nextSettings;
+        setSettings(nextSettings);
+        clearProviderFormState(providerType);
         await loadConfigStatus();
         onSettingsChanged?.();
+        return true;
       } catch (error: Any) {
         console.error("Failed to delete provider models:", error);
         setTestResult({
@@ -8410,8 +8443,27 @@ export function Settings({
               "Failed to delete model",
             ),
         });
+        return false;
       } finally {
         setResettingCredentials(false);
+      }
+    };
+
+    const deleteCustomProviderFromList = async (providerType: LLMProviderType) => {
+      if (!isUserDefinedProviderId(providerType) || saving || resettingCredentials) {
+        return;
+      }
+      const remainingProviders = { ...customProvidersRef.current };
+      delete remainingProviders[providerType];
+      const isSaved = Boolean(settingsRef.current.customProviders?.[providerType]);
+      if (isSaved && !(await confirmDeleteProviderModels(providerType))) return;
+      setCustomProviders(remainingProviders);
+      setDeleteCustomProviderConfirm(null);
+      if (selectedProviderType === providerType) {
+        const nextProvider = modelAddProviderOptions.find(
+          (provider) => provider.type !== providerType,
+        );
+        selectProviderForModelAdd((nextProvider?.type || "openai-compatible") as LLMProviderType);
       }
     };
 
@@ -8641,7 +8693,7 @@ export function Settings({
                   </div>
                   <div
                     className="model-add-provider-list"
-                    role="listbox"
+                    role="list"
                     aria-label={translate(
                       "generated.components.settings.8433.26",
                       "model platform",
@@ -8652,26 +8704,62 @@ export function Settings({
                       const resolvedCustomType =
                         resolveCustomProviderId(providerType);
                       const customEntry =
-                        CUSTOM_PROVIDER_MAP.get(resolvedCustomType);
+                        getCustomProviderDefinition(resolvedCustomType);
                       const label = getModelAddProviderLabel(provider);
+                      const canDelete = isUserDefinedProviderId(providerType);
                       return (
-                        <button
+                        <div
                           key={provider.type}
-                          type="button"
-                          className={`model-add-provider-option ${
-                            selectedProviderType === provider.type
-                              ? "active"
-                              : ""
-                          }`}
-                          onClick={() =>
-                            selectProviderForModelAdd(providerType)
-                          }
-                          role="option"
-                          aria-selected={selectedProviderType === provider.type}
+                          className={`model-add-provider-row${canDelete ? " has-delete" : ""}`}
+                          role="listitem"
                         >
-                          {getLLMProviderIcon(providerType, customEntry)}
-                          <span>{label}</span>
-                        </button>
+                          <button
+                            type="button"
+                            className={`model-add-provider-option ${
+                              selectedProviderType === provider.type
+                                ? "active"
+                                : ""
+                            }`}
+                            onClick={() =>
+                              selectProviderForModelAdd(providerType)
+                            }
+                            aria-pressed={selectedProviderType === provider.type}
+                          >
+                            {getLLMProviderIcon(providerType, customEntry)}
+                            <span>{label}</span>
+                          </button>
+                          {canDelete && (
+                            <button
+                              type="button"
+                              className="model-add-provider-delete"
+                              aria-label={translate("settings.models.deleteCustomProvider", "Delete {name}", { name: label })}
+                              title={translate("settings.models.deleteCustomProvider", "Delete {name}", { name: label })}
+                              disabled={saving || resettingCredentials}
+                              onClick={() => {
+                                if (settingsRef.current.customProviders?.[providerType]) {
+                                  setDeleteCustomProviderConfirm(deleteCustomProviderConfirm === providerType ? null : providerType);
+                                } else {
+                                  void deleteCustomProviderFromList(providerType);
+                                }
+                              }}
+                            >
+                              <X size={13} strokeWidth={1.8} aria-hidden="true" />
+                            </button>
+                          )}
+                          {canDelete && deleteCustomProviderConfirm === providerType && (
+                            <div className="model-add-provider-delete-confirm">
+                              <span>{translate("settings.models.deleteCustomProviderConfirm", "Delete this provider and its model settings?")}</span>
+                              <div>
+                                <button type="button" className="button-small button-secondary" disabled={resettingCredentials} onClick={() => setDeleteCustomProviderConfirm(null)}>
+                                  {translate("common.cancel", "Cancel")}
+                                </button>
+                                <button type="button" className="button-small button-secondary" disabled={saving || resettingCredentials} onClick={() => void deleteCustomProviderFromList(providerType)}>
+                                  {translate("common.delete", "Delete")}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                     {filteredModelAddProviderOptions.length === 0 && (
@@ -8683,12 +8771,10 @@ export function Settings({
                       </div>
                     )}
                   </div>
-                  <p className="settings-hint">
-                    {translate(
-                      "generated.components.settings.8469.28",
-                      "After selecting the platform, the corresponding service provider configuration will be filled in on the right side.",
-                    )}
-                  </p>
+                  <button type="button" className="button-small button-secondary model-add-custom-provider" onClick={addCustomProvider}>
+                    <Plus size={16} aria-hidden="true" />
+                    {translate("settings.models.addCustomProvider", "Add custom provider")}
+                  </button>
                 </aside>
 
                 <section className="model-add-config">
@@ -8714,7 +8800,7 @@ export function Settings({
                     </div>
                   </div>
 
-                  {selectedProviderType === "openai-compatible" && (
+                  {(selectedProviderType === "openai-compatible" || isUserDefinedProviderId(selectedProviderType)) && (
                     <div className="model-add-field">
                       <label className="settings-label required-label">
                         {translate(
@@ -8725,9 +8811,11 @@ export function Settings({
                       <input
                         className="settings-input"
                         type="text"
-                        value={openaiCompatDisplayName}
+                        value={selectedProviderType === "openai-compatible" ? openaiCompatDisplayName : customProviders[selectedProviderType]?.displayName || ""}
                         onChange={(event) =>
-                          setOpenaiCompatDisplayName(event.target.value)
+                          selectedProviderType === "openai-compatible"
+                            ? setOpenaiCompatDisplayName(event.target.value)
+                            : updateCustomProvider(selectedProviderType, { displayName: event.target.value })
                         }
                         placeholder={translate(
                           "generated.components.settings.8493.33",
@@ -8993,6 +9081,8 @@ export function Settings({
                       saving ||
                       (selectedProviderType === "openai-compatible" &&
                         !openaiCompatDisplayName.trim()) ||
+                      (isUserDefinedProviderId(selectedProviderType) &&
+                        !customProviders[selectedProviderType]?.displayName?.trim()) ||
                       (effectiveSelectedModelsForAdd.length === 0 &&
                         !selectedProviderPrimaryModel)
                     }
@@ -9251,7 +9341,7 @@ export function Settings({
           {addedProviders.map((provider) => {
             const providerType = provider.type as LLMProviderType;
             const resolvedCustomType = resolveCustomProviderId(providerType);
-            const customEntry = CUSTOM_PROVIDER_MAP.get(resolvedCustomType);
+            const customEntry = getCustomProviderDefinition(resolvedCustomType);
             const label =
               providerType === "openai-compatible"
                 ? getOpenAICompatibleDisplayName()

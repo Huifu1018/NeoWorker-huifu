@@ -25,6 +25,18 @@ function runtime(extra: Partial<ConstructorParameters<typeof HermesRuntimeAdapte
 }
 
 describe("Hermes ACP subprocess transport", () => {
+  it("keeps progressing prompts alive within the hard deadline", async () => {
+    const c = await client();
+    await c.initialize();
+    const session = await c.newSession(__dirname);
+    await expect(c.prompt(String(session.sessionId), "progress-until-done", { timeoutMs: 2000, idleTimeoutMs: 150 })).resolves.toMatchObject({ stopReason: "end_turn" });
+  });
+  it("does not let progress extend the hard deadline indefinitely", async () => {
+    const c = await client();
+    await c.initialize();
+    const session = await c.newSession(__dirname);
+    await expect(c.prompt(String(session.sessionId), "progress-never-done", { timeoutMs: 250, idleTimeoutMs: 150 })).rejects.toMatchObject({ code: "REQUEST_TIMEOUT" });
+  });
   it("drains stderr while performing a real stdio handshake", async () => {
     const c = await client();
     expect(await c.initialize()).toMatchObject({ protocolVersion: 1 });
@@ -200,6 +212,24 @@ describe("Hermes ACP subprocess transport", () => {
 });
 
 describe('Hermes runtime session', () => {
+  it('does not forward late reasoning or answer chunks after the prompt has stopped', () => {
+    const onUpdate = vi.fn();
+    const adapter = runtime({ onUpdate }) as Any;
+    adapter.sessionCheckpoint = { sessionId: 'fixture-session' };
+    const notify = (sessionUpdate: string) => adapter.client.onNotification({
+      method: 'session/update', params: { sessionId: 'fixture-session', update: {
+        sessionUpdate, content: { type: 'text', text: 'private-content' },
+      } },
+    });
+    adapter.acceptingUpdates = true;
+    notify('agent_thought_chunk');
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    adapter.acceptingUpdates = false;
+    notify('agent_thought_chunk');
+    notify('agent_message_chunk');
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
   it('pauses an active host call and restores the checkpoint on a fresh transport', async () => {
     let started!: () => void;
     const ready = new Promise<void>(resolve => { started = resolve; });

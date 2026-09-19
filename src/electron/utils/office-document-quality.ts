@@ -9,6 +9,7 @@ import {
   renderOfficeHtmlVisualEvidence,
 } from "./office-html-visual-renderer";
 import { getOfficeCliExecutableCandidates } from "./officecli-runtime";
+import { reviewDocxContent, DocxContentFinding } from "./docx-content-review";
 
 const execFileAsync = promisify(execFile);
 const SUPPORTED_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
@@ -45,6 +46,11 @@ export interface OfficeQualityReport {
     message: string;
   };
   warnings: string[];
+  contentReview?: {
+    status: "issues" | "unverified" | "unavailable";
+    findings: DocxContentFinding[];
+    message: string;
+  };
   durationMs: number;
   summary: string;
   modelGuidance: string;
@@ -220,6 +226,24 @@ export async function runOfficeDocumentQualityCheck(
   }
 
   onPhase?.("detecting", "Preparing the Office document quality check...");
+  let contentReview: OfficeQualityReport["contentReview"];
+  if (extension === ".docx") {
+    try {
+      const findings = await reviewDocxContent(filePath);
+      contentReview = {
+        status: findings.length ? "issues" : "unverified",
+        findings,
+        message: findings.length
+          ? "Content review found source-evidence risks. Review these findings before claiming the report is complete; a successful render is not a factual or image-relevance check."
+          : "No heuristic content warnings were found. Facts, units, source coverage and image relevance remain unverified; rendering alone does not verify them.",
+      };
+    } catch {
+      contentReview = {
+        status: "unavailable", findings: [],
+        message: "DOCX content review could not be completed. Do not claim content quality was verified.",
+      };
+    }
+  }
   const detected = await resolveOfficeCli(
     runner,
     timeoutMs,
@@ -230,12 +254,13 @@ export async function runOfficeDocumentQualityCheck(
       available: false,
       engine: "builtin",
       status: "skipped",
+      contentReview,
       warnings: ["OfficeCLI is not installed or could not be started."],
       durationMs: Date.now() - startedAt,
       summary:
         "The document was generated using built-in compatibility mode; the OfficeCLI quality check was not run.",
       modelGuidance:
-        "The Office file was created with the built-in generator. OfficeCLI was unavailable, so do not claim that structural or visual validation was completed.",
+        `The Office file was created with the built-in generator. OfficeCLI was unavailable, so do not claim that structural or visual validation was completed. ${contentReview?.message || ""}`.trim(),
     };
   }
 
@@ -380,7 +405,7 @@ export async function runOfficeDocumentQualityCheck(
             outputPath: visualEvidencePath,
           });
           warnings.push(
-            "OfficeCLI's standalone screenshot renderer was unavailable; NeoWorker's embedded renderer completed the visual check.",
+            "OfficeCLI's standalone screenshot renderer was unavailable; NeoWorker's embedded renderer produced visual evidence, not a semantic quality review.",
           );
           visual = {
             required: true,
@@ -447,11 +472,12 @@ export async function runOfficeDocumentQualityCheck(
     validation,
     issueCount,
     issues,
+    contentReview,
     previewPath,
     visual,
     warnings,
     durationMs: Date.now() - startedAt,
     summary,
-    modelGuidance,
+    modelGuidance: `${modelGuidance} Rendering does not verify factual accuracy, image relevance or visual layout quality. ${contentReview?.message || ""}`.trim(),
   };
 }

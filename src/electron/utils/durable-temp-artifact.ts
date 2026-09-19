@@ -6,6 +6,19 @@ const DURABLE_TEMP_ARTIFACT_DIR = "temporary-workspaces";
 const DURABLE_TASK_ATTACHMENT_DIR = "tasks";
 const PRIVATE_DIRECTORY_MODE = 0o700;
 
+// Resolve existing ancestors too: restore destinations may not exist yet.
+// realpath normalizes Windows 8.3 aliases and macOS /var -> /private/var.
+function canonicalPath(value: string): string {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch (error) {
+    if (!["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code || "")) throw error;
+    const parent = path.dirname(resolved);
+    return parent === resolved ? resolved : path.join(canonicalPath(parent), path.basename(resolved));
+  }
+}
+
 function isPathInside(rootPath: string, candidatePath: string): boolean {
   const relative = path.relative(
     path.resolve(rootPath),
@@ -128,16 +141,18 @@ function resolveWorkspaceArtifactSource(
   workspacePath: string,
   artifactPath: string,
 ): { sourcePath: string; relativePath: string } | null {
-  const workspaceRoot = path.resolve(workspacePath);
+  const workspaceRoot = canonicalPath(workspacePath);
   const normalizedArtifactPath = String(artifactPath || "").trim();
   if (!normalizedArtifactPath) return null;
 
   const sourcePath = path.isAbsolute(normalizedArtifactPath)
     ? path.resolve(normalizedArtifactPath)
-    : path.resolve(workspaceRoot, normalizedArtifactPath);
-  if (!isPathInside(workspaceRoot, sourcePath)) return null;
+    : path.resolve(workspacePath, normalizedArtifactPath);
+  // Keep the lexical leaf for lstat's symlink rejection; compare real parents.
+  const canonicalSource = canonicalPath(sourcePath);
+  if (!isPathInside(workspaceRoot, canonicalSource)) return null;
 
-  const relativePath = path.relative(workspaceRoot, sourcePath);
+  const relativePath = path.relative(workspaceRoot, canonicalSource);
   if (!relativePath || relativePath.split(path.sep).includes("..")) return null;
   return { sourcePath, relativePath };
 }
@@ -366,7 +381,15 @@ export function restoreTaskAttachmentSync(options: {
 /** Extract only app-generated upload references, never arbitrary user paths. */
 export function extractWorkspaceUploadPaths(text: string): string[] {
   const results = new Set<string>();
-  const normalized = String(text || "");
+  // Parse the app's full descriptor first: filenames may themselves contain
+  // parentheses, spaces or quotes. The final parenthesis closes the descriptor.
+  const normalized = String(text || "").replace(
+    /^\s*-\s+[^\r\n]+?\s+\(((?:\.neoworker[\\/]+uploads[\\/]+)[^\r\n]+)\)\s*$/gm,
+    (_line, uploadPath: string) => {
+      results.add(uploadPath);
+      return "";
+    },
+  );
   const pattern = /(?:^|[\s("'`])((?:\.neoworker[\\/]+uploads[\\/]+)[^)\]\r\n"'`]+)/gim;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(normalized)) !== null) {

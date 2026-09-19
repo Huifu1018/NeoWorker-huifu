@@ -3,6 +3,7 @@ import type { Task, TaskEvent } from "../../../shared/types";
 import { normalizeEventsForTimelineUi } from "../timeline-projection";
 import {
   deriveTaskWorkTiming,
+  isTerminalWorkEvent,
   shouldEndOptimisticFollowUp,
   shouldEndOptimisticFollowUpFromTask,
 } from "../task-working-state";
@@ -24,6 +25,61 @@ const event = (type: string, timestamp: number, payload = {}) =>
   }) as TaskEvent;
 
 describe("current turn timing", () => {
+  it.each([false, true])("keeps the follow-up clock through automatic approval (projected=%s)", (projected) => {
+    const stream = [
+      event("task_completed", 2000),
+      event("task_resumed", 3000, { newRunStarted: true }),
+      event("executing", 3250),
+      event("user_message", 3280),
+      event("approval_requested", 3309, { autoApproved: true }),
+      event("approval_granted", 3327, { autoApproved: true }),
+      event("hermes_runtime_transport", 3335, { phase: "request_started" }),
+    ];
+    const events = projected ? normalizeEventsForTimelineUi(stream) : stream;
+    const runningTask = { ...task, status: "executing" as const, completedAt: undefined, updatedAt: 3327 };
+    let optimisticStart: number | null = 2900;
+    for (const received of events) {
+      if (optimisticStart !== null && shouldEndOptimisticFollowUp(received, optimisticStart)) {
+        optimisticStart = null;
+      }
+    }
+    expect(optimisticStart).toBe(2900);
+    for (const now of [3335, 4335, 23335, 63335]) {
+      expect(deriveTaskWorkTiming(runningTask, events, false, optimisticStart, now))
+        .toMatchObject({ startedAt: 2900, isActive: true, completedAt: undefined });
+      // History reloads have no local send marker, but must still be active.
+      expect(deriveTaskWorkTiming(runningTask, events, false, null, now))
+        .toMatchObject({ startedAt: 3280, isActive: true, completedAt: undefined });
+    }
+  });
+  it("does not classify automatic approval as a terminal event", () => {
+    expect(isTerminalWorkEvent(event("approval_requested", 3309, { autoApproved: true }))).toBe(false);
+    expect(isTerminalWorkEvent(event("approval_requested", 3309))).toBe(true);
+  });
+  it.each(["approval_granted", "task_resumed", "follow_up_started"])(
+    "resumes the clock on %s without waiting for model or tool output",
+    (type) => {
+      const runningTask = { ...task, status: "executing" as const, completedAt: undefined };
+      const events = [event("user_message", 3000), event("approval_requested", 4000)];
+      expect(deriveTaskWorkTiming(runningTask, events, false, null, 5000).isActive).toBe(false);
+      events.push(event(type, 6000));
+      expect(deriveTaskWorkTiming(runningTask, events, false, null, 66000))
+        .toMatchObject({ startedAt: 3000, isActive: true, completedAt: undefined });
+    },
+  );
+  it.each(["task_completed", "follow_up_failed", "task_cancelled", "task_paused"])(
+    "does not keep running after %s follows automatic approval",
+    (type) => {
+      const events = [
+        event("user_message", 3000),
+        event("approval_requested", 3309, { autoApproved: true }),
+        event("approval_granted", 3327, { autoApproved: true }),
+        event(type, 8000),
+      ];
+      expect(deriveTaskWorkTiming({ ...task, status: "executing", completedAt: undefined }, events, false, 2900, 60000))
+        .toMatchObject({ startedAt: 3000, isActive: false, completedAt: 8000 });
+    },
+  );
   it("ends a normalized follow-up failure while the task row still says executing", () => {
     const stream = normalizeEventsForTimelineUi([
       event("user_message",3000),

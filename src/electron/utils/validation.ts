@@ -16,7 +16,8 @@ import {
   CoreMemoryScopeKind,
   CoreTraceKind,
   CoreTraceStatus,
-  LLM_PROVIDER_TYPES,
+  isLLMProviderType,
+  type LLMProviderType,
   isTempWorkspaceId,
   PersonalityId,
   TaskStatus,
@@ -26,6 +27,7 @@ import { getUserDataDir } from "./user-data-dir";
 import { assertSafeLoomMailboxFolder, isSecureOrLocalLoomUrl } from "./loom";
 
 // Common validation patterns
+export const LLMProviderTypeSchema = z.custom<LLMProviderType>(isLLMProviderType, "Invalid provider type");
 const _MAX_STRING_LENGTH = 10000;
 const MAX_PATH_LENGTH = 4096;
 const MAX_TITLE_LENGTH = 500;
@@ -149,7 +151,7 @@ export const WorkspaceCreateSchema = z.object({
 
 export const AgentConfigSchema = z
   .object({
-    providerType: z.enum(LLM_PROVIDER_TYPES).optional(),
+    providerType: LLMProviderTypeSchema.optional(),
     modelKey: z.string().max(200).optional(),
     llmProfile: LlmProfileSchema.optional(),
     llmProfileForced: z.boolean().optional(),
@@ -225,7 +227,7 @@ export const AgentConfigSchema = z
         participants: z
           .array(
             z.object({
-              providerType: z.enum(LLM_PROVIDER_TYPES),
+              providerType: LLMProviderTypeSchema,
               modelKey: z.string().max(200),
               displayName: z.string().max(200),
               isJudge: z.boolean(),
@@ -236,7 +238,7 @@ export const AgentConfigSchema = z
           )
           .min(2)
           .max(10),
-        judgeProviderType: z.enum(LLM_PROVIDER_TYPES),
+        judgeProviderType: LLMProviderTypeSchema,
         judgeModelKey: z.string().max(200),
         maxParallelParticipants: z.number().int().min(1).max(10).optional(),
       })
@@ -246,28 +248,28 @@ export const AgentConfigSchema = z
         enabled: z.boolean(),
         researcher: z
           .object({
-            providerType: z.enum(LLM_PROVIDER_TYPES).optional(),
+            providerType: LLMProviderTypeSchema.optional(),
             modelKey: z.string().max(200).optional(),
           })
           .strict()
           .optional(),
         critic: z
           .object({
-            providerType: z.enum(LLM_PROVIDER_TYPES).optional(),
+            providerType: LLMProviderTypeSchema.optional(),
             modelKey: z.string().max(200).optional(),
           })
           .strict()
           .optional(),
         refiner: z
           .object({
-            providerType: z.enum(LLM_PROVIDER_TYPES).optional(),
+            providerType: LLMProviderTypeSchema.optional(),
             modelKey: z.string().max(200).optional(),
           })
           .strict()
           .optional(),
         judge: z
           .object({
-            providerType: z.enum(LLM_PROVIDER_TYPES).optional(),
+            providerType: LLMProviderTypeSchema.optional(),
             modelKey: z.string().max(200).optional(),
           })
           .strict()
@@ -452,7 +454,7 @@ export const TaskRenameSchema = z.object({
 
 export const TaskModelUpdateSchema = z.object({
   taskId: z.string().uuid(),
-  providerType: z.enum(LLM_PROVIDER_TYPES),
+  providerType: LLMProviderTypeSchema,
   modelKey: z.string().trim().min(1).max(200),
 });
 
@@ -702,7 +704,6 @@ export const InputRequestResponseSchema = z.object({
 
 // ============ LLM Settings Schemas ============
 
-export const LLMProviderTypeSchema = z.enum(LLM_PROVIDER_TYPES);
 
 const ProviderFailoverSettingsSchema = {
   fallbackProviders: z
@@ -916,6 +917,7 @@ export const MoaSettingsSchema = z
   .optional();
 
 export const CustomProviderConfigSchema = z.object({
+  displayName: z.string().trim().max(100).optional(),
   apiKey: z.string().max(500).optional(),
   model: z.string().max(200).optional(),
   baseUrl: z.string().max(500).optional(),

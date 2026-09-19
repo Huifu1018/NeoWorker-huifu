@@ -1,4 +1,4 @@
-import type { LLMProviderType } from "./types";
+import { isUserDefinedProviderId, type CustomProviderConfig, type LLMProviderType } from "./types";
 
 export type ProviderCompatibility = "openai" | "anthropic";
 
@@ -285,3 +285,23 @@ export const CUSTOM_PROVIDER_MAP = new Map(
 );
 
 export const CUSTOM_PROVIDER_IDS = new Set(CUSTOM_PROVIDER_CATALOG.map((provider) => provider.id));
+
+export function getCustomProviderDefinition(id: string): ProviderCatalogEntry | undefined {
+  if (isUserDefinedProviderId(id)) {
+    return {
+      id, name: "Custom provider", compatibility: "openai", defaultModel: "",
+      apiKeyLabel: "API Key", requiresBaseUrl: true,
+    };
+  }
+  return CUSTOM_PROVIDER_MAP.get(id as LLMProviderType);
+}
+
+export function getCustomProviderCatalog(configs?: Record<string, CustomProviderConfig>): ProviderCatalogEntry[] {
+  return [
+    ...CUSTOM_PROVIDER_CATALOG,
+    ...Object.entries(configs || {}).flatMap(([id, config]) => {
+      if (!isUserDefinedProviderId(id)) return [];
+      return [{ ...getCustomProviderDefinition(id)!, name: config.displayName?.trim() || "Custom provider" }];
+    }),
+  ];
+}

@@ -21,7 +21,7 @@ export interface CoordinatedToolExecutionResult {
 }
 
 export class ToolExecutionCoordinator {
-  constructor(private readonly toolRegistry: ToolRegistry) {}
+  constructor(private readonly registrySource: ToolRegistry | (() => ToolRegistry)) {}
 
   private getResultRecord(result: unknown): Record<string, unknown> {
     return result && typeof result === "object" && !Array.isArray(result)
@@ -107,10 +107,14 @@ export class ToolExecutionCoordinator {
     emitLifecycle("running", { timeoutMs: toolTimeoutMs });
 
     try {
-      const executeWithRuntime = this.toolRegistry.executeToolWithRuntime;
+      // Resolve once per dispatch: workspace/permission changes replace the
+      // registry, but an in-flight call must finish on its original instance.
+      const toolRegistry = typeof this.registrySource === "function"
+        ? this.registrySource() : this.registrySource;
+      const executeWithRuntime = toolRegistry.executeToolWithRuntime;
       const executionWithRuntime =
         typeof executeWithRuntime === "function"
-          ? await executeWithRuntime.call(this.toolRegistry, toolName, input, {
+          ? await executeWithRuntime.call(toolRegistry, toolName, input, {
               toolPolicyContext: context.toolPolicyContext,
               toolUseId,
               signal: context.signal,
@@ -123,7 +127,7 @@ export class ToolExecutionCoordinator {
           : {
               // Keep the host boundary compatible with older or test-provided
               // registries while the real registry rolls out runtime context.
-              result: await this.toolRegistry.executeTool(toolName, input, {
+              result: await toolRegistry.executeTool(toolName, input, {
                 toolPolicyContext: context.toolPolicyContext,
                 toolUseId,
                 signal: context.signal,
@@ -156,7 +160,7 @@ export class ToolExecutionCoordinator {
             ? "error"
             : "success",
         result,
-        retryable: false,
+        retryable: !cancelled && result?.retryable === true,
         policyTrace,
         modelReminder,
         userSummary: `${toolName} ${

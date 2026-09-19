@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 
 import type { LLMProviderType, PromptCachingSettings } from "../../../shared/types";
-import { CUSTOM_PROVIDER_MAP } from "../../../shared/llm-provider-catalog";
+import { getCustomProviderDefinition } from "../../../shared/llm-provider-catalog";
 import type {
   LLMMessage,
   LLMPromptCacheConfig,
@@ -231,7 +231,7 @@ export function resolvePromptCacheProviderFamily(
     return isLikelyOpenAIModelId(modelId) ? "openrouter-openai" : "unsupported";
   }
 
-  const customProvider = CUSTOM_PROVIDER_MAP.get(providerType);
+  const customProvider = getCustomProviderDefinition(providerType);
   if (customProvider?.compatibility === "anthropic") {
     return "anthropic-compatible";
   }

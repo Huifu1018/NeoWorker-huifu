@@ -45,6 +45,7 @@ import {
   OutcomeTemplate,
 } from "../../../shared/types";
 import { PRODUCT_DISPLAY_VERSION } from "../../../shared/product-brand";
+import { HISTORY_READING_EVENT, useHistoryPagination } from "./use-history-pagination";
 import type { ChatInlineFrame } from "../../../shared/mailbox";
 import { parseLeadingSkillSlashCommand } from "../../../shared/skill-slash-commands";
 import { parseOnboardingSlashCommand } from "../../../shared/onboarding";
@@ -137,6 +138,7 @@ import {
   recordRendererRender,
 } from "../../utils/renderer-perf";
 import { areIntegrationMentionOptionsEqual } from "../../utils/integration-mention-options";
+import { findComposerMentionQuery } from "../../utils/composer-mention-query";
 import { getLocalizedAgentRoleText } from "../../utils/localized-agent-roles";
 import { getAgentRoleVisual } from "../../utils/agent-role-portraits";
 import { type AttachmentDisplayInfo, extractAttachmentDetails } from "../utils/attachment-content";
@@ -464,7 +466,6 @@ import {
   isRedundantTimelineEvidenceEvent,
   estimateTaskFeedRowHeight,
   assignTimelineRef,
-  getAutoScrollTargetTop,
   pinScrollElementToBottom,
   shouldScheduleAutoScrollWrite,
 } from "./task-feed-logic";
@@ -480,6 +481,7 @@ import {
   renderEventTitle,
   renderEventDetails,
   shouldAutoExpandActiveTimelineEvent,
+  isFailureTimelineEvent,
 } from "./timeline-event-rendering";
 
 type MentionOption = {
@@ -1331,11 +1333,6 @@ const TaskConversationRenderedRows = memo(
     task,
     formatTime,
     isReplayMode,
-    transcriptMode,
-    hiddenLiveFeedRowCount,
-    canReturnToLiveView,
-    onShowFullTimeline,
-    onBackToLiveView,
     mainBodyRef,
     timelineRef,
     getRenderedFeedRow,
@@ -1353,11 +1350,6 @@ const TaskConversationRenderedRows = memo(
     task: Task | null | undefined;
     formatTime: (timestamp: number) => string;
     isReplayMode: boolean;
-    transcriptMode: TranscriptMode;
-    hiddenLiveFeedRowCount: number;
-    canReturnToLiveView: boolean;
-    onShowFullTimeline: () => void;
-    onBackToLiveView: () => void;
     mainBodyRef: React.RefObject<HTMLDivElement | null>;
     timelineRef: React.RefObject<HTMLDivElement | null>;
     getRenderedFeedRow: (row: TaskFeedRow) => React.ReactNode;
@@ -1367,33 +1359,18 @@ const TaskConversationRenderedRows = memo(
       taskId ? `task:${taskId}` : "task:none",
       rendererPerfLoggingEnabled,
     );
-    void hasMoreTimelineHistory;
-    void timelineHistoryError;
-
-    const historyPrependAnchorRef = useRef<{
-      taskId: string | undefined;
-      scrollTop: number;
-      scrollHeight: number;
-      rowCount: number;
-      observedLoading: boolean;
-    } | null>(null);
-    const [suppressVirtualAutoScroll, setSuppressVirtualAutoScroll] = useState(false);
-
     const renderableFeedRows = useMemo(() => visibleFeedRows, [visibleFeedRows]);
-    const handleLoadMoreTimelineHistory = useCallback(() => {
-      const container = mainBodyRef.current;
-      if (container) {
-        historyPrependAnchorRef.current = {
-          taskId,
-          scrollTop: container.scrollTop,
-          scrollHeight: container.scrollHeight,
-          rowCount: renderableFeedRows.length,
-          observedLoading: false,
-        };
-      }
-      setSuppressVirtualAutoScroll(true);
-      void onLoadMoreTimelineHistory?.();
-    }, [mainBodyRef, onLoadMoreTimelineHistory, renderableFeedRows.length, taskId]);
+    const conversationFlowRef = useRef<HTMLDivElement | null>(null);
+    const history = useHistoryPagination({
+      taskKey: `${taskId ?? "none"}:${taskSwitchId ?? "initial"}`,
+      containerRef: mainBodyRef,
+      flowRef: conversationFlowRef,
+      hasMore: Boolean(hasMoreTimelineHistory),
+      loading: Boolean(isLoadingTimelineHistory),
+      error: timelineHistoryError,
+      loadMore: onLoadMoreTimelineHistory,
+      rows: renderableFeedRows,
+    });
     const startupRowsMarkedRef = useRef(false);
     const timelineRowsMarkedTaskIdsRef = useRef<Set<string>>(new Set());
     useEffect(() => {
@@ -1430,7 +1407,6 @@ const TaskConversationRenderedRows = memo(
     const pendingFeedRowHeightsRef = useRef<Map<string, number>>(new Map());
     const feedRowHeightFlushFrameRef = useRef<number | null>(null);
     const [conversationFlowOffsetTop, setConversationFlowOffsetTop] = useState(0);
-    const conversationFlowRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
       feedRowHeightsRef.current = feedRowHeights;
@@ -1556,7 +1532,7 @@ const TaskConversationRenderedRows = memo(
       overscan: 4,
       enabled: useVirtualizedFeed,
       scrollOffsetTop: conversationFlowOffsetTop,
-      suppressAutoScrollOnItemsChange: suppressVirtualAutoScroll,
+      suppressAutoScrollOnItemsChange: history.pending,
     });
     const renderedFeedRows = useMemo(
       () => (useVirtualizedFeed ? virtualFeedRows.map((row) => row.item) : renderableFeedRows),
@@ -1568,17 +1544,22 @@ const TaskConversationRenderedRows = memo(
           renderedFeedRows.map((row) => {
             const node =
               row.kind === "history-control" ? (
-                <div className="timeline-history-control">
-                  {row.error ? <span className="timeline-history-error">{row.error}</span> : null}
-                  {row.hasMoreHistory ? (
-                    <button
-                      type="button"
-                      className="action-block-show-all-btn"
-                      disabled={row.isLoading}
-                      onClick={handleLoadMoreTimelineHistory}
-                    >
-                      {row.isLoading ? "Loading earlier history..." : "Load earlier history"}
-                    </button>
+                <div className={`timeline-history-control${history.pending ? " is-loading" : history.failed ? " is-active" : ""}`}>
+                  {history.pending ? (
+                    <span role="status">{translate("task.history.loading", "Loading earlier messages...")}</span>
+                  ) : history.failed ? (
+                    <>
+                      <span className="timeline-history-error" role="status">
+                        {translate("task.history.failed", "Could not load earlier messages.")}
+                      </span>
+                      <button
+                        type="button"
+                        className="action-block-show-all-btn"
+                        onClick={history.retry}
+                      >
+                        {translate("common.retry", "Retry")}
+                      </button>
+                    </>
                   ) : null}
                 </div>
               ) : (
@@ -1587,44 +1568,8 @@ const TaskConversationRenderedRows = memo(
             return [row.key, node] as const;
           }),
         ),
-      [getRenderedFeedRow, handleLoadMoreTimelineHistory, renderedFeedRows],
+      [getRenderedFeedRow, history.pending, history.failed, history.retry, renderedFeedRows],
     );
-    useEffect(() => {
-      if (isLoadingTimelineHistory && historyPrependAnchorRef.current) {
-        historyPrependAnchorRef.current.observedLoading = true;
-      }
-    }, [isLoadingTimelineHistory]);
-    useLayoutEffect(() => {
-      if (isLoadingTimelineHistory) return;
-      const anchor = historyPrependAnchorRef.current;
-      const container = mainBodyRef.current;
-      if (!anchor || !container) {
-        if (suppressVirtualAutoScroll) setSuppressVirtualAutoScroll(false);
-        return;
-      }
-      if (!anchor.observedLoading && renderableFeedRows.length === anchor.rowCount) {
-        return;
-      }
-      historyPrependAnchorRef.current = null;
-      if (anchor.taskId !== taskId) {
-        if (suppressVirtualAutoScroll) setSuppressVirtualAutoScroll(false);
-        return;
-      }
-
-      const delta = container.scrollHeight - anchor.scrollHeight;
-      if (delta > 0) {
-        container.scrollTop = anchor.scrollTop + delta;
-      }
-      if (suppressVirtualAutoScroll) setSuppressVirtualAutoScroll(false);
-    }, [
-      isLoadingTimelineHistory,
-      mainBodyRef,
-      renderableFeedRows.length,
-      suppressVirtualAutoScroll,
-      taskId,
-      useVirtualizedFeed,
-      virtualFeedTotalHeight,
-    ]);
     const showBootstrapProgress = shouldShowBootstrapProgressRow({
       isTaskWorking,
       visibleRenderableFeedRowsLength: renderableFeedRows.length,
@@ -1638,69 +1583,6 @@ const TaskConversationRenderedRows = memo(
 
     return (
       <div className="conversation-flow" ref={setConversationFlowNode}>
-        {transcriptMode === "live" && hiddenLiveFeedRowCount > 0 && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "10px 12px",
-              border: "1px solid var(--border-color, rgba(255,255,255,0.12))",
-              borderRadius: 10,
-              background: "var(--surface-secondary, rgba(255,255,255,0.04))",
-              color: "var(--text-secondary, rgba(255,255,255,0.72))",
-              fontSize: 12,
-              lineHeight: 1.45,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-              }}
-            >
-              <span>
-                {translate(
-                  "task.liveFeed.hiddenRows",
-                  "Showing the current live work. {count} earlier items are hidden while the task is running.",
-                  { count: hiddenLiveFeedRowCount },
-                )}
-              </span>
-              <button
-                type="button"
-                className="action-block-show-all-btn"
-                onClick={onShowFullTimeline}
-              >
-                {translate("task.liveFeed.showFullTimeline", "Show full timeline")}
-              </button>
-            </div>
-          </div>
-        )}
-        {transcriptMode === "inspect" && canReturnToLiveView && (
-          <div
-            style={{
-              marginBottom: 12,
-              padding: "10px 12px",
-              border: "1px solid var(--border-color, rgba(255,255,255,0.12))",
-              borderRadius: 10,
-              background: "var(--surface-secondary, rgba(255,255,255,0.04))",
-              color: "var(--text-secondary, rgba(255,255,255,0.72))",
-              fontSize: 12,
-              lineHeight: 1.45,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-            }}
-          >
-            <span>
-              {translate("task.transcript.inspectingFull", "Inspecting the full transcript.")}
-            </span>
-            <button type="button" className="action-block-show-all-btn" onClick={onBackToLiveView}>
-              {translate("task.transcript.backToLive", "Back to live view")}
-            </button>
-          </div>
-        )}
         {showBootstrapProgress ? (
           <StepFeed
             title={
@@ -1770,11 +1652,6 @@ const TaskConversationRenderedRows = memo(
     prev.task?.bestKnownOutcome?.capturedAt === next.task?.bestKnownOutcome?.capturedAt &&
     prev.formatTime === next.formatTime &&
     prev.isReplayMode === next.isReplayMode &&
-    prev.transcriptMode === next.transcriptMode &&
-    prev.hiddenLiveFeedRowCount === next.hiddenLiveFeedRowCount &&
-    prev.canReturnToLiveView === next.canReturnToLiveView &&
-    prev.onShowFullTimeline === next.onShowFullTimeline &&
-    prev.onBackToLiveView === next.onBackToLiveView &&
     prev.mainBodyRef === next.mainBodyRef &&
     prev.timelineRef === next.timelineRef &&
     prev.getRenderedFeedRow === next.getRenderedFeedRow &&
@@ -1815,7 +1692,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
   const isChatTask = props.isChatTask as boolean;
   const isTaskWorking = props.isTaskWorking as boolean;
   const isReplayMode = props.isReplayMode as boolean;
-  const defaultTranscriptMode = props.defaultTranscriptMode as TranscriptMode;
   const transcriptMode = props.transcriptMode as TranscriptMode;
   const lastAssistantMessage = props.lastAssistantMessage as TaskEvent | null;
   const initialPromptEventId = props.initialPromptEventId as string | null;
@@ -1899,8 +1775,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
   const voiceEnabled = props.voiceEnabled as boolean;
   const wrappingUp = props.wrappingUp as boolean;
   const workspace = props.workspace as Workspace | null;
-  const showFullTimeline = props.showFullTimeline as () => void;
-  const returnToDefaultTranscript = props.returnToDefaultTranscript as () => void;
   const showChatTaskExecutionRows = shouldShowChatTaskExecutionRows({
     isChatTask,
     verboseSteps,
@@ -2139,7 +2013,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       rows.unshift({
         kind: "history-control",
         key: "timeline-history-control",
-        estimatedHeight: timelineHistoryError ? 64 : 44,
+        estimatedHeight: timelineHistoryError ? 64 : isLoadingTimelineHistory ? 32 : 0,
         hasMoreHistory: Boolean(hasMoreTimelineHistory),
         isLoading: Boolean(isLoadingTimelineHistory),
         error: timelineHistoryError ?? null,
@@ -2372,7 +2246,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       transcriptEvents,
     ],
   );
-  const { visibleFeedRows, hiddenLiveFeedRowCount } = useMemo(
+  const { visibleFeedRows } = useMemo(
     () => selectVisibleTaskFeedRows(displayFeedRows, transcriptMode),
     [displayFeedRows, transcriptMode],
   );
@@ -3123,6 +2997,7 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                           const isExpandable = hasEventDetails(event) || hasNestedChildren;
                           const shouldDefaultExpandChild =
                             isExpandable &&
+                            !isFailureTimelineEvent(event) &&
                             (hasNestedChildren ||
                               shouldDefaultExpand(event) ||
                               (isLatestActionBlock &&
@@ -3906,11 +3781,6 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                 task={task}
                 formatTime={formatTime}
                 isReplayMode={isReplayMode}
-                transcriptMode={transcriptMode}
-                hiddenLiveFeedRowCount={hiddenLiveFeedRowCount}
-                canReturnToLiveView={defaultTranscriptMode === "live"}
-                onShowFullTimeline={showFullTimeline}
-                onBackToLiveView={returnToDefaultTranscript}
                 mainBodyRef={mainBodyRef}
                 timelineRef={timelineRef}
                 getRenderedFeedRow={getRenderedFeedRow}
@@ -3972,15 +3842,11 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
       task?.status,
       task?.terminalStatus,
       feedRows,
-      hiddenLiveFeedRowCount,
       transcriptMode,
-      defaultTranscriptMode,
       lastActionBlockTimelineIndex,
       latestUserMessageEventIndex,
       latestUserMessageEventId,
       renderLatestUserMessageActionRow,
-      returnToDefaultTranscript,
-      showFullTimeline,
       timelineItems,
       timelineRef,
       toggledEvents,
@@ -4017,7 +3883,6 @@ function areTaskConversationFlowPropsEqual(prev: any, next: any): boolean {
     prev.isChatTask === next.isChatTask &&
     prev.isTaskWorking === next.isTaskWorking &&
     prev.isReplayMode === next.isReplayMode &&
-    prev.defaultTranscriptMode === next.defaultTranscriptMode &&
     prev.transcriptMode === next.transcriptMode &&
     prev.lastAssistantMessage?.id === next.lastAssistantMessage?.id &&
     prev.initialPromptEventId === next.initialPromptEventId &&
@@ -4059,8 +3924,6 @@ function areTaskConversationFlowPropsEqual(prev: any, next: any): boolean {
     prev.formatTime === next.formatTime &&
     prev.renderCommandOutputs === next.renderCommandOutputs &&
     prev.toggleEventExpanded === next.toggleEventExpanded &&
-    prev.showFullTimeline === next.showFullTimeline &&
-    prev.returnToDefaultTranscript === next.returnToDefaultTranscript &&
     prev.onOpenBrowserView === next.onOpenBrowserView &&
     prev.onOpenSpreadsheetArtifact === next.onOpenSpreadsheetArtifact &&
     prev.onOpenDocumentArtifact === next.onOpenDocumentArtifact &&
@@ -5156,22 +5019,16 @@ function MainContentComponent({
     });
   }, [markStartupOnce, selectedTaskId, task?.id]);
 
-  const [transcriptModeOverride, setTranscriptModeOverride] = useState<TranscriptMode | null>(null);
-  // Keep execution records visible by default and persist explicit user
-  // choices. Live projection still owns active tasks so older queries do not
-  // stack above the current execution trace.
+  // One persisted switch controls execution details for both live and finished turns.
   const [verboseSteps, setVerboseSteps] = useState(true);
   const isReplayMode = replayControls?.isReplayMode ?? false;
   const includeExecutionRecordEvents = shouldIncludeExecutionRecordEvents({
     verboseSteps,
     isReplayMode,
   });
-  useEffect(() => {
-    setTranscriptModeOverride(null);
-  }, [task?.id]);
   const effectiveSharedTaskEventUi = shouldBypassLiveTaskEventProjection({
     projectionMode: sharedTaskEventUi?.projectionMode,
-    transcriptModeOverride,
+    transcriptModeOverride: null,
     verboseSteps,
   })
     ? null
@@ -6571,15 +6428,7 @@ function MainContentComponent({
     isChatTask,
     taskStatus: task?.status,
   });
-  const transcriptMode = transcriptModeOverride ?? defaultTranscriptMode;
-  useEffect(() => {
-    if (defaultTranscriptMode === "inspect" && transcriptModeOverride !== null) {
-      setTranscriptModeOverride(null);
-    }
-  }, [defaultTranscriptMode, transcriptModeOverride]);
-  const showFullTimeline = useCallback(() => {
-    setTranscriptModeOverride("inspect");
-  }, []);
+  const transcriptMode = defaultTranscriptMode;
 
   useEffect(() => {
     const taskId = task?.id ?? null;
@@ -6603,14 +6452,6 @@ function MainContentComponent({
     defaultPermissionAccessMode,
     setPermissionAccessMode,
   ]);
-  const returnToDefaultTranscript = useCallback(() => {
-    setTranscriptModeOverride(null);
-  }, []);
-  const toggleCompletedTranscriptMode = useCallback(() => {
-    if (defaultTranscriptMode !== "delivery") return;
-    setTranscriptModeOverride((current) => (current === "inspect" ? null : "inspect"));
-  }, [defaultTranscriptMode]);
-  const canToggleCompletedTranscript = defaultTranscriptMode === "delivery";
   const liveWorkStartedAt = workTiming.startedAt;
   // A newer follow-up user_message can arrive before the task object changes
   // from its previous terminal status. In that state isTaskWorking is true,
@@ -6639,8 +6480,8 @@ function MainContentComponent({
         })
       : translate("taskHeader.activity", "Activity");
   const progressHeartbeat = useMemo(
-    () => (isTaskWorking ? deriveProgressHeartbeat(events, task?.id) : ""),
-    [events, isTaskWorking, task?.id],
+    () => (isTaskWorking ? deriveProgressHeartbeat(events, task?.id, Date.now()) : ""),
+    [events, isTaskWorking, task?.id, liveWorkDuration],
   );
 
   const continuationStatusChip = useMemo(() => {
@@ -8090,11 +7931,14 @@ function MainContentComponent({
   );
 
   // Determine if an event should be expanded by default
-  // Important events (plan, assistant responses, errors) should be expanded
+  // Plans and assistant responses should be expanded.
   // Verbose events (tool calls/results) should be collapsed
   const shouldDefaultExpand = useCallback(
     (event: TaskEvent): boolean => {
       const effectiveType = getEffectiveTaskEventType(event);
+      // Keep the compact failure row visible, but never open verbose failure
+      // payloads automatically. Users can still expand the row deliberately.
+      if (isFailureTimelineEvent(event)) return false;
       if (event.payload?.recoveredIntermediateFailure === true) return false;
       if (event.payload?.intermediateFailurePending === true) return false;
       if (isImageFileEvent(event)) return true;
@@ -8127,7 +7971,7 @@ function MainContentComponent({
         }
         return true;
       }
-      if (effectiveType === "diagram_created" || event.type === "timeline_error") return true;
+      if (effectiveType === "diagram_created") return true;
       if (effectiveType === "approval_requested") {
         return isRunCommandApproval(getApprovalPayload(event));
       }
@@ -8144,7 +7988,7 @@ function MainContentComponent({
         )
           return true;
       }
-      return ["plan_created", "assistant_message", "error", "step_failed"].includes(effectiveType);
+      return ["plan_created", "assistant_message"].includes(effectiveType);
     },
     [
       codePreviewsExpanded,
@@ -8352,6 +8196,19 @@ function MainContentComponent({
     setAutoScroll((prev) => (prev === nextAutoScroll ? prev : nextAutoScroll));
   }, [isNearBottom]);
 
+  useEffect(() => {
+    const container = mainBodyRef.current;
+    if (!container) return;
+    const readHistory = () => {
+      cancelComposerScrollRestoreRef.current?.();
+      bottomJumpCleanupRef.current?.();
+      autoScrollRef.current = false;
+      setAutoScroll(false);
+    };
+    container.addEventListener(HISTORY_READING_EVENT, readHistory);
+    return () => container.removeEventListener(HISTORY_READING_EVENT, readHistory);
+  }, [composerDraftCacheKey]);
+
   const jumpToConversationBottom = useCallback(() => {
     const container = mainBodyRef.current;
     if (!container) return;
@@ -8449,8 +8306,9 @@ function MainContentComponent({
     };
   }, [autoScroll, composerDraftCacheKey]);
 
-  // Auto-scroll to bottom when visible transcript rows materially change.
-  useEffect(() => {
+  // Position before paint: a passive effect plus RAF exposes an intermediate
+  // history position when a follow-up changes the transcript's height.
+  useLayoutEffect(() => {
     if (!autoScroll || restoringComposerScrollRef.current || !mainBodyRef.current) return;
     const container = mainBodyRef.current;
     if (
@@ -8467,34 +8325,18 @@ function MainContentComponent({
     if (autoScrollFrameRef.current) {
       cancelAnimationFrame(autoScrollFrameRef.current);
     }
-    autoScrollFrameRef.current = window.requestAnimationFrame(() => {
-      autoScrollFrameRef.current = null;
-      const nextTargetTop = getAutoScrollTargetTop(container.scrollHeight, container.clientHeight);
-      const stillAtTarget = Math.abs(container.scrollTop - nextTargetTop) < 2;
-      lastAutoScrollTargetRef.current = nextTargetTop;
-      if (!stillAtTarget) {
-        container.scrollTop = nextTargetTop;
-        incrementRendererPerfCounter("task-scroll.follow_write_count", rendererPerfLoggingEnabled);
-      } else {
-        incrementRendererPerfCounter(
-          "task-scroll.follow_skipped_count",
-          rendererPerfLoggingEnabled,
-        );
-      }
-    });
-    return () => {
-      if (autoScrollFrameRef.current) {
-        cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = null;
-      }
-    };
+    autoScrollFrameRef.current = null;
+    lastAutoScrollTargetRef.current = pinScrollElementToBottom(container);
+    incrementRendererPerfCounter("task-scroll.follow_write_count", rendererPerfLoggingEnabled);
   }, [
     autoScroll,
     childEvents.length,
     childTasks.length,
     commandOutputSessions.length,
+    composerDraftCacheKey,
     latestVisibleTaskEvent?.id,
     rendererPerfLoggingEnabled,
+    transcriptMode,
   ]);
 
   // Restore each workspace/session to its own reading position. A ResizeObserver
@@ -9567,19 +9409,11 @@ function MainContentComponent({
     }
   };
 
-  const findMentionAtCursor = (value: string, cursor: number | null) => {
-    if (cursor === null) return null;
-    const uptoCursor = value.slice(0, cursor);
-    const atIndex = uptoCursor.lastIndexOf("@");
-    if (atIndex === -1) return null;
-    if (atIndex > 0 && /[a-zA-Z0-9]/.test(uptoCursor[atIndex - 1])) {
-      return null;
-    }
-    const query = uptoCursor.slice(atIndex + 1);
-    if (query.startsWith(" ")) return null;
-    if (query.includes("\n") || query.includes("\r")) return null;
-    return { query, start: atIndex, end: cursor };
-  };
+  const mentionLabels = useMemo(() => [
+    "everybody", "everyone", "all",
+    ...agentRoles.map(role => getLocalizedAgentRoleText(role, language).name),
+    ...integrationMentionOptions.map(option => option.label),
+  ], [agentRoles, integrationMentionOptions, language]);
 
   const mentionOptions = useMemo<MentionOption[]>(() => {
     if (!mentionOpen) return [];
@@ -9809,12 +9643,14 @@ function MainContentComponent({
   }, [effectiveSlashSelectedIndex, slashOpen, slashOptions]);
 
   const updateMentionState = useCallback((value: string, cursor: number | null) => {
-    const mention = findMentionAtCursor(value, cursor);
+    const mention = findComposerMentionQuery(value, cursor, mentionLabels);
     if (!mention) {
-      // Only update state if it actually changed — avoids unnecessary re-renders
-      if (mentionOpenRef.current) setMentionOpen(false);
-      if (mentionQueryRef.current !== "") setMentionQuery("");
-      if (mentionTargetRef.current !== null) setMentionTarget(null);
+      mentionOpenRef.current = false;
+      mentionQueryRef.current = "";
+      mentionTargetRef.current = null;
+      setMentionOpen(false);
+      setMentionQuery("");
+      setMentionTarget(null);
       return;
     }
     const queryChanged = mentionQueryRef.current !== mention.query;
@@ -9832,8 +9668,11 @@ function MainContentComponent({
     if (targetChanged) {
       setMentionTarget({ start: mention.start, end: mention.end });
     }
+    mentionOpenRef.current = true;
+    mentionQueryRef.current = mention.query;
+    mentionTargetRef.current = { start: mention.start, end: mention.end };
     if (shouldResetSelection) setMentionSelectedIndex(0);
-  }, []);
+  }, [mentionLabels]);
 
   const updateSlashState = useCallback((value: string, cursor: number | null) => {
     const slash = findSlashAtCursor(value, cursor);
@@ -9977,10 +9816,8 @@ function MainContentComponent({
     // option must stay in lockstep with the visible input value. Deferring this
     // update can briefly leave an unrelated stale option selected.
     updateSlashState(value, cursor);
-    // Mentions may scan a larger source set and can remain non-urgent.
-    startTransition(() => {
-      updateMentionState(value, cursor);
-    });
+    // Keep menu visibility in the same update as the draft and selection.
+    updateMentionState(value, cursor);
 
     // Debounced mode suggestion detection
     if (modeSuggestionTimerRef.current) clearTimeout(modeSuggestionTimerRef.current);
@@ -10005,8 +9842,9 @@ function MainContentComponent({
 
   const handleInputCursorChange = (cursor: number) => {
     if (isPromptComposing) return;
-    updateMentionState(inputValue, cursor);
-    updateSlashState(inputValue, cursor);
+    const currentValue = promptInputRef.current?.getValue() ?? inputValue;
+    updateMentionState(currentValue, cursor);
+    updateSlashState(currentValue, cursor);
   };
 
   const replaceIntegrationMentionRange = (
@@ -10053,14 +9891,18 @@ function MainContentComponent({
     );
     pendingProgrammaticResizeRef.current = true;
     setInputValue(nextValue);
+    mentionOpenRef.current = false;
+    mentionQueryRef.current = "";
+    mentionTargetRef.current = null;
     setMentionOpen(false);
     setMentionQuery("");
     setMentionTarget(null);
 
+    const cursorPosition = before.length + insertText.length + (needsSpace ? 1 : 0);
+    promptInputRef.current?.setSelectionRange(cursorPosition, cursorPosition);
     requestAnimationFrame(() => {
       const input = promptInputRef.current;
-      if (input) {
-        const cursorPosition = before.length + insertText.length + (needsSpace ? 1 : 0);
+      if (input && input.getValue() === nextValue) {
         input.focus();
         input.setSelectionRange(cursorPosition, cursorPosition);
       }
@@ -11450,32 +11292,13 @@ function MainContentComponent({
   const renderTimelineControlsStatus = useCallback(
     () => (
       <div className="timeline-controls-status">
-        {canToggleCompletedTranscript ? (
-          <button
-            type="button"
-            className="timeline-controls-label timeline-controls-label-button with-duration"
-            onClick={toggleCompletedTranscriptMode}
-            aria-expanded={transcriptMode !== "delivery"}
-            title={transcriptMode === "delivery" ? "Show full timeline" : "Show only final output"}
-          >
-            <span>{workDurationLabel}</span>
-            <span className="timeline-controls-label-chevron" aria-hidden="true">
-              {transcriptMode === "delivery" ? (
-                <ChevronRight size={13} strokeWidth={1.8} />
-              ) : (
-                <ChevronDown size={13} strokeWidth={1.8} />
-              )}
-            </span>
-          </button>
-        ) : (
-          <span
-            className={`timeline-controls-label ${
+        <span
+          className={`timeline-controls-label ${
             isTaskWorkingForDuration || isTaskFinished ? "with-duration" : ""
-            }${isTaskWorkingForDuration ? " is-working" : ""}`}
-          >
-            {workDurationLabel}
-          </span>
-        )}
+          }${isTaskWorkingForDuration ? " is-working" : ""}`}
+        >
+          {workDurationLabel}
+        </span>
         {isTaskWorking && progressHeartbeat && (
           <span
             className="timeline-controls-progress"
@@ -11504,13 +11327,11 @@ function MainContentComponent({
       </div>
     ),
     [
-      canToggleCompletedTranscript,
       continuationStatusChip,
       isTaskFinished,
       isTaskWorking,
       isTaskWorkingForDuration,
       progressHeartbeat,
-      toggleCompletedTranscriptMode,
       transcriptMode,
       workDurationLabel,
     ],
@@ -13068,10 +12889,7 @@ function MainContentComponent({
       isChatTask={isChatTask}
       isTaskWorking={isTaskWorking}
       isReplayMode={isReplayMode}
-      defaultTranscriptMode={defaultTranscriptMode}
       transcriptMode={transcriptMode}
-      showFullTimeline={showFullTimeline}
-      returnToDefaultTranscript={returnToDefaultTranscript}
       markdownComponents={markdownComponents}
       mainBodyRef={mainBodyRef}
       messageFeedbackMap={messageFeedbackMap}
@@ -13336,7 +13154,14 @@ function MainContentComponent({
         </div>
       </div>
       {/* Body */}
-      <div className="main-body" ref={mainBodyRef} onScroll={handleScroll}>
+      <div
+        className="main-body"
+        ref={mainBodyRef}
+        onScroll={handleScroll}
+        tabIndex={0}
+        role="region"
+        aria-label={translate("task.history.region", "Conversation")}
+      >
         <div
           className={`task-session-shell${conversationTurnItems.length >= 4 ? " has-turn-rail" : ""}`}
         >

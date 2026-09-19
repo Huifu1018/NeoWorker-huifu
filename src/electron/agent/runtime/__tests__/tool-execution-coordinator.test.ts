@@ -33,6 +33,35 @@ function lifecycleContext(events: Any[], overrides: Any = {}) {
 }
 
 describe("ToolExecutionCoordinator lifecycle", () => {
+  it.each([true, false])("retains a failed tool's retryable=%s and structured recovery state", async retryable => {
+    const result = { success: false, message: "Repair the returned units", retryable,
+      translationId: "checkpoint.json", nextUnits: retryable ? [{ key: "u0" }] : [] };
+    const { coordinator } = coordinatorFor(result);
+    const output = await coordinator.executeTool("office_translation", { action: "apply" }, lifecycleContext([]), "repair");
+    expect(output.envelope).toMatchObject({ status: "error", retryable, structuredData: result });
+    expect(JSON.parse(output.resultJson)).toEqual(result);
+  });
+
+  it("uses the current registry after replacement without rerouting an in-flight call", async () => {
+    let finish!: (value: Any) => void;
+    const oldRegistry = {
+      executeToolWithRuntime: vi.fn(() => new Promise((resolve) => { finish = resolve; })),
+    } as Any;
+    const newRegistry = {
+      executeToolWithRuntime: vi.fn().mockResolvedValue({ result: { success: true, contract: "report" } }),
+    } as Any;
+    let current = oldRegistry;
+    const coordinator = new ToolExecutionCoordinator(() => current);
+    const first = coordinator.executeTool("office_translation", {}, lifecycleContext([]), "old-call");
+    current = newRegistry;
+    const second = await coordinator.executeTool("create_document", {}, lifecycleContext([]), "new-call");
+    finish({ result: { success: true, contract: "translation" } });
+    expect((await first).result.contract).toBe("translation");
+    expect(second.result.contract).toBe("report");
+    expect(oldRegistry.executeToolWithRuntime).toHaveBeenCalledTimes(1);
+    expect(newRegistry.executeToolWithRuntime).toHaveBeenCalledTimes(1);
+  });
+
   it("falls back to a legacy registry executor when runtime context is unavailable", async () => {
     const events: Any[] = [];
     const { coordinator, registry } = legacyCoordinatorFor({

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   AlignLeft,
@@ -55,6 +55,8 @@ import {
   isSkillVisibleForCurrentProductSupport,
 } from "../utils/product-availability";
 import { NeoWorkerPageHeader } from "./NeoWorkerPageHeader";
+import { getIdeaAvailability, loadIdeaAvailability, type IdeaAvailability, type IdeaAvailabilitySnapshot, type IdeaSettingsTarget } from "../utils/idea-availability";
+import { SKILL_INVENTORY_UPDATED_EVENT } from "../utils/skill-inventory-events";
 
 type IdeaCategory =
   | "all"
@@ -76,6 +78,7 @@ interface Idea {
   category: IdeaCategory;
   skill?: string;
   integrations?: string[];
+  mode?: "plan";
 }
 
 const IDEA_PHOTO_COVERS = [
@@ -721,13 +724,13 @@ const IDEAS: Idea[] = [
     integrations: ["notion"],
   },
   {
-    title: "Smart home dry-run plan",
-    description: "Orchestrate smart-home actions with a safety-first dry run.",
+    title: "Smart home routine plan",
+    description: "Draft a routine and safety checklist from a device list; no device control.",
     prompt:
-      "Use the usecase-smart-home-brain skill. I'll describe what I want (e.g. 'Set evening mode'). Produce a dry-run plan: device, action, expected effect, rollback. Respect quiet hours 22:00–07:00. STOP before any physical state change. If integrations are missing, give me a setup checklist.",
+      "I will provide my device list and desired routine. Draft a plan listing actions, prerequisites, safety checks and manual rollback. Ask for missing device details first. This is planning only: do not connect to or control devices, and do not claim any action was executed.",
     icon: Lightbulb,
     category: "life",
-    skill: "usecase-smart-home-brain",
+    mode: "plan",
   },
   {
     title: "Spotify mood queue",
@@ -785,14 +788,95 @@ export interface IdeaPromptSelection {
 
 interface IdeasPanelProps {
   onUsePrompt: (selection: IdeaPromptSelection) => void;
+  onOpenSettings?: (target: IdeaSettingsTarget) => void;
 }
 
-export function IdeasPanel({ onUsePrompt }: IdeasPanelProps) {
+function availabilityReason(availability: IdeaAvailability): string {
+  const labels = {
+    missingSkill: translate("ideas.status.missingSkill", "Skill not installed"),
+    disabled: translate("ideas.status.disabled", "Skill disabled"),
+    blocked: translate("ideas.status.blocked", "Restricted by skill policy"),
+    platform: translate("ideas.status.platform", "Unsupported platform"),
+    dependencies: translate("ideas.status.dependencies", "Missing dependencies"),
+    integration: translate("ideas.status.integration", "Service not configured"),
+  };
+  const reason = availability.reason ? labels[availability.reason] : "";
+  const detailLabels: Record<string, string> = {
+    notion: "Notion",
+    calendar: translate("ideas.calendar", "Calendar"),
+    darwin: "macOS",
+    win32: "Windows",
+    linux: "Linux",
+  };
+  const details = availability.details?.map(detail => detailLabels[detail] || detail);
+  return details?.length ? `${reason}: ${details.join(", ")}` : reason;
+}
+
+export function IdeasPanel({ onUsePrompt, onOpenSettings }: IdeasPanelProps) {
   useLanguage();
   const [activeCategory, setActiveCategory] = useState<IdeaCategory>("all");
   const [query, setQuery] = useState("");
   const [showFavorites, setShowFavorites] = useState(false);
   const [favorites, setFavorites] = useState<Set<number>>(() => new Set());
+  const [availabilityView, setAvailabilityView] = useState<IdeaAvailability["state"]>("ready");
+  const [snapshot, setSnapshot] = useState<IdeaAvailabilitySnapshot | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [checkFailed, setCheckFailed] = useState(false);
+  const [launching, setLaunching] = useState(false);
+  const requestId = useRef(0);
+  const launchInFlight = useRef(false);
+  const mounted = useRef(false);
+  const refreshAvailability = useCallback(async () => {
+    const id = ++requestId.current;
+    setChecking(true);
+    setCheckFailed(false);
+    try {
+      const next = await loadIdeaAvailability();
+      if (!mounted.current || id !== requestId.current) return null;
+      setSnapshot(next);
+      return next;
+    } catch {
+      if (mounted.current && id === requestId.current) {
+        setSnapshot(null);
+        setCheckFailed(true);
+      }
+      return null;
+    } finally {
+      if (mounted.current && id === requestId.current) setChecking(false);
+    }
+  }, []);
+  useEffect(() => {
+    mounted.current = true;
+    const refresh = () => { if (!launchInFlight.current) void refreshAvailability(); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    window.addEventListener(SKILL_INVENTORY_UPDATED_EVENT, refresh);
+    return () => {
+      mounted.current = false;
+      requestId.current++;
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener(SKILL_INVENTORY_UPDATED_EVENT, refresh);
+    };
+  }, [refreshAvailability]);
+
+  const launchIdea = async (idea: Idea, prompt: string, title: string) => {
+    if (launchInFlight.current) return;
+    launchInFlight.current = true;
+    setLaunching(true);
+    try {
+      const latest = await refreshAvailability();
+      if (!latest || !mounted.current) return;
+      const availability = getIdeaAvailability(idea, latest);
+      if (availability.state === "setup") {
+        setAvailabilityView("setup");
+        return;
+      }
+      onUsePrompt({ prompt, skillId: idea.skill, skillLabel: idea.skill ? title : undefined });
+    } finally {
+      launchInFlight.current = false;
+      if (mounted.current) setLaunching(false);
+    }
+  };
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleIdeas = IDEAS.filter((idea) => {
@@ -820,6 +904,8 @@ export function IdeasPanel({ onUsePrompt }: IdeasPanelProps) {
     return (
       isSupported &&
       hasAvailableIntegrations &&
+      snapshot !== null &&
+      getIdeaAvailability(idea, snapshot).state === availabilityView &&
       matchesCategory &&
       matchesFavorite &&
       matchesQuery
@@ -893,7 +979,22 @@ export function IdeasPanel({ onUsePrompt }: IdeasPanelProps) {
         ))}
       </nav>
 
-      {visibleIdeas.length === 0 ? (
+      <div className="ideas-availability-toolbar">
+        <div className="ideas-availability-tabs" role="tablist" aria-label={translate("ideas.availability", "Availability")}>
+          {(["ready", "setup", "plan"] as const).map(state => (
+            <button key={state} type="button" role="tab" aria-selected={availabilityView === state} onClick={() => setAvailabilityView(state)}>
+              {state === "ready" ? translate("ideas.available", "Available") : state === "setup" ? translate("ideas.needsSetup", "Needs setup") : translate("ideas.plans", "Plans only")}
+            </button>
+          ))}
+        </div>
+        <button type="button" className="ideas-availability-refresh" disabled={checking || launching} onClick={() => void refreshAvailability()} aria-label={translate("ideas.refresh", "Refresh availability")} title={translate("ideas.refresh", "Refresh availability")}><RefreshCw size={16} /></button>
+      </div>
+
+      {checking || checkFailed ? (
+        <div className="ideas-empty-state" role="status">
+          <p>{checking ? translate("ideas.checking", "Checking availability...") : translate("ideas.checkFailed", "Availability check failed. Refresh to retry.")}</p>
+        </div>
+      ) : visibleIdeas.length === 0 ? (
         <div className="ideas-empty-state">
           <h2>{translate("ideas.empty.title", "No matching ideas")}</h2>
           <p>
@@ -916,22 +1017,21 @@ export function IdeasPanel({ onUsePrompt }: IdeasPanelProps) {
             const prompt = ideaPrompt(ideaIndex, idea.prompt);
             const composerPrompt = stripIdeaSkillInvocation(prompt, idea.skill);
             const isFavorite = favorites.has(ideaIndex);
+            const availability = getIdeaAvailability(idea, snapshot!);
+            const needsSetup = availability.state === "setup";
             return (
               <article
                 key={ideaIndex}
                 className={`ideas-gallery-card${ideaIndex % 5 === 0 ? " is-featured" : ""}`}
                 data-idea-category={idea.category}
+                data-idea-id={idea.skill || `idea-${ideaIndex}`}
+                data-availability={availability.state}
               >
                 <button
                   type="button"
                   className="ideas-card-launch"
-                  onClick={() =>
-                    onUsePrompt({
-                      prompt: composerPrompt,
-                      skillId: idea.skill,
-                      skillLabel: idea.skill ? title : undefined,
-                    })
-                  }
+                  disabled={launching || (needsSetup && !onOpenSettings)}
+                  onClick={() => needsSetup ? onOpenSettings?.(availability.settings!) : void launchIdea(idea, composerPrompt, title)}
                   title={title}
                 >
                   <div className="ideas-card-cover">
@@ -968,9 +1068,10 @@ export function IdeasPanel({ onUsePrompt }: IdeasPanelProps) {
                       <h2>{title}</h2>
                     </div>
                     <p>{description}</p>
+                    {needsSetup && <p className="ideas-card-availability">{availabilityReason(availability)}</p>}
                     <div className="ideas-card-footer">
                       <span>
-                        {translate("ideas.readyToStart", "Fill in chat")}
+                        {needsSetup ? translate("ideas.configure", "Configure") : availability.state === "plan" ? translate("ideas.draftPlan", "Draft plan") : translate("ideas.readyToStart", "Fill in chat")}
                       </span>
                       {idea.integrations && idea.integrations.length > 0 && (
                         <span

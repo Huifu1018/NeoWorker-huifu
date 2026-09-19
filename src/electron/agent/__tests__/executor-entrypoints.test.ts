@@ -251,7 +251,9 @@ describe("TaskExecutor entrypoint guards", () => {
     executor.resetRuntimeForNewFollowUpRun = vi.fn();
     executor.emitEvent = vi.fn();
 
+    executor.toolRegistry = { resetOfficeArtifactRequest: vi.fn(), setDocumentTaskContext: vi.fn() };
     const context = executor.prepareExternalRuntimeFollowUpRun("继续生成PPT");
+    expect(executor.toolRegistry.resetOfficeArtifactRequest).toHaveBeenCalledTimes(1);
 
     expect(executor.daemon.beginFollowUpRun).toHaveBeenCalledWith(
       "external-follow-up",
@@ -885,6 +887,9 @@ describe("TaskExecutor entrypoint guards", () => {
       fs.mkdirSync(path.join(workspacePath, ".neoworker"), { recursive: true });
       fs.writeFileSync(path.join(workspacePath, ".neoworker", "report.pptx"), "new deck");
       fs.writeFileSync(path.join(workspacePath, ".neoworker", "report-old.pptx"), "old deck");
+      fs.mkdirSync(path.join(workspacePath, ".neoworker", "tmp"));
+      fs.writeFileSync(path.join(workspacePath, ".neoworker", "tmp", "translated-en.json"), "{}");
+      fs.writeFileSync(path.join(workspacePath, ".neoworker-translation-progress.json"), "{}");
 
       const executor = Object.create(TaskExecutor.prototype) as Any;
       executor.task = { id: "task-output-summary" };
@@ -895,6 +900,8 @@ describe("TaskExecutor entrypoint guards", () => {
       executor.getReplayEventType = (event: Any) => event.type;
       executor.daemon = {
         getTaskEvents: vi.fn(() => [
+          { type: "file_created", timestamp: 9, payload: { path: ".neoworker/tmp/translated-en.json" } },
+          { type: "file_created", timestamp: 9, payload: { path: ".neoworker-translation-progress.json" } },
           {
             type: "file_created",
             timestamp: 10,
@@ -932,6 +939,15 @@ describe("TaskExecutor entrypoint guards", () => {
     } finally {
       fs.rmSync(workspacePath, { recursive: true, force: true });
     }
+  });
+
+  it("does not turn a language fallback into an unverified completion claim", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.buildTaskOutputSummary = () => ({ created: ["report.docx"] });
+    const text = executor.buildSimplifiedChineseLanguageFallback(true);
+    expect(text).toContain("不能确认任务已完成");
+    expect(text).not.toMatch(/(?:^|\n)任务已完成[。！]/);
+    expect(text).toContain("不代表最终交付");
   });
 
   it("discovers a PPTX written directly by a shell command in the current turn", () => {

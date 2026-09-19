@@ -113,6 +113,7 @@ import { shouldUseNativeWindowFrame } from "../shared/native-window-frame";
 import { GuardrailManager } from "./guardrails/guardrail-manager";
 import { AppearanceManager } from "./settings/appearance-manager";
 import { resolveOpaqueWindowBackground } from "./window-background";
+import { installEditContextMenu } from "./edit-context-menu";
 import { MemoryFeaturesManager } from "./settings/memory-features-manager";
 import { PersonalityManager } from "./settings/personality-manager";
 import { MCPClientManager } from "./mcp/client/MCPClientManager";
@@ -238,6 +239,7 @@ import {
   shouldDisableHardwareAcceleration,
 } from "./utils/runtime-stability";
 import { registerMediaProtocol, registerMediaScheme } from "./media";
+import { closeExternalWebPreviews } from "./web-preview/external-web-preview";
 import {
   registerWebPreviewProtocol,
   registerWebPreviewScheme,
@@ -1350,6 +1352,7 @@ if (isCliDirectRunMode()) {
         mainWindow.setFullScreen(true);
       }
       installMainWindowStatePersistence(mainWindow);
+      installEditContextMenu(mainWindow, () => AppearanceManager.loadSettings().language);
 
       const loadMainWindowContent = () => {
         if (!mainWindow || mainWindow.isDestroyed()) {
@@ -4549,6 +4552,7 @@ if (isCliDirectRunMode()) {
     app.on("before-quit", (event) => {
       shutdownCoordinator.handleBeforeQuit(event);
     });
+    app.on("will-quit", closeExternalWebPreviews);
 
     // Window control handlers (used by custom title bar buttons on Windows)
     ipcMain.handle(IPC_CHANNELS.WINDOW_MINIMIZE, () => {

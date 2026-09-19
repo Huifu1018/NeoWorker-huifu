@@ -9,6 +9,7 @@ export interface OfficeHtmlVisualRenderInput {
   outputPath: string;
   maxPages?: number;
   timeoutMs?: number;
+  textValidation?: "strict" | "warn";
 }
 
 export interface OfficeHtmlVisualRenderResult {
@@ -16,6 +17,7 @@ export interface OfficeHtmlVisualRenderResult {
   pageCount: number;
   imagePaths: string[];
   renderer: "electron-chromium";
+  textWarningPages?: number[];
 }
 
 export type OfficeHtmlVisualRenderer = (
@@ -34,6 +36,7 @@ interface CaptureRect {
   y: number;
   width: number;
   height: number;
+  text?: string;
 }
 
 function buildEvidenceDirectory(outputPath: string): string {
@@ -50,6 +53,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
   outputPath,
   maxPages,
   timeoutMs = 60_000,
+  textValidation = "strict",
 }) => {
   if (!process.versions.electron) {
     throw new Error("NeoWorker's embedded Chromium renderer is only available inside the desktop app.");
@@ -106,7 +110,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
       "document.body ? document.body.innerText : ''",
       true,
     );
-    if (containsOfficeMojibake(String(documentText || ""))) {
+    if (textValidation === "strict" && containsOfficeMojibake(String(documentText || ""))) {
       throw new Error("Rendered Office preview contains replacement or mojibake characters.");
     }
 
@@ -140,6 +144,9 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
     const evidenceDirectory = buildEvidenceDirectory(outputPath);
     await fs.mkdir(evidenceDirectory, { recursive: true });
     const imagePaths: string[] = [];
+    const textWarningPages: number[] = [];
+    let previousCapture: Buffer | undefined;
+    let previousText: string | undefined;
 
     for (const region of regions.slice(0, maxPages)) {
       const rect = (await window.webContents.executeJavaScript(`(async () => {
@@ -157,6 +164,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const bounds = node.getBoundingClientRect();
         return {
+          text: node.innerText || '',
           x: Math.max(0, Math.floor(bounds.left)),
           y: Math.max(0, Math.floor(bounds.top)),
           width: Math.max(1, Math.min(window.innerWidth - Math.max(0, Math.floor(bounds.left)), Math.ceil(bounds.width))),
@@ -166,13 +174,26 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
       if (!rect || rect.width < 1 || rect.height < 1) {
         throw new Error(`Page ${region.index + 1} could not be positioned for visual capture.`);
       }
-      const image = await window.webContents.capturePage(rect);
+      if (containsOfficeMojibake(rect.text || "")) {
+        if (textValidation === "strict") throw new Error(`Page ${region.index + 1} contains replacement or mojibake characters.`);
+        textWarningPages.push(region.index + 1);
+      }
+      let image = await window.webContents.capturePage(rect);
+      let png = image.toPNG();
+      // Hidden Chromium windows can briefly return the preceding compositor frame after scrolling.
+      for (let retry = 0; retry < 3 && previousCapture?.equals(png) && rect.text !== previousText; retry++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        image = await window.webContents.capturePage(rect);
+        png = image.toPNG();
+      }
       if (image.isEmpty()) {
         throw new Error(`Page ${region.index + 1} produced an empty visual capture.`);
       }
       const imagePath = path.join(evidenceDirectory, pageImageName(imagePaths.length));
-      await fs.writeFile(imagePath, image.toPNG());
+      await fs.writeFile(imagePath, png);
       imagePaths.push(imagePath);
+      previousCapture = png;
+      previousText = rect.text;
     }
 
     const evidencePath = path.join(evidenceDirectory, "evidence.json");
@@ -185,6 +206,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
           sourceHtml: path.resolve(htmlPath),
           createdAt: new Date().toISOString(),
           pageCount: imagePaths.length,
+          textWarningPages,
           pages: imagePaths.map((imagePath, index) => ({
             page: index + 1,
             imagePath,
@@ -201,6 +223,7 @@ export const renderOfficeHtmlVisualEvidence: OfficeHtmlVisualRenderer = async ({
       pageCount: imagePaths.length,
       imagePaths,
       renderer: "electron-chromium",
+      textWarningPages,
     };
   } finally {
     clearTimeout(timeout);

@@ -7,6 +7,19 @@ import {
 } from "../hermes-task-prompt";
 
 describe("Hermes task prompt", () => {
+  it("carries the same identity and filesystem evidence rules through every entry point", () => {
+    const prompts = [
+      buildHermesInitialPrompt({ taskPrompt: "Who are you?", workspacePath: "/tmp/work" }),
+      buildHermesInitialPrompt({ taskPrompt: "Continue", workspacePath: "/tmp/work", resuming: true }),
+      buildHermesFollowUpPrompt({ message: "Where is .hermes?", workspacePath: "C:\\work" }),
+      buildHermesRecoveryPrompt({ taskPrompt: "Continue", workspacePath: "C:\\work" }),
+    ];
+    for (const prompt of prompts) {
+      expect(prompt).toContain("Your user-facing identity is NeoWorker");
+      expect(prompt).toContain("Hermes is the embedded engine, not your name");
+      expect(prompt).toContain("configuration alone does not prove file existence or creation history");
+    }
+  });
   it("keeps the runtime contract separate from task and workspace context", () => {
     const prompt = buildHermesInitialPrompt({
       taskPrompt: "Create the requested file.",

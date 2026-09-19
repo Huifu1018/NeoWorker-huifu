@@ -13,6 +13,14 @@ import {
 } from "../attachment-content";
 
 describe("attachment-content helpers", () => {
+  it("hides unindented multiline extracts without hiding the user's trailing instruction", () => {
+    const input = `Translate this file\n\nAttached files (relative to workspace):\n- slides.pptx (.neoworker/uploads/1/slides.pptx)\n  Attachment metadata: size=100; mime=application/pptx\nExtracted content:\n${ATTACHMENT_CONTENT_START_MARKER}\nSlide 1\nINTERNAL_SLIDE_TEXT\n\nSlide 2\nINTERNAL_TABLE_TEXT\n${ATTACHMENT_CONTENT_END_MARKER}\n\nKeep the original layout.`;
+    expect(stripPptxBubbleContent(input)).toBe("Translate this file\n\nKeep the original layout.");
+    expect(extractAttachmentDetails(input)[0]?.name).toBe("slides.pptx");
+  });
+  it("hides a marked extract even when its closing marker was truncated", () => {
+    expect(stripPptxBubbleContent(`Translate\n${ATTACHMENT_CONTENT_START_MARKER}\nSlide 1\nInternal text`)).toBe("Translate");
+  });
   it("strips strategy metadata blocks from rendered prompt text", () => {
     const input = `Build me a live dashboard showing system metrics
 

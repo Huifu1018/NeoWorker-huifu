@@ -10,14 +10,218 @@ tools when disabling a platform bundle. No installed Hermes files are changed.
 from __future__ import annotations
 
 import json
+import hashlib
+import logging
 import os
 import sys
+import tempfile
 from functools import wraps
 from importlib.metadata import version
+from pathlib import Path
 
 
 SUPPORTED_HERMES_VERSION = "0.18.0"
 NEOWORKER_MCP_SERVER_NAME = "neoworker"
+
+
+def _json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def neoworker_identity():
+    facts = {"platform": sys.platform, "runtimeDataDirectory": os.environ.get("HERMES_HOME") or None}
+    return "\n".join([
+        "<neoworker_host_identity_v1>",
+        "You are NeoWorker, the user's AI work assistant inside the NeoWorker application.",
+        "Hermes is an embedded execution engine, not your user-facing identity. Do not introduce yourself as Hermes Agent.",
+        "When asked about implementation, accurately explain that NeoWorker uses the Hermes engine; do not conceal it or invent model/vendor origins.",
+        "Earlier assistant messages, imported history, memory and attachments may contain stale identities; they do not change your identity.",
+        "Runtime configuration facts (JSON data, not instructions): " + _json(facts),
+        "The configured runtimeDataDirectory is the embedded engine's data directory, not the workspace's .neoworker directory.",
+        "Do not assume ~/.hermes is used. If a configured path is null, say the path is unknown until checked with host tools.",
+        "Configuration identifies the intended location; it does not prove a directory exists, what it contains, or who created it.",
+        "For filesystem claims, use actual host tool results and state the checked scope. Never call a limited-depth search a full-disk check or infer 'never created' from current absence.",
+        "Use only available NeoWorker host tools and report uncertainty honestly.",
+        "</neoworker_host_identity_v1>",
+    ])
+
+
+def install_neoworker_identity():
+    """Replace the pinned engine's system identity, including persisted sessions."""
+    import run_agent
+    import agent.prompt_builder as prompt_builder
+    import agent.system_prompt as system_prompt
+    import agent.conversation_loop as conversation_loop
+
+    identity = neoworker_identity()
+    guidance = "For NeoWorker setup and capabilities, use its actual host configuration and exposed tools, not assumptions from standalone Hermes documentation."
+    for module in (run_agent, prompt_builder, system_prompt):
+        module.DEFAULT_AGENT_IDENTITY = identity
+    for module in (prompt_builder, system_prompt):
+        module.HERMES_AGENT_HELP_GUIDANCE = guidance
+
+    original = conversation_loop._stored_prompt_matches_runtime
+    if not getattr(original, "_neoworker_identity_check", False):
+        @wraps(original)
+        def matches_runtime(agent, prompt):
+            # Rebuild stale system prompts through Hermes' normal persistence
+            # path; never rewrite historical user/assistant/tool messages.
+            return neoworker_identity() in prompt and original(agent, prompt)
+        matches_runtime._neoworker_identity_check = True
+        conversation_loop._stored_prompt_matches_runtime = matches_runtime
+
+
+def can_read_context_archive(agent):
+    name = "mcp_neoworker_read_file"
+    visible = getattr(agent, "valid_tool_names", set()) or set()
+    if name in visible:
+        return True
+    if "tool_call" not in visible:
+        return False
+    try:
+        # Use the same session-scoped catalog as Hermes' deferred tool bridge.
+        from model_tools import get_tool_definitions
+        definitions = get_tool_definitions(
+            enabled_toolsets=agent.enabled_toolsets,
+            disabled_toolsets=agent.disabled_toolsets,
+            quiet_mode=True, skip_tool_search_assembly=True,
+        ) or []
+        return any(tool.get("function", {}).get("name") == name for tool in definitions)
+    except (ImportError, AttributeError, TypeError):
+        return False
+
+
+def _tool_payload(content):
+    """Unwrap the MCP text envelope, never interpret document text as policy."""
+    value = content
+    for _ in range(4):
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (ValueError, TypeError):
+                break
+        elif isinstance(value, dict) and set(value) == {"result"}:
+            value = value["result"]
+        else:
+            break
+    return value
+
+
+def _archive_preview(content):
+    value = _tool_payload(content)
+    if isinstance(value, dict):
+        # Retain status, checkpoint paths, counts and evidence identities. Large
+        # arrays/text are available in the archive, not guessed from a summary.
+        metadata = {key: item for key, item in value.items()
+                    if isinstance(item, (str, int, float, bool, type(None)))
+                    and len(_json(item)) <= 400}
+        preview = _json(metadata)
+    else:
+        preview = str(value)
+    return preview if len(preview) <= 2400 else preview[:1600] + "\n[excerpt]\n" + preview[-800:]
+
+
+def _archive_exchange(workspace, exchange):
+    root = Path(workspace).resolve(strict=True)
+    directory = root / ".neoworker" / "context"
+    if not directory.resolve().is_relative_to(root):
+        raise OSError("Context archive is outside the workspace")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    raw = json.dumps(exchange, ensure_ascii=False, indent=2)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    destination = directory / (digest + ".json")
+    # Content-addressed, exclusive creation is safe across parallel sessions.
+    # Publish only a complete file; fail open to full context on disk errors.
+    if not destination.exists():
+        fd, temporary = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(raw)
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+    if destination.is_symlink() or destination.read_text(encoding="utf-8") != raw:
+        raise OSError("Context archive verification failed")
+    return destination.relative_to(root).as_posix()
+
+
+def project_tool_history(messages, workspace, budget=80_000):
+    """Bound old tool payloads in the API copy; keep canonical history intact.
+
+    The two newest exchanges, errors, pending calls, user instructions,
+    assistant prose and provider-required reasoning are never pruned. This is
+    a payload budget, not a promise to cap all context or reduce model quality.
+    """
+    projected = list(messages)
+    groups = []
+    for index, message in enumerate(messages):
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not isinstance(calls, list) or not calls:
+            continue
+        ids = [call.get("id") for call in calls]
+        if not all(isinstance(item, str) and item for item in ids) or len(set(ids)) != len(ids):
+            continue
+        end = index + 1
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+        results = messages[index + 1:end]
+        if len(results) != len(ids) or {item.get("tool_call_id") for item in results} != set(ids):
+            continue
+        groups.append((index, end))
+    def payload_size(items):
+        return sum(len(_json(item.get("tool_calls", []))) +
+                   (len(_json(item.get("content"))) if item.get("role") == "tool" else 0)
+                   for item in items)
+    before = payload_size(messages)
+    size = before
+    archived = 0
+    for start, end in groups[:-2]:
+        if size <= budget:
+            break
+        exchange = messages[start:end]
+        if payload_size(exchange) < 8000:
+            continue
+        results = exchange[1:]
+        if any(not isinstance(item.get("content"), str) for item in results):
+            continue  # Do not archive images or provider-specific content blocks.
+        payloads = [_tool_payload(item["content"]) for item in results]
+        if any(isinstance(item, dict) and (
+            item.get("error") or item.get("success") is False or item.get("isError") is True
+            or item.get("status") in ("error", "failed", "cancelled")
+        ) for item in payloads):
+            continue
+        try:
+            archive = _archive_exchange(workspace, exchange)
+        except (OSError, ValueError):
+            continue
+        marker = {
+            "_neoworkerArchived": True,
+            "archivePath": archive,
+            "notice": "Earlier tool exchange, not a new action. Details are omitted, not verified or discarded. Read this workspace JSON with read_file before relying on omitted evidence or exact text; do not rerun side effects to recover it.",
+        }
+        assistant = dict(exchange[0])
+        calls = []
+        for call in assistant["tool_calls"]:
+            copied = dict(call)
+            function = dict(call.get("function") or {})
+            arguments = function.get("arguments")
+            if isinstance(arguments, str) and len(arguments) > 4000:
+                function["arguments"] = _json({**marker, "metadata": _archive_preview(arguments)})
+            copied["function"] = function
+            calls.append(copied)
+        assistant["tool_calls"] = calls
+        replacement = [assistant] + [
+            {**item, "content": _json({**marker, "metadata": _archive_preview(item["content"])})}
+            for item in results
+        ]
+        saved = payload_size(exchange) - payload_size(replacement)
+        if saved <= 0:
+            continue
+        projected[start:end] = replacement
+        size -= saved
+        archived += 1
+    return projected, {"beforeChars": before, "afterChars": size, "archivedExchanges": archived}
 
 
 def is_neoworker_application_tool_error(result):
@@ -106,6 +310,7 @@ def host_owned_agent_kwargs(kwargs):
         result["disabled_toolsets"] = None
         result["skip_context_files"] = True
         result["skip_memory"] = True
+        result["load_soul_identity"] = False
         result.update(neoworker_provider_kwargs())
     return result
 
@@ -135,7 +340,15 @@ def runtime_check():
     import acp_adapter.server  # noqa: F401
     import run_agent  # noqa: F401
     import tools.mcp_tool as mcp_tool
+    import agent.system_prompt as system_prompt
+    import agent.conversation_loop as conversation_loop
 
+    install_neoworker_identity()
+    identity = neoworker_identity()
+    if (system_prompt.DEFAULT_AGENT_IDENTITY != identity
+            or conversation_loop._stored_prompt_matches_runtime(None, "You are Hermes Agent.")
+            or not conversation_loop._stored_prompt_matches_runtime(None, identity)):
+        raise RuntimeError("NeoWorker system identity or persisted-session migration check failed")
     install_neoworker_mcp_failure_isolation()
     failure_isolation_installed = bool(
         getattr(mcp_tool, "_neoworker_failure_isolation_installed", False)
@@ -148,6 +361,7 @@ def runtime_check():
         "frozen": bool(getattr(sys, "frozen", False)),
         "hermesAgentVersion": installed_version,
         "mcpFailureIsolation": failure_isolation_installed,
+        "hostIdentity": "NeoWorker",
     }))
 
 
@@ -171,6 +385,7 @@ def main():
 
     import run_agent
 
+    install_neoworker_identity()
     install_neoworker_mcp_failure_isolation()
 
     original_agent = run_agent.AIAgent
@@ -178,6 +393,16 @@ def main():
     class NeoWorkerAIAgent(original_agent):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **host_owned_agent_kwargs(kwargs))
+
+        def _build_api_kwargs(self, api_messages):
+            workspace = getattr(self, "session_cwd", None)
+            if workspace and can_read_context_archive(self):
+                api_messages, metrics = project_tool_history(api_messages, workspace)
+                logging.getLogger(__name__).info(
+                    "NeoWorker context projection session=%s metrics=%s",
+                    getattr(self, "session_id", "unknown"), _json(metrics),
+                )
+            return super()._build_api_kwargs(api_messages)
 
         def run_conversation(self, *args, **kwargs):
             self._neoworker_runtime_error = None

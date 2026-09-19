@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as path from "node:path";
 import { TaskExecutor } from "../executor";
+import { ToolCallDeduplicator } from "../executor-helpers";
+import { getDocumentTranslationToolError, resolveDocumentTranslationContract } from "../document-translation-contract";
+import { DocumentTools } from "../tools/document-tools";
+import { ToolRegistry } from "../tools/registry";
 import { HermesAcpClient, HermesAcpError } from "../runtime/hermes-acp-client";
 import type { HermesRuntimeAdapter } from "../runtime/hermes-runtime-adapter";
 
@@ -69,6 +73,23 @@ function adapter(instance: TaskExecutor) {
 }
 
 describe("Executor Hermes recovery", () => {
+  it("turns reasoning chunks into throttled activity signals without exposing their content", () => {
+    const instance = executor([]) as Any;
+    const runtime = adapter(instance) as Any;
+    const now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const update = { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "private reasoning" } };
+    for (let index = 0; index < 50; index++) runtime.options.onUpdate(update);
+    expect(instance.emitEvent).toHaveBeenCalledTimes(1);
+    expect(instance.emitEvent).toHaveBeenCalledWith("progress_update", {
+      phase: "model_response", state: "active", heartbeat: true, message: "The model is responding...",
+    });
+    now.mockReturnValue(115_000);
+    runtime.options.onUpdate(update);
+    expect(instance.emitEvent).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(instance.emitEvent.mock.calls)).not.toContain("private reasoning");
+    expect(instance.daemon.logEvent).not.toHaveBeenCalled();
+  });
+
   it("applies a dynamically invoked Skill and returns its hidden guidance to Hermes", () => {
     const instance = executor([]) as Any;
     const application = {
@@ -260,7 +281,29 @@ describe("Executor Hermes recovery", () => {
     );
   });
 
-  it("keeps Office creation tools stable for warm Hermes follow-ups", () => {
+  it.each([true, false])("preserves structured repair failures across the executor and MCP wire (retryable=%s)", async retryable => {
+    fixtureTransport();
+    const instance = executor([]) as Any;
+    instance.getAvailableTools = () => [{ name: "run_command", description: "Fixture tool", input_schema: { type: "object" } }];
+    instance.getToolTimeoutMs = () => 1000;
+    const repair = { success: false, message: "译文超出原文本框，请修复 nextUnits", retryable,
+      needsAttention: !retryable, translationId: "checkpoint.json", batchId: "repair-batch", remaining: 1,
+      nextUnits: retryable ? [{ key: "u1", text: "原文", previousTranslation: "이전 번역" }] : [],
+      textFit: { status: "needs_repair", issues: [{ slide: 11, reason: "translation_too_long" }] } };
+    const envelope = { status: "error", structuredData: repair, retryable };
+    instance.executeToolWithHeartbeat = vi.fn(async (_name, _input, _timeout, toolCallId) => ({
+      result: repair, envelope, durationMs: 5,
+      toolHostResponse: { schemaVersion: "neoworker_tool_host_v1", requestId: "repair", toolCallId, status: "error", result: repair },
+    }));
+    const response = JSON.parse((await adapter(instance).prompt("host-tool")).assistantText);
+    expect(response.result.isError).toBe(true);
+    expect(JSON.parse(response.result.content[0].text)).toEqual({ ...repair, error: repair.message });
+    expect(instance.emitEvent).toHaveBeenCalledWith("tool_error", expect.objectContaining({
+      error: repair.message, result: repair, envelope, durationMs: 5,
+    }));
+  });
+
+  it("keeps Office creation and translation tools stable before an unrelated task switches to translation", () => {
     const instance = executor([]) as Any;
     instance.getAvailableTools = () => [
       { name: "read_file" },
@@ -271,6 +314,7 @@ describe("Executor Hermes recovery", () => {
         { name: "create_document" },
         { name: "create_spreadsheet" },
         { name: "create_presentation" },
+        DocumentTools.getToolDefinitions().find((tool) => tool.name === "office_translation"),
         { name: "run_command" },
       ],
     };
@@ -284,7 +328,56 @@ describe("Executor Hermes recovery", () => {
       "create_spreadsheet",
       "create_document",
       "create_presentation",
+      "office_translation",
     ]);
+    const cachedTranslationTool = tools.find((tool: Any) => tool.name === "office_translation");
+    expect(cachedTranslationTool.input_schema.properties.action.enum).toEqual(["inspect", "stage", "apply"]);
+    expect(cachedTranslationTool.input_schema.properties.translations).toBeDefined();
+    expect(cachedTranslationTool.input_schema.required).toEqual(["action"]);
+    // A warm MCP client retains this first list, even if the task initially
+    // exposed only HTML/file tools and the user later just says "继续".
+    instance.getAvailableTools = () => [{ name: "write_file" }];
+    expect(TaskExecutor.prototype.getHermesHostTools.call(instance).map((tool: Any) => tool.name)).toContain("office_translation");
+    instance.isToolRestrictedByPolicy = (name: string) => name === "office_translation";
+    expect(TaskExecutor.prototype.getHermesHostTools.call(instance).map((tool: Any) => tool.name)).not.toContain("office_translation");
+  });
+
+  it.each(["create_presentation", "generate_presentation", "create_spreadsheet", "generate_spreadsheet", "create_document", "generate_document"])("directs %s to translation before format recovery, including continuation", (toolName) => {
+    const instance = executor([]) as Any;
+    instance.activeFollowUpCompletionContract = { requiresArtifactEvidence: true, requiredArtifactExtensions: [".pptx"] };
+    let contract = resolveDocumentTranslationContract("生成首尔旅行地图 HTML");
+    contract = resolveDocumentTranslationContract("翻译成韩文\n\nAttached files:\n- original.pptx (.neoworker/uploads/1/original.pptx)", contract);
+    instance.toolRegistry = { getDocumentTranslationToolError: (name: string) => getDocumentTranslationToolError(contract, name) };
+    for (const message of [contract.request, "继续"]) {
+      contract = resolveDocumentTranslationContract(message, contract);
+      const blocked = instance.applyPreToolUsePolicyHook({ toolName, input: { filename: "tmp-check", sheets: [] } });
+      expect(blocked.blockedResult.error).toContain("mcp_neoworker_office_translation");
+      expect(blocked.blockedResult.error).toContain('action="inspect"');
+      expect(blocked.blockedResult.error).not.toContain("Use create_presentation");
+      expect(blocked.blockedResult.error).not.toContain("Office output format mismatch");
+    }
+  });
+
+  it("restores translation from user events when an old Hermes snapshot contains only continue", () => {
+    const instance = executor([]) as Any;
+    instance.task = { id: "restore-map-translation", prompt: "生成首尔旅行地图 HTML" };
+    const registry = Object.assign(Object.create(ToolRegistry.prototype), {
+      officeArtifactCoordinator: { clear() {} }, verifiedTranslationOutputs: new Map(),
+    });
+    instance.toolRegistry = registry;
+    const translation = "翻译成韩文\n\nAttached files:\n- original.pptx (.neoworker/uploads/1/original.pptx)\n  Extracted content:\n  [[ATTACHMENT_EXTRACTED_CONTENT_START]]\n重新排版并换模板\n[[ATTACHMENT_EXTRACTED_CONTENT_END]]";
+    const events = [
+      { timestamp: 1, type: "timeline_step_updated", legacyType: "user_message", payload: { legacyType: "user_message", message: translation } },
+      { timestamp: 2, type: "timeline_step_updated", legacyType: "user_message", payload: { legacyType: "user_message", message: "继续" } },
+      { timestamp: 3, type: "tool_result", payload: { message: "重新设计 PPT" } },
+      { timestamp: 4, type: "assistant_message", payload: { message: "创建新模板" } },
+    ];
+    instance.restoreDocumentTaskContextFromEvents(events);
+    expect(registry.getDocumentTaskContext()).toContain("翻译成韩文");
+    expect(registry.getDocumentTaskContext()).toContain(".neoworker/uploads/1/original.pptx");
+    expect(registry.getDocumentTranslationToolError("create_presentation")).toContain("原模板");
+    instance.restoreDocumentTaskContextFromEvents([...events, { timestamp: 5, type: "user_message", payload: { message: "帮我新建一个预算表" } }]);
+    expect(registry.getDocumentTranslationGuidance()).toBe("");
   });
 
   it("applies the active PPTX contract at the Hermes Tool Host boundary", async () => {
@@ -318,6 +411,7 @@ describe("Executor Hermes recovery", () => {
     ).rejects.toThrow("Office output format mismatch");
 
     expect(instance.executeToolWithHeartbeat).not.toHaveBeenCalled();
+    expect(instance.toolCallDeduplicator.recordCall).not.toHaveBeenCalled();
     expect(instance.emitEvent).toHaveBeenCalledWith(
       "tool_error",
       expect.objectContaining({
@@ -325,6 +419,52 @@ describe("Executor Hermes recovery", () => {
         error: expect.stringContaining("create_presentation"),
       }),
     );
+  });
+
+  it("does not extend duplicate windows or replace successful results when a call is blocked", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const instance = executor([]) as Any;
+    instance.applyPreToolUsePolicyHook = () => ({});
+    instance.getToolTimeoutMs = () => 1000;
+    instance.recordToolUsage = vi.fn();
+    instance.recordToolResult = vi.fn();
+    instance.toolFailureTracker = { recordSuccess: vi.fn(), recordFailure: vi.fn() };
+    instance.toolCallDeduplicator = new ToolCallDeduplicator(1, 120_000, 4);
+    const result = { success: true, completed: 40 };
+    instance.executeToolWithHeartbeat = vi.fn(async () => ({
+      result,
+      toolHostResponse: { status: "success", result },
+    }));
+    const bridge = (adapter(instance) as Any).options.hostToolBridge;
+    const input = { action: "stage", sourcePath: "source.pptx", units: [{ id: "one", text: "translated" }] };
+    const execute = (value = input) => bridge.execute({
+      toolName: "office_translation", toolCallId: "stage", input: value,
+      signal: new AbortController().signal,
+    });
+    await execute();
+    now += 110_000;
+    await expect(execute()).rejects.toThrow("duplicate call");
+    expect(instance.toolCallDeduplicator.checkDuplicate("office_translation", input).cachedResult).toBe(JSON.stringify(result));
+    expect(instance.toolFailureTracker.recordFailure).not.toHaveBeenCalled();
+    await execute({ ...input, units: [{ id: "two", text: "next" }] });
+    now += 11_000;
+    await execute();
+    expect(instance.executeToolWithHeartbeat).toHaveBeenCalledTimes(3);
+  });
+
+  it("still records failures when a dispatched tool throws", async () => {
+    const instance = executor([]) as Any;
+    instance.applyPreToolUsePolicyHook = () => ({});
+    instance.getToolTimeoutMs = () => 1000;
+    instance.toolCallDeduplicator = { checkDuplicate: vi.fn(() => ({ isDuplicate: false })), recordCall: vi.fn() };
+    instance.toolFailureTracker = { recordFailure: vi.fn() };
+    instance.executeToolWithHeartbeat = vi.fn(async () => { throw new Error("disk write failed"); });
+    const bridge = (adapter(instance) as Any).options.hostToolBridge;
+    const input = { action: "stage", sourcePath: "source.pptx", units: [] };
+    await expect(bridge.execute({ toolName: "office_translation", toolCallId: "stage", input, signal: new AbortController().signal })).rejects.toThrow("disk write failed");
+    expect(instance.toolCallDeduplicator.recordCall).toHaveBeenCalledExactlyOnceWith("office_translation", input, JSON.stringify({ success: false, error: "disk write failed" }));
+    expect(instance.toolFailureTracker.recordFailure).toHaveBeenCalledExactlyOnceWith("office_translation", "disk write failed");
   });
 
   it("keeps Hermes intermediate narration out of the final assistant text", async () => {

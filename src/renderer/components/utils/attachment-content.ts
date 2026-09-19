@@ -201,20 +201,27 @@ const stripPptxBubbleContent = (value: string): string => {
   const lines = value.split("\n");
   const output: string[] = [];
   let inExtractedSection = false;
+  let inMarkedExtractedSection = false;
   let inAttachmentSection = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
 
     if (trimmed === ATTACHMENT_CONTENT_START_MARKER) {
+      inMarkedExtractedSection = true;
       inExtractedSection = true;
       continue;
     }
 
     if (trimmed === ATTACHMENT_CONTENT_END_MARKER) {
+      inMarkedExtractedSection = false;
       inExtractedSection = false;
       continue;
     }
+
+    // Marked extracts can contain unindented slide text. Only the explicit
+    // closing marker ends them, not indentation or a blank line.
+    if (inMarkedExtractedSection) continue;
 
     if (trimmed === "Extracted content:" || trimmed === "Attachment content:") {
       inExtractedSection = true;

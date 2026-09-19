@@ -1387,6 +1387,7 @@ export type ToolType =
   | "search_files"
   | "run_skill"
   | "run_command"
+  | "shell_environment"
   | "compile_latex"
   | "generate_image"
   | "analyze_image"
@@ -1558,6 +1559,7 @@ export const TOOL_GROUPS = {
     "list_directory",
     "search_files",
     "system_info",
+    "shell_environment",
     "get_env",
     "get_app_paths",
     // Monty transform library (workspace-local scripts)
@@ -1745,6 +1747,7 @@ export const TOOL_RISK_LEVELS: Record<ToolType, ToolRiskLevel> = {
   list_directory: "read",
   search_files: "read",
   system_info: "read",
+  shell_environment: "read",
   get_current_location: "system",
   get_env: "read",
   get_app_paths: "read",
@@ -8934,7 +8937,17 @@ export const LLM_PROVIDER_TYPES = [
   ...CUSTOM_LLM_PROVIDER_TYPES,
 ] as const;
 
-export type LLMProviderType = (typeof LLM_PROVIDER_TYPES)[number];
+export type UserDefinedProviderId = `custom-openai-${string}`;
+export type LLMProviderType = (typeof LLM_PROVIDER_TYPES)[number] | UserDefinedProviderId;
+
+export function isUserDefinedProviderId(value: unknown): value is UserDefinedProviderId {
+  return typeof value === "string" && /^custom-openai-[a-z0-9][a-z0-9-]{0,79}$/.test(value);
+}
+
+export function isLLMProviderType(value: unknown): value is LLMProviderType {
+  return isUserDefinedProviderId(value) ||
+    (typeof value === "string" && (LLM_PROVIDER_TYPES as readonly string[]).includes(value));
+}
 
 /** Display names for LLM providers (used in multi-LLM mode UI) */
 export const MULTI_LLM_PROVIDER_DISPLAY: Record<
@@ -8983,6 +8996,7 @@ export interface CachedModelInfo {
 }
 
 export interface CustomProviderConfig {
+  displayName?: string;
   apiKey?: string;
   model?: string;
   baseUrl?: string;

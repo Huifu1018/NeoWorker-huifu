@@ -147,9 +147,15 @@ function stringifyModelPayload(params: BuildToolResultEnvelopeParams): string {
   let payload: string;
   if (params.error) {
     const message = getToolErrorMessage(params.error, "");
+    // Failed tools can return actionable, resumable state (e.g. translation
+    // repair batches). An error label must not replace that structured result.
+    const result = params.result && typeof params.result === "object" && !Array.isArray(params.result)
+      ? params.result as Record<string, unknown>
+      : params.result === undefined ? {} : { result: params.result };
+    const failure = { ...result, error: message || "Tool execution failed" };
     payload = reminder
-      ? stringifyPayloadWithReminder(message || "Tool execution failed", reminder, "error")
-      : JSON.stringify({ error: message || "Tool execution failed" });
+      ? stringifyPayloadWithReminder(failure, reminder, "error")
+      : stringifyJsonResult(failure);
   } else if (typeof params.result === "string") {
     payload = reminder
       ? stringifyPayloadWithReminder(params.result, reminder, "content")

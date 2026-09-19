@@ -263,6 +263,7 @@ async function main() {
     if (
       probeResult?.ok !== true ||
       probeResult?.frozen !== true ||
+      probeResult?.hostIdentity !== "NeoWorker" ||
       probeResult?.hermesAgentVersion !== HERMES_VERSION
     ) {
       fail(`Embedded Hermes runtime check failed: ${JSON.stringify(probeResult)}`);

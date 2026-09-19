@@ -1,16 +1,23 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { DocumentTools } from "../document-tools";
+import { ToolCallDeduplicator } from "../../executor-helpers";
+import { inspectOfficeTranslation, verifyOfficeTranslationFidelity } from "../../../documents/office-translation";
+import { fitPptxTranslation } from "../../../documents/pptx-translation-layout";
+import { MAX_TRANSLATION_BATCH_UNITS } from "../../../documents/translation-batches";
 import { compileLatex } from "../../../utils/document-generators/latex-compiler";
 import { generatePDF } from "../../../utils/document-generators/pdf-generator";
 import { runOfficeDocumentQualityCheck } from "../../../utils/office-document-quality";
 import type { OfficeCliArtifactBuilder } from "../../skills/officecli-artifact-builder";
 
 // Mock the generator modules since they depend on external packages
+vi.mock("../../../documents/pptx-translation-layout", () => ({
+  fitPptxTranslation: vi.fn(async (_source, output) => ({ output, checkedShapes: 1, adjustedShapes: 0, issues: [] })),
+}));
 vi.mock("../../../utils/document-generators/pdf-generator", () => ({
   generatePDF: vi.fn().mockResolvedValue({
     success: true,
@@ -146,6 +153,64 @@ describe("DocumentTools", () => {
 
   // ── setWorkspace ──────────────────────────────────────────────
 
+  it("migrates complete legacy passages without joining fragmented translations or changing old progress", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-v3-migrate-"));
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+      slide.addText([{ text: "BCM", options: { lang: "en-US" } }, { text: "安装", options: { lang: "zh-CN" } }], { x: 1, y: 1, w: 4, h: 1 });
+      slide.addText("A complete paragraph", { x: 1, y: 3, w: 4, h: 1 });
+      const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer);
+      fs.writeFileSync(path.join(directory, "source.pptx"), source);
+      const legacy = await inspectOfficeTranslation(source, true);
+      const saved = { ...legacy, targetLanguage: "german", completedUnitIds: legacy.units.map((unit) => unit.id),
+        units: legacy.units.map((unit) => ({ ...unit, text: unit.text === "A complete paragraph" ? "Ein vollständiger Absatz" : `Fragment ${unit.text}` })) };
+      const languageHash = createHash("sha256").update("german").digest("hex").slice(0, 16);
+      const filename = path.join(directory, `.neoworker-translation-${legacy.sourceSha256.slice(0, 16)}-${languageHash}.json`);
+      const bytes = JSON.stringify(saved); fs.writeFileSync(filename, bytes);
+      const tools = new DocumentTools(directory, "translation-test");
+      const result = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "German" });
+      expect(result.translationId).toContain("-v3.json");
+      expect(result.nextUnits.some((unit: { text: string }) => unit.text === "BCM安装")).toBe(true);
+      expect(result.nextUnits.some((unit: { text: string }) => unit.text === "A complete paragraph")).toBe(false);
+      expect(result.completed).toBeGreaterThan(0);
+      expect(fs.readFileSync(filename, "utf8")).toBe(bytes);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["translation_too_long", "translated_neighbor_text_overlap"])("repairs %s, retaining previous translations and publishing only after fitting", async reason => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-fit-repair-"));
+    const register = vi.fn();
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const pptx = new PptxGenJS();
+      const slide = pptx.addSlide();
+      slide.addText("A source sentence", { x: 1, y: 1, w: 2, h: 1 });
+      slide.addText("Another sentence", { x: 1, y: 3, w: 2, h: 1 });
+      fs.writeFileSync(path.join(directory, "source.pptx"), Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer));
+      const tools = new DocumentTools(directory, "translation-test", register);
+      const inspection = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "German" });
+      const id = inspection.nextUnits[0].id;
+      await tools.officeTranslation({ action: "stage", translationId: inspection.translationId, batchId: inspection.batchId,
+        translations: inspection.nextUnits.map((unit: { key: string; text: string }) => ({ key: unit.key, text: `Translated ${unit.text}` })) });
+      vi.mocked(fitPptxTranslation).mockResolvedValueOnce({ output: undefined, checkedShapes: 2, adjustedShapes: 0,
+        issues: [{ key: "box", slide: 1, text: "long", unitIds: [id], kind: "shape", reason }] });
+      const blocked = await tools.officeTranslation({ action: "apply", translationId: inspection.translationId, filename: "German.pptx" });
+      expect(blocked.success).toBe(false); expect(blocked.retryable).toBe(true);
+      expect(blocked.repairIds).toEqual([id]); expect(blocked.nextUnits).toHaveLength(1);
+      expect(blocked.nextUnits[0].previousTranslation).toBe("Translated A source sentence");
+      expect(blocked.completed).toBe(inspection.total - 1);
+      expect(register).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(directory, "German.pptx"))).toBe(false);
+      const resumed = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "German" });
+      expect(resumed.nextUnits[0].previousTranslation).toBe(blocked.nextUnits[0].previousTranslation);
+      await tools.officeTranslation({ action: "stage", translationId: resumed.translationId, batchId: resumed.batchId,
+        translations: [{ key: resumed.nextUnits[0].key, text: "Ein Satz" }] });
+      const delivered = await tools.officeTranslation({ action: "apply", translationId: resumed.translationId, filename: "German.pptx" });
+      expect(delivered.success).toBe(true); expect(delivered.textFit.status).toBe("passed");
+      expect(register).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("rejects unsupported PDF preservation without publishing a replacement report", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "office-translation-pdf-"));
     const register = vi.fn();
@@ -154,6 +219,46 @@ describe("DocumentTools", () => {
       await expect(tools.officeTranslation({ action: "inspect", sourcePath: "source.pdf" })).rejects.toThrow("尚不支持");
       expect(register).not.toHaveBeenCalled();
       expect(fs.readdirSync(directory)).toEqual([]);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["text_box_not_rendered", "translation_too_long"])("stops with actionable diagnostics for %s after automatic repair is unavailable", async reason => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-fit-stop-"));
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const pptx = new PptxGenJS();
+      pptx.addSlide().addText("Source", { x: 1, y: 1, w: 2, h: 1 });
+      fs.writeFileSync(path.join(directory, "source.pptx"), Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer));
+      const register = vi.fn(), tools = new DocumentTools(directory, "stop-test", register);
+      let progress = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+      const translationId = progress.translationId, id = progress.nextUnits[0].id;
+      const attempts = reason === "translation_too_long" ? 3 : 1;
+      for (let attempt = 0; attempt < attempts; attempt++) {
+        await tools.officeTranslation({ action: "stage", translationId, batchId: progress.batchId,
+          translations: progress.nextUnits.map((unit: Any) => ({ key: unit.key, text: "번역" })) });
+        vi.mocked(fitPptxTranslation).mockResolvedValueOnce({ output: undefined, checkedShapes: 1, adjustedShapes: 0,
+          issues: [{ key: "box", slide: 1, text: "번역", unitIds: [id], kind: "shape", reason }] });
+        progress = await tools.officeTranslation({ action: "apply", translationId, filename: "translated.pptx" });
+      }
+      expect(progress).toMatchObject({ success: false, retryable: false, needsAttention: true, nextUnits: [],
+        textFit: { issues: [{ slide: 1, unitIds: [id], reason }] } });
+      expect(progress.message).toContain("自动修复已停止");
+      expect(progress.guidance).toContain("Stop automatic retries");
+      expect(register).not.toHaveBeenCalled();
+      if (reason === "translation_too_long") {
+        const checkpointPath = path.join(directory, translationId);
+        const old = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
+        old.layoutRepairVersion = 2;
+        fs.writeFileSync(checkpointPath, JSON.stringify(old));
+        const resumed = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+        expect(resumed.remaining).toBe(0);
+        expect(JSON.parse(fs.readFileSync(checkpointPath, "utf8")).units[0].text).toBe("번역");
+        vi.mocked(fitPptxTranslation).mockResolvedValueOnce({ output: undefined, checkedShapes: 1, adjustedShapes: 0,
+          issues: [{ key: "box", slide: 1, text: "번역", unitIds: [id], kind: "shape", reason }] });
+        const checked = await tools.officeTranslation({ action: "apply", translationId, filename: "translated.pptx" });
+        expect(checked.retryable).toBe(true);
+        expect(checked.nextUnits[0].previousTranslation).toBe("번역");
+      }
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -189,6 +294,298 @@ describe("DocumentTools", () => {
       fs.rmSync(directory, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  it("resumes staged translations and never delivers a partial checkpoint", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-resume-"));
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const deck = new PptxGenJS();
+      deck.addSlide().addText("Hello", { x: 1, y: 1, w: 3, h: 1 });
+      deck.addSlide().addText("World", { x: 1, y: 1, w: 3, h: 1 });
+      deck.addSlide().addText("World", { x: 1, y: 1, w: 3, h: 1 });
+      fs.writeFileSync(path.join(directory, "source.pptx"), Buffer.from(await deck.write({ outputType: "nodebuffer" }) as Buffer));
+      const register = vi.fn();
+      const tools = new DocumentTools(directory, "task", register);
+      const inspect = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+      expect(inspect.remaining).toBeGreaterThan(1);
+      const stageInput = { action: "stage", sourcePath: "source.pptx", translationsPath: inspect.translationsPath };
+      const first = inspect.nextUnits[0];
+      await tools.officeTranslation({ ...stageInput, units: [{ id: first.id, text: "Translated first" }] });
+      const freshTools = new DocumentTools(directory, "task", register);
+      const resumed = await freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "Korean" });
+      expect(resumed.completed).toBe(1);
+      expect(resumed.remaining).toBe(inspect.total - 1);
+      expect(resumed.uniqueRemaining).toBe(resumed.remaining - 1);
+      expect(resumed.nextUnits.filter((unit: Any) => unit.text === "World")).toHaveLength(1);
+      expect(resumed.nextUnits.some((unit: Any) => unit.id === first.id)).toBe(false);
+      await expect(freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "translated.pptx" })).rejects.toThrow("尚未全部完成");
+      expect(register).not.toHaveBeenCalled();
+      await freshTools.officeTranslation({ ...stageInput, units: resumed.nextUnits.map((unit: Any) => ({ id: unit.id, text: `Translated ${unit.text}` })) });
+      const result = await freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "translated.pptx" });
+      expect(result.success).toBe(true);
+      expect(register).toHaveBeenCalledTimes(1);
+      const english = await freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "English" });
+      expect(english.completed).toBe(0);
+      expect(english.translationsPath).not.toBe(inspect.translationsPath);
+      register.mockImplementationOnce(() => { throw new Error("durable copy failed"); });
+      await expect(freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "retry.pptx" })).rejects.toThrow("durable copy failed");
+      const retried = await freshTools.officeTranslation({ ...stageInput, action: "apply", filename: "retry.pptx" });
+      expect(retried.reusedExistingArtifact).toBe(true);
+      expect(retried.path).toBe("retry.pptx");
+      expect(fs.existsSync(path.join(directory, "retry-v2.pptx"))).toBe(false);
+      const checkpointPath = path.join(directory, english.translationsPath);
+      const checkpoint = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
+      checkpoint.completedUnitIds = ["unknown-id"];
+      fs.writeFileSync(checkpointPath, JSON.stringify(checkpoint));
+      await expect(freshTools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "English" })).rejects.toThrow("进度损坏");
+      expect(JSON.parse(fs.readFileSync(checkpointPath, "utf8"))).toEqual(checkpoint);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["pptx", "docx", "xlsx"])("completes many %s batches through dedupe, rejected-input recovery and checkpoint resume", async (extension) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-batches-"));
+    const unitCount = extension === "pptx" ? 2661 : 161;
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      let source: Buffer;
+      if (extension === "pptx") {
+        const { default: PptxGenJS } = await import("pptxgenjs");
+        const deck = new PptxGenJS();
+        deck.defineSlideMaster({ title: "ORIGINAL", background: { color: "267A65" }, objects: [] });
+        for (let offset = 0; offset < unitCount; offset += 69) {
+          const slide = deck.addSlide("ORIGINAL");
+          const text = Array.from({ length: Math.min(69, unitCount - offset) }, (_, i) => `Source ${offset + i}`).join("\n");
+          slide.addText(text, { x: 1, y: 1, w: 7, h: 4, fontSize: 6 });
+          if (offset === 0) slide.addImage({ data: "image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXuoAAAAASUVORK5CYII=", x: 0, y: 0, w: 1, h: 1 });
+        }
+        source = Buffer.from(await deck.write({ outputType: "nodebuffer" }) as Buffer);
+      } else if (extension === "docx") {
+        const { Document, Packer, Paragraph } = await import("docx");
+        source = await Packer.toBuffer(new Document({ sections: [{ children: Array.from({ length: unitCount }, (_, i) => new Paragraph(`Source ${i}`)) }] }));
+      } else {
+        const { default: ExcelJS } = await import("exceljs");
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet("Original");
+        for (let i = 0; i < unitCount; i++) sheet.getCell(`A${i + 1}`).value = `Source ${i}`;
+        sheet.getCell("B1").value = 123;
+        sheet.getCell("C1").value = { formula: "B1*2", result: 246 };
+        source = Buffer.from(await workbook.xlsx.writeBuffer());
+      }
+      const sourcePath = `source.${extension}`;
+      fs.writeFileSync(path.join(directory, sourcePath), source);
+      const register = vi.fn();
+      let tools = new DocumentTools(directory, "batch-test", register);
+      const deduper = new ToolCallDeduplicator(3, 120_000, 4);
+      const dispatch = async (input: Any) => {
+        expect(deduper.checkDuplicate("office_translation", input).isDuplicate).toBe(false);
+        try {
+          const result = await tools.officeTranslation(input);
+          deduper.recordCall("office_translation", input, JSON.stringify(result));
+          return result;
+        } catch (error) {
+          deduper.recordCall("office_translation", input, JSON.stringify({ success: false, error: String(error) }));
+          throw error;
+        }
+      };
+      const inspection = { action: "inspect", sourcePath, targetLanguage: "Korean" };
+      let progress = await dispatch(inspection);
+      const originalManifest = await inspectOfficeTranslation(source);
+      // PPTX libraries also add editable notes-master text to the package.
+      expect(originalManifest.units.filter((unit) => unit.text.startsWith("Source "))).toHaveLength(unitCount);
+      const total = originalManifest.units.length;
+      expect(progress.total).toBe(total);
+      let batchCount = 0;
+      while (progress.remaining > 0) {
+        const input = {
+          action: "stage", sourcePath, translationsPath: progress.translationsPath,
+          units: progress.nextUnits.map((unit: Any) => ({ id: unit.id, text: `Translated ${unit.text}` })),
+        };
+        if (batchCount === 1) {
+          const checkpointPath = path.join(directory, progress.translationsPath);
+          const saved = fs.readFileSync(checkpointPath);
+          await expect(dispatch({ ...input, units: [{ id: "invalid-id", text: "bad" }, ...input.units.slice(1)] })).rejects.toThrow("无效的翻译单元");
+          expect(fs.readFileSync(checkpointPath)).toEqual(saved);
+          tools = new DocumentTools(directory, "batch-test", register);
+          const resumed = await dispatch(inspection);
+          expect(resumed.completed).toBe(progress.completed);
+          expect(resumed.nextUnits).toEqual(progress.nextUnits);
+          await expect(dispatch({ ...input, units: undefined, action: "apply", filename: `translated.${extension}` })).rejects.toThrow("尚未全部完成");
+        }
+        const compact = {
+          action: "stage", sourcePath, translationsPath: progress.translationsPath,
+          batchId: progress.batchId, translations: progress.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translated ${unit.text}` })).reverse(),
+        };
+        const next = await dispatch(compact);
+        expect(next.completed).toBe(progress.completed + input.units.length);
+        expect(next.remaining).toBe(total - next.completed);
+        progress = next;
+        batchCount++;
+        // Advance simulated model time, not wall-clock sleeps or dedupe resets.
+        now += 10_000;
+        expect(register).not.toHaveBeenCalled();
+      }
+      expect(batchCount).toBeLessThanOrEqual(Math.ceil(total / MAX_TRANSLATION_BATCH_UNITS) + 1);
+      const result = await dispatch({ action: "apply", sourcePath, translationsPath: progress.translationsPath, filename: `translated.${extension}` });
+      expect(result.success).toBe(true);
+      expect(register).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(path.join(directory, sourcePath))).toEqual(source);
+      const output = fs.readFileSync(path.join(directory, result.path));
+      await expect(verifyOfficeTranslationFidelity(source, output)).resolves.toBeUndefined();
+      const manifest = await inspectOfficeTranslation(output);
+      expect(manifest.units.map((unit) => unit.text)).toEqual(originalManifest.units.map((unit) => `Translated ${unit.text}`));
+    } finally {
+      clock.mockRestore();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("rejects malformed batch envelopes atomically and accepts legacy 41-unit batches", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-compact-"));
+    try {
+      const { Document, Packer, Paragraph } = await import("docx");
+      const source = await Packer.toBuffer(new Document({ sections: [{ children: Array.from({ length: 200 }, (_, i) => new Paragraph(`Source ${i}`)) }] }));
+      fs.writeFileSync(path.join(directory, "source.docx"), source);
+      const tools = new DocumentTools(directory, "compact-test");
+      const inspectInput = { action: "inspect", sourcePath: "source.docx", targetLanguage: "Korean" };
+      const first = await tools.officeTranslation(inspectInput);
+      expect(first.batchSize).toBe(160);
+      const checkpointPath = path.join(directory, first.translationsPath);
+      const original = fs.readFileSync(checkpointPath);
+      const compact = { action: "stage", sourcePath: "source.docx", translationsPath: first.translationsPath, batchId: first.batchId, translations: first.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translated ${unit.text}` })) };
+      for (const invalid of [
+        { ...compact, batchId: "wrong" },
+        { ...compact, translations: [...compact.translations, "extra"] },
+        { ...compact, translations: "not an array" },
+        { ...compact, units: [] },
+      ]) {
+        await expect(tools.officeTranslation(invalid)).rejects.toThrow();
+        expect(fs.readFileSync(checkpointPath)).toEqual(original);
+      }
+      const partial = await tools.officeTranslation({ action: "stage", sourcePath: "source.docx", translationsPath: first.translationsPath, units: first.nextUnits.slice(0, 41).map((unit: Any) => ({ id: unit.id, text: `Translated ${unit.text}` })) });
+      expect(partial.completed).toBe(41);
+      const saved = fs.readFileSync(checkpointPath);
+      await expect(tools.officeTranslation(compact)).rejects.toThrow("批次已过期");
+      expect(fs.readFileSync(checkpointPath)).toEqual(saved);
+      const resumed = await new DocumentTools(directory, "compact-test").officeTranslation(inspectInput);
+      expect(resumed.batchId).toBe(partial.batchId);
+      const final = await tools.officeTranslation({ ...compact, batchId: resumed.batchId, translations: resumed.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translated ${unit.text}` })).reverse() });
+      expect(final.remaining).toBe(0);
+      expect(final.completed).toBe(200);
+      const completed = JSON.parse(fs.readFileSync(checkpointPath, "utf8"));
+      expect(completed.units.map((unit: Any) => unit.text)).toEqual(Array.from({ length: 200 }, (_, i) => `Translated Source ${i}`));
+      expect(fs.readFileSync(path.join(directory, "source.docx"))).toEqual(source);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["missing", "duplicate", "unknown", "empty", "unicode", "control", "legacy-empty"])("saves valid entries and repairs only %s entries, without model-managed paths", async (problem) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-repair-"));
+    try {
+      const { Document, Packer, Paragraph } = await import("docx");
+      fs.writeFileSync(path.join(directory, "source.docx"), await Packer.toBuffer(new Document({ sections: [{ children: Array.from({ length: 200 }, (_, i) => new Paragraph(`Source ${i}`)) }] })));
+      let tools = new DocumentTools(directory, "repair-test");
+      const first = await tools.officeTranslation({ action: "inspect", sourcePath: "source.docx", targetLanguage: "Arabic" });
+      const entries = first.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translation ${unit.text}` }));
+      if (problem === "missing") entries.shift();
+      if (problem === "duplicate") entries[0] = entries[1];
+      if (problem === "unknown") entries[0].key = "unknown";
+      if (problem === "empty" || problem === "legacy-empty") entries[0].text = "";
+      if (problem === "unicode") entries[0].text = "bad\uFFFD";
+      if (problem === "control") entries[0].text = "bad\u0001";
+      // Reproduce the live task's missing translationsPath, recovering by exact batch identity.
+      const partial = await tools.officeTranslation({ action: "stage", sourcePath: "source.docx", batchId: first.batchId,
+        ...(problem === "legacy-empty" ? { units: entries.map((entry: Any, index: number) => ({ id: first.nextUnits[index].id, text: entry.text })) } : { translations: entries }) });
+      expect(partial.success).toBe(false);
+      expect(partial.accepted).toBe(problem === "duplicate" ? 158 : 159);
+      expect(partial.repairing).toBe(true);
+      expect(partial.nextUnits).toHaveLength(problem === "duplicate" ? 2 : 1);
+      expect(partial.issues.length).toBeGreaterThan(0);
+      tools = new DocumentTools(directory, "repair-test");
+      let current = partial;
+      while (current.remaining) {
+        current = await tools.officeTranslation({ action: "stage", translationId: current.translationId, batchId: current.batchId, translations: current.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translation ${unit.text}` })) });
+        expect(current.success).toBe(true);
+      }
+      const result = await tools.officeTranslation({ action: "apply", translationId: current.translationId, filename: "output.docx" });
+      expect(result.success).toBe(true);
+      const manifest = await inspectOfficeTranslation(fs.readFileSync(path.join(directory, result.path)));
+      expect(manifest.units.map((unit) => unit.text)).toEqual(Array.from({ length: 200 }, (_, i) => `Translation Source ${i}`));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("bounds no-progress replies and reopens only corrupted completed units on final apply", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-corrupt-"));
+    try {
+      const { Document, Packer, Paragraph } = await import("docx");
+      fs.writeFileSync(path.join(directory, "source.docx"), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("Hello"), new Paragraph("World")] }] })));
+      const register = vi.fn();
+      const tools = new DocumentTools(directory, "repair-test", register);
+      let current = await tools.officeTranslation({ action: "inspect", sourcePath: "source.docx", targetLanguage: "Arabic" });
+      for (let i = 0; i < 3; i++) {
+        current = await tools.officeTranslation({ action: "stage", translationId: current.translationId, batchId: current.batchId, translations: ["invalid"] });
+      }
+      expect(current.needsAttention).toBe(true);
+      expect(current.retryable).toBe(false);
+      expect(current.nextUnits).toEqual([]);
+      current = await tools.officeTranslation({ action: "inspect", sourcePath: "source.docx", targetLanguage: "Arabic" });
+      current = await tools.officeTranslation({ action: "stage", translationId: current.translationId, batchId: current.batchId, translations: current.nextUnits.map((unit: Any) => ({ key: unit.key, text: `Translated ${unit.text}` })) });
+      const checkpointFile = path.join(directory, current.translationsPath);
+      const saved = JSON.parse(fs.readFileSync(checkpointFile, "utf8"));
+      saved.units[0].text = "bad\uFFFD";
+      fs.writeFileSync(checkpointFile, JSON.stringify(saved));
+      const repair = await tools.officeTranslation({ action: "apply", translationId: current.translationId, filename: "output.docx" });
+      expect(repair.success).toBe(false);
+      expect(repair.remaining).toBe(1);
+      expect(repair.nextUnits[0].text).toBe("Hello");
+      expect(register).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(directory, "output.docx"))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(checkpointFile, "utf8")).units[1].text).toBe("Translated World");
+      await expect(tools.officeTranslation({ action: "stage", translationId: "../escape.json" })).rejects.toThrow("translationId");
+      await expect(tools.officeTranslation({ action: "stage", translationId: current.translationId }, [path.join(directory, "unrelated.docx")])).rejects.toThrow("本轮指定的原附件");
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("serializes overlapping compact replies across tool instances without overwriting progress", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-overlap-"));
+    try {
+      const { Document, Packer, Paragraph } = await import("docx");
+      fs.writeFileSync(path.join(directory, "source.docx"), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("Hello")] }] })));
+      const firstTools = new DocumentTools(directory, "first");
+      const secondTools = new DocumentTools(directory, "second");
+      const inspection = { action: "inspect", sourcePath: "source.docx", targetLanguage: "Korean" };
+      const first = await firstTools.officeTranslation(inspection);
+      const input = { action: "stage", sourcePath: "source.docx", translationsPath: first.translationsPath, batchId: first.batchId, translations: [{ key: first.nextUnits[0].key, text: "Translated" }] };
+      const calls = [firstTools.officeTranslation(input), secondTools.officeTranslation({ ...input, translations: [{ key: first.nextUnits[0].key, text: "Stale overwrite" }] })];
+      const results = await Promise.allSettled(calls);
+      // Asynchronous realpath resolution may enqueue either caller first.
+      // Exactly one may commit, and the losing batch must not overwrite it.
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+      expect(String(rejected.reason)).toContain("批次已过期");
+      const saved = JSON.parse(fs.readFileSync(path.join(directory, first.translationsPath), "utf8"));
+      expect(saved.units[0].text).toBe(results[0].status === "fulfilled" ? "Translated" : "Stale overwrite");
+      expect(saved.completedUnitIds).toHaveLength(1);
+      expect((await secondTools.officeTranslation(inspection)).remaining).toBe(0);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("reports review hints on stage and delivery and clears corrected hints without certifying accuracy", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-review-"));
+    try {
+      const { Document, Packer, Paragraph } = await import("docx");
+      fs.writeFileSync(path.join(directory, "source.docx"), await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("The cluster contains 384 GPUs in total.")] }] })));
+      const tools = new DocumentTools(directory, "review-test");
+      const first = await tools.officeTranslation({ action: "inspect", sourcePath: "source.docx", targetLanguage: "Korean" });
+      const base = { sourcePath: "source.docx", translationsPath: first.translationsPath };
+      const staged = await tools.officeTranslation({ ...base, action: "stage", batchId: first.batchId, translations: [{ key: first.nextUnits[0].key, text: "Translated cluster with 38 GPUs." }] });
+      expect(staged).toMatchObject({ success: true, remaining: 0, review: { status: "needs_review", semanticAccuracy: "not_verified", issueCount: 1 } });
+      const flagged = await tools.officeTranslation({ ...base, action: "apply", filename: "flagged.docx" });
+      expect(flagged.review).toMatchObject({ status: "needs_review", issueCount: 1 });
+      await tools.officeTranslation({ ...base, action: "stage", units: [{ id: first.nextUnits[0].id, text: "Translated cluster with 384 GPUs." }] });
+      const corrected = await tools.officeTranslation({ ...base, action: "apply", filename: "corrected.docx" });
+      expect(corrected.review).toMatchObject({ status: "no_heuristic_flags", semanticAccuracy: "not_verified", issueCount: 0 });
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
   it("setWorkspace updates the internal workspace path", async () => {

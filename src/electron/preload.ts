@@ -6227,6 +6227,7 @@ export interface FileViewerResult {
       renderStatus:
         "cached" | "rendering" | "rendered" | "text_only" | "failed";
       renderMessage?: string;
+      textWarningPages?: number[];
       renderer?: "officecli" | "libreoffice" | "artifact_tool";
     };
     webPreview?: {

@@ -272,11 +272,20 @@ export function PresentationViewer({
           )}
         </div>
 
-        {preview.renderer === "officecli" && renderedCount > 0 ? (
-          <div className="presentation-viewer-render-note" role="note">
-            {t("presentationViewer.compatibilityPreview", "Compatibility preview: complex fonts, tables and effects may differ from PowerPoint. The original file is unchanged.")}
-          </div>
-        ) : null}
+        <div className="presentation-viewer-render-note" role={preview.textWarningPages?.length ? "status" : "note"}>
+          {preview.renderer === "officecli" && renderedCount > 0 ? (
+            <div>{t("presentationViewer.compatibilityPreview", "Compatibility preview: complex fonts, tables and effects may differ from PowerPoint. The original file is unchanged.")}</div>
+          ) : null}
+          {preview.textWarningPages?.length ? (
+            <div>{t("presentationViewer.textEncodingWarning", "Possible text encoding issues on slide(s) {pages}. Preview remains available; the original file is unchanged.", { pages: preview.textWarningPages.join(", ") })}</div>
+          ) : preview.renderMessage ? (
+            <div>{preview.renderStatus === "rendered" || preview.renderStatus === "cached"
+              ? preview.renderMessage
+              : isRenderingHighFidelity
+                ? t("presentationViewer.preparingPreview", "Preparing slide preview")
+                : t("presentationViewer.previewUnavailableHint", "The file has not been changed. Open it in PowerPoint to view the original layout.")}</div>
+          ) : null}
+        </div>
 
         {!isRenderingHighFidelity ? (
           <div className="presentation-viewer-notes">
@@ -290,15 +299,6 @@ export function PresentationViewer({
           </div>
         ) : null}
 
-        {preview.renderStatus !== "rendered" &&
-        preview.renderStatus !== "cached" &&
-        preview.renderMessage ? (
-          <div className="presentation-viewer-render-note">
-            {isRenderingHighFidelity
-              ? t("presentationViewer.preparingPreview", "Preparing slide preview")
-              : t("presentationViewer.previewUnavailableHint", "The file has not been changed. Open it in PowerPoint to view the original layout.")}
-          </div>
-        ) : null}
       </section>
     </div>
   );

@@ -14,6 +14,7 @@
 
 import * as path from "path";
 import { createHash } from "crypto";
+import { stableJsonStringify } from "../utils/json-utils";
 import {
   canonicalizeToolName,
   getToolDedupeClass,
@@ -534,8 +535,16 @@ export function isAskingQuestion(text: string): boolean {
  * - Rate limiting per tool
  */
 export class ToolCallDeduplicator {
-  private recentCalls: Map<string, { count: number; lastCallTime: number; lastResult?: string }> =
+  private recentCalls: Map<string, { count: number; lastCallTime: number; lastResult?: string; stateVersion: number }> =
     new Map();
+  private officeTranslationStateVersions = new Map<string, number>();
+  private translationStateKey(input: Any): string {
+    const id = input?.translationId || input?.translationsPath;
+    return typeof id === "string" ? id.replace(/\\/g, "/").split("/").pop() || "" : "";
+  }
+  private translationStateVersion(input: Any): number {
+    return this.officeTranslationStateVersions.get(this.translationStateKey(input)) || 0;
+  }
   // Track semantic patterns (tool name -> list of recent inputs for pattern detection)
   private semanticPatterns: Map<string, Array<{ input: Any; time: number }>> = new Map();
   // Track semantic signature totals for the full task run (not reset per step)
@@ -574,9 +583,13 @@ export class ToolCallDeduplicator {
    * Generate a hash key for a tool call based on name and input
    */
   private getCallKey(toolName: string, input: Any): string {
-    // Normalize input by sorting keys for consistent hashing
-    const normalizedInput = JSON.stringify(input, Object.keys(input || {}).sort());
-    return `${toolName}:${normalizedInput}`;
+    // A JSON replacer key list drops nested fields. Compare all batch contents,
+    // without the display serializer's truncation, and retain only a digest.
+    const normalizedInput = stableJsonStringify(input, {
+      sortKeys: true,
+      maxOutputChars: 0,
+    });
+    return `${toolName}:${createHash("sha256").update(normalizedInput ?? "undefined").digest("hex")}`;
   }
 
   private getRecordedStructuralInputFailure(result: string | undefined): string | null {
@@ -627,6 +640,11 @@ export class ToolCallDeduplicator {
   private getSemanticSignature(toolName: string, input: Any): string {
     if (!input) return toolName;
     const canonicalToolName = canonicalizeToolName(toolName);
+
+    if (canonicalToolName === "office_translation") {
+      // A rejected unit must not poison corrected batches, inspection or apply.
+      return this.getCallKey(canonicalToolName, input);
+    }
 
     if (canonicalToolName === "browser_navigate") {
       const rawUrl = String(input.url || "").trim();
@@ -885,7 +903,15 @@ export class ToolCallDeduplicator {
       }
     }
 
-    const existing = this.recentCalls.get(callKey);
+    let existing = this.recentCalls.get(callKey);
+    // A successful stage advances the translation checkpoint. The
+    // same apply input is then a new stateful operation, not a duplicate of
+    // the previous apply attempt.
+    if (canonicalToolName === "office_translation" && input?.action === "apply" && existing
+      && existing.stateVersion !== this.translationStateVersion(input)) {
+      this.recentCalls.delete(callKey);
+      existing = undefined;
+    }
     const previousStructuralInputFailure = this.getRecordedStructuralInputFailure(
       existing?.lastResult,
     );
@@ -931,7 +957,7 @@ export class ToolCallDeduplicator {
     ) {
       return {
         isDuplicate: true,
-        reason: `Tool "${canonicalToolName}" called ${existing.count + 1} times with identical parameters within ${this.windowMs / 1000}s. This appears to be a duplicate call.`,
+        reason: `Tool "${canonicalToolName}" called ${existing.count + 1} times with identical parameters within ${this.windowMs / 1000}s. This appears to be a duplicate call. Use the previous result or correct the parameters; do not sleep to bypass duplicate detection.${canonicalToolName === "office_translation" ? " Inspect with the same sourcePath and targetLanguage to resume the saved checkpoint, then translate and stage the returned nextUnits." : ""}`,
         cachedResult: existing.lastResult,
       };
     }
@@ -958,6 +984,12 @@ export class ToolCallDeduplicator {
   recordCall(toolName: string, input: Any, result?: string): void {
     const now = Date.now();
     const canonicalToolName = canonicalizeToolName(toolName);
+    let parsedResult: Any;
+    try { parsedResult = result ? JSON.parse(result) : undefined; } catch { parsedResult = undefined; }
+    if (canonicalToolName === "office_translation" && (parsedResult?.success === true || parsedResult?.accepted > 0)
+      && input?.action === "stage" && this.translationStateKey(input) && parsedResult.accepted !== 0) {
+      this.officeTranslationStateVersions.set(this.translationStateKey(input), this.translationStateVersion(input) + 1);
+    }
 
     // Record exact call
     const callKey = this.getCallKey(canonicalToolName, input);
@@ -974,6 +1006,7 @@ export class ToolCallDeduplicator {
         count: 1,
         lastCallTime: now,
         lastResult: result,
+        stateVersion: this.translationStateVersion(input),
       });
     }
 
@@ -1010,6 +1043,7 @@ export class ToolCallDeduplicator {
    */
   reset(): void {
     this.recentCalls.clear();
+    this.officeTranslationStateVersions.clear();
     this.semanticPatterns.clear();
     this.semanticStructuralFailures.clear();
     // Don't reset rate limit counters - they should persist across steps

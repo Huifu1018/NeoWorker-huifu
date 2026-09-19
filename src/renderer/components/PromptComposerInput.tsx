@@ -10,6 +10,7 @@ import {
 import type {
   CompositionEvent as ReactCompositionEvent,
   ClipboardEvent as ReactClipboardEvent,
+  FormEvent as ReactFormEvent,
   KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import type { IntegrationMentionSelection } from "../../shared/types";
@@ -404,6 +405,10 @@ function setDomSelection(
   const range = document.createRange();
   const startPos = findDomPosition(root, start, mentionsById);
   const endPos = findDomPosition(root, end, mentionsById);
+  if (
+    selection.anchorNode === startPos.node && selection.anchorOffset === startPos.offset &&
+    selection.focusNode === endPos.node && selection.focusOffset === endPos.offset
+  ) return;
   range.setStart(startPos.node, startPos.offset);
   range.setEnd(endPos.node, endPos.offset);
   selection.removeAllRanges();
@@ -550,6 +555,24 @@ function renderComposerDom(root: HTMLElement, parts: RenderPart[]): void {
     fragment.appendChild(chip);
   }
 
+  // A terminal newline alone has no editable line box in Chromium. Without
+  // this zero-length sentinel, IME insertion lands before the newline while
+  // its composition range starts after it, leaving the first pinyin letter.
+  const lastPart = parts.at(-1);
+  if (lastPart?.type === "text" && lastPart.text.endsWith("\n")) {
+    const sentinel = document.createElement("br");
+    sentinel.dataset.composerTrailingBreak = "true";
+    fragment.appendChild(sentinel);
+  }
+
+  // Preserve Chromium's caret/composition anchor when a parent refresh only
+  // changes callbacks. Replacing identical nodes can commit raw pinyin.
+  if (
+    root.childNodes.length === fragment.childNodes.length &&
+    Array.from(root.childNodes).every((node, index) =>
+      node.isEqualNode(fragment.childNodes[index]),
+    )
+  ) return;
   root.replaceChildren(fragment);
 }
 
@@ -836,7 +859,9 @@ export const PromptComposerInput = forwardRef<
 
   const handleNativeBeforeInput = useCallback(
     (nativeEvent: InputEvent) => {
+      if (nativeEvent.isComposing) isComposingRef.current = true;
       if (isComposingRef.current || nativeEvent.isComposing) return;
+      if (!nativeEvent.cancelable) return;
       if (skipNextBeforeInputRef.current) {
         nativeEvent.preventDefault();
         skipNextBeforeInputRef.current = false;
@@ -911,7 +936,10 @@ export const PromptComposerInput = forwardRef<
     }
   };
 
-  const handleInput = () => {
+  const handleInput = (event: ReactFormEvent<HTMLDivElement>) => {
+    if ((event.nativeEvent as InputEvent).isComposing) {
+      isComposingRef.current = true;
+    }
     // Keep the canonical draft in sync even while an IME composition is in
     // progress. The layout effect already avoids rewriting the editable DOM
     // during composition, so this does not interrupt the IME. Without this
@@ -934,10 +962,10 @@ export const PromptComposerInput = forwardRef<
   ) => {
     isComposingRef.current = false;
     skipNextBeforeInputRef.current = false;
-    window.requestAnimationFrame(() => {
-      emitDomChange(false);
-      onCompositionChange?.(false);
-    });
+    // Flush in this event, not a later frame that may already contain a new
+    // composition or a programmatic newline.
+    emitDomChange(false);
+    onCompositionChange?.(false);
   };
 
   const handleBlur = () => {
@@ -1008,7 +1036,10 @@ export const PromptComposerInput = forwardRef<
       data-has-draft={latestDraftPresenceRef.current ? "true" : "false"}
       onInput={handleInput}
       onKeyDown={handleKeyDown}
-      onKeyUp={handleCursorChange}
+      onKeyUp={(event) => {
+        // Escape dismisses autocomplete; its keyup must not reopen the menu.
+        if (event.key !== "Escape") handleCursorChange();
+      }}
       onMouseUp={handleCursorChange}
       onCompositionStart={handleCompositionStart}
       onCompositionEnd={handleCompositionEnd}

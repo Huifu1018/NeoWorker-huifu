@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
+import { isArtifactRevisionRequest } from "../artifact-output-intent";
 import {
   DOCUMENT_TRANSLATION_GUIDANCE,
   buildDocumentTaskMessage,
@@ -739,8 +740,26 @@ export class ToolRegistry {
   private documentTools: DocumentTools;
   private documentTranslationContract?: DocumentTranslationContract;
   private verifiedTranslationOutputs = new Map<string, { hash: string; sourcePath: string }>();
+  private presentationTemplateRequest = "";
+  private documentTaskMessage = "";
 
   setDocumentTaskContext(message: string): void {
+    if (message !== this.documentTaskMessage) this.officeArtifactCoordinator.clear();
+    const instruction = stripGeneratedTaskContext(message);
+    const rejectsTemplate = /(?:不用|不要|无需).{0,8}(?:模板|模版)|(?:do not|don't).{0,12}template/i.test(instruction);
+    const hasTemplate = /(?:模板|模版|\btemplate\b)/i.test(instruction) && !rejectsTemplate
+      && (extractWorkspaceUploadPaths(message).some((source) => /\.pptx$/i.test(source))
+        || Boolean(this.presentationTemplateRequest)
+        || /(?:这个|这份|原|上传|提供|附件|第[一二三\d]+个).{0,20}(?:模板|模版)|\b(?:this|attached|uploaded|provided|original)\b.{0,30}\btemplate\b/i.test(instruction));
+    if (hasTemplate) {
+      this.presentationTemplateRequest = buildDocumentTaskMessage({
+        rawPrompt: message,
+        prompt: this.presentationTemplateRequest || this.documentTaskMessage,
+      });
+    } else if (rejectsTemplate || !isArtifactRevisionRequest(instruction)) {
+      this.presentationTemplateRequest = "";
+    }
+    this.documentTaskMessage = message;
     const next = resolveDocumentTranslationContract(message, this.documentTranslationContract);
     if (next.request !== this.documentTranslationContract?.request) this.verifiedTranslationOutputs.clear();
     this.documentTranslationContract = next;
@@ -748,6 +767,25 @@ export class ToolRegistry {
 
   getDocumentTranslationGuidance(): string {
     return this.documentTranslationContract?.preserveSource ? DOCUMENT_TRANSLATION_GUIDANCE : "";
+  }
+
+  getDocumentTranslationToolError(name: string, input?: Any): string | null {
+    return getDocumentTranslationToolError(this.documentTranslationContract, name, input);
+  }
+
+  private resolveTranslationFile(candidate: string): string {
+    const resolved = path.resolve(this.workspace.path, candidate);
+    try {
+      return fs.realpathSync.native(resolved);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return resolved;
+    }
+  }
+
+  async getExecutionEnvironmentGuidance(): Promise<string> {
+    const environment = await this.shellTools.environmentInfo();
+    return `NEOWORKER EXECUTION ENVIRONMENT (host and command environment may differ):\n${JSON.stringify(environment)}`;
   }
 
   getDocumentTaskContext(): string | undefined {
@@ -758,8 +796,12 @@ export class ToolRegistry {
     const contract = this.documentTranslationContract;
     if (!contract?.preserveSource) return null;
     const sourceTypes = extractOfficeAttachmentKinds(contract.request);
-    if (sourceTypes.includes("pdf") || /\bPDF\b/i.test(stripGeneratedTaskContext(contract.request))) {
-      return "当前 PDF 原版式翻译尚不支持，尤其不能保证阿拉伯语排版及图文原位对应，因此本轮没有交付替代报告。原文件已保留；如需改为重新排版的译文，请先明确确认。";
+    // When no upload descriptor is present, a bare "翻译 PDF" is the source
+    // format. Once an uploaded source is known, only that attachment's kind
+    // counts; an explicitly requested separate PDF report must not trip this
+    // source-format limitation.
+    if (sourceTypes.includes("pdf") || (sourceTypes.length === 0 && /\bPDF\b/i.test(stripGeneratedTaskContext(contract.request)))) {
+      return "当前工具尚不能可靠完成 PDF 原版式翻译，无法保证目标语言文字、字体和图文位置均保持正确。本轮未完成，原文件已保留；可以提供可编辑的 DOCX/PPTX，或明确允许重新排版后继续。";
     }
     return null;
   }
@@ -768,9 +810,15 @@ export class ToolRegistry {
     if (!this.documentTranslationContract?.preserveSource) return null;
     const deliveredSources = new Set<string>();
     for (const candidate of paths.filter((value) => /\.(?:pptx|docx|xlsx|pdf)$/i.test(value))) {
-      const resolved = path.resolve(this.workspace.path, candidate);
-      const receipt = this.verifiedTranslationOutputs.get(resolved);
+      // An explicitly requested analysis PDF is an additional deliverable;
+      // it is not a translated source and therefore has no source-fidelity
+      // receipt. Source translations remain fully receipt-gated below.
+      if (this.documentTranslationContract?.allowSeparatePdfReport && /\.pdf$/i.test(candidate)) {
+        continue;
+      }
       try {
+        const resolved = this.resolveTranslationFile(candidate);
+        const receipt = this.verifiedTranslationOutputs.get(resolved);
         if (receipt && createHash("sha256").update(fs.readFileSync(resolved)).digest("hex") === receipt.hash) {
           deliveredSources.add(receipt.sourcePath);
           continue;
@@ -779,8 +827,11 @@ export class ToolRegistry {
       return "翻译产物尚未通过原文件保真校验，不能宣称已完成。请使用 office_translation 保留原模板、图片和数据；PDF 保版式翻译尚不支持，不能通过新建报告或图片附录代替。";
     }
     const sources = extractWorkspaceUploadPaths(this.documentTranslationContract.request).filter((source) => /\.(?:pptx|docx|xlsx)$/i.test(source));
-    if (sources.some((source) => !deliveredSources.has(path.resolve(this.workspace.path, source)))) {
+    if (sources.some((source) => !deliveredSources.has(this.resolveTranslationFile(source)))) {
       return "翻译产物尚未通过原文件保真校验：还有原附件没有对应的已验证译本，不能将部分文件或合并重建文件当作全部完成。";
+    }
+    if (deliveredSources.size === 0) {
+      return "尚未生成通过原文件保真校验的译本文档，任务未完成。翻译进度 JSON 或临时文件不能作为最终交付。";
     }
     return null;
   }
@@ -788,26 +839,28 @@ export class ToolRegistry {
   private async runOfficeTranslation(input: Any): Promise<Any> {
     const sourcePaths = extractWorkspaceUploadPaths(this.documentTranslationContract?.request || "");
     if (this.documentTranslationContract?.preserveSource && sourcePaths.length > 0
-      && !sourcePaths.some((source) => path.resolve(this.workspace.path, source) === path.resolve(this.workspace.path, String(input.sourcePath || "")))) {
+      && !input.translationId
+      && !sourcePaths.some((source) => this.resolveTranslationFile(source) === this.resolveTranslationFile(String(input.sourcePath || "")))) {
       throw new Error("翻译源文件必须是本轮指定的原附件，不能先新建文件再冒充原文件翻译。");
     }
-    const result = await this.documentTools.officeTranslation(input);
+    const result = await this.documentTools.officeTranslation(input,
+      this.documentTranslationContract?.preserveSource ? sourcePaths.map((source) => this.resolveTranslationFile(source)) : undefined);
     if (result?.success && result?.sourceFidelity?.verified && typeof result.path === "string") {
-      const resolved = path.resolve(this.workspace.path, result.path);
+      const resolved = this.resolveTranslationFile(result.path);
       this.verifiedTranslationOutputs.set(resolved, {
         hash: createHash("sha256").update(fs.readFileSync(resolved)).digest("hex"),
-        sourcePath: path.resolve(this.workspace.path, input.sourcePath),
+        sourcePath: this.resolveTranslationFile(result.sourcePath),
       });
     }
     return result;
   }
 
-  private async assertDocumentTranslationTool(name: string): Promise<void> {
+  private async assertDocumentTranslationTool(name: string, input?: Any): Promise<void> {
     if (!this.documentTranslationContract) {
       const task = await this.daemon.getTaskById?.(this.taskId);
       this.setDocumentTaskContext(buildDocumentTaskMessage(task || {}));
     }
-    const error = getDocumentTranslationToolError(this.documentTranslationContract, name);
+    const error = this.getDocumentTranslationToolError(name, input);
     if (error) throw new Error(error);
   }
   private readonly officeArtifactCoordinator =
@@ -975,6 +1028,29 @@ export class ToolRegistry {
     signal?: AbortSignal,
   ): Promise<Any> {
     const normalized = normalizePresentationArtifactInput(input);
+    if (this.presentationTemplateRequest) {
+      const context = await this.inferPresentationSourceContext(this.presentationTemplateRequest);
+      if (!normalized.sourcePath && context.sourcePaths.length === 1) {
+        normalized.sourcePath = context.sourcePaths[0];
+      }
+      const source = normalized.sourcePath
+        ? await fsPromises.realpath(path.resolve(this.workspace.path, normalized.sourcePath))
+        : "";
+      const allowedSources: string[] = [];
+      for (const candidate of context.sourcePaths) {
+        allowedSources.push(await fsPromises.realpath(candidate));
+      }
+      if (!source || (allowedSources.length > 0 && !allowedSources.includes(source))) {
+        throw new Error("请指定本轮上传的 PPT 模板 sourcePath；不能用内置模板替代。多个模板时需明确选择其中一个。");
+      }
+      normalized.sourcePath = source;
+    }
+    if (normalized.sourcePath) {
+      normalized.sourcePath = await fsPromises.realpath(path.resolve(this.workspace.path, normalized.sourcePath));
+      normalized.sourceTemplateHash = createHash("sha256").update(await fsPromises.readFile(normalized.sourcePath)).digest("hex");
+      normalized.generationMode = "ppt-master";
+      normalized.presentationWorkflow = "ppt-master";
+    }
     const result = await this.officeArtifactCoordinator.run(
       "pptx",
       () => this.skillTools.createPresentation(normalized, { signal }),
@@ -2239,7 +2315,7 @@ export class ToolRegistry {
     input: Any,
     runtime?: Record<string, unknown>,
   ): Promise<Any> {
-    await this.assertDocumentTranslationTool(name);
+    await this.assertDocumentTranslationTool(name, input);
     const handler = composeToolMiddleware(
       (context: ToolExecutionContext) => this.handlerRegistry.execute(name, context),
       this.executionMiddlewares,
@@ -2969,6 +3045,7 @@ export class ToolRegistry {
     );
     register("generate_document", async ({ request }) => this.documentTools.generateDocument(request.input));
     register("office_translation", async ({ request }) => this.runOfficeTranslation(request.input), exclusiveSchedulerSpec);
+    register("shell_environment", async () => this.shellTools.environmentInfo());
     register("compile_latex", async ({ request }) => this.documentTools.compileLatex(request.input));
     register(
       "generate_presentation",
@@ -3823,6 +3900,14 @@ Office document quality gate:
 - If qualityCheck.status is "failed", do not claim the artifact is final. Use the validation message and issue list to repair or regenerate it.
 - If qualityCheck.status is "issues" but the tool returned success and the manifest quality score passed all hard gates, the file was published with advisory recommendations. Deliver it without an unchanged retry unless the user explicitly requested a zero-issue formatting pass.
 - If qualityCheck.status is "skipped", the built-in generator succeeded but OfficeCLI was unavailable; state that limitation plainly instead of claiming visual validation.
+- Check qualityCheck.contentReview separately from structural/rendering gates. Review its findings, repair confirmed content defects, and disclose unresolved issues. A rendered screenshot or a count of embedded images is NOT proof of content or visual quality. Do not repeatedly rebuild an unchanged file.
+
+Source-based reports (including shell-generated documents):
+- Ground each important comparison and figure in a specific source page/slide. Preserve the source's complete relevant table values, units and evaluation conditions. Distinguish source claims from your analysis; label missing evidence instead of inventing facts.
+- Check unit conversions explicitly (for example 37 亿 = 3.7B, not 37B). Keep absolute compute values separate from ratios, and base benchmark scores separate from few-shot results. If source pages disagree, cite both scopes rather than silently combining them.
+- PPT media filenames and shape names do not identify complete diagrams. A media image may be only a plus sign, arrow, logo or background; the actual diagram may consist of native shapes, text and connectors. Inspect the candidate image and the source slide before reuse. Use a rendered complete source diagram/slide or a clearly labelled reconstruction when necessary; if rendering is unavailable, explain the diagram in text and disclose the missing figure instead of substituting a component.
+- Give every retained figure a specific caption, source page and explanation of its relevance. Never paste a batch of media parts with identical generic captions. Size images to remain legible without enlarging decorative fragments; use native lists and readable tables.
+- Inspect final rendered pages for wrong/blank figures, excessive whitespace, unreadable tables and missing glyphs. Report separately what was structurally checked, visually inspected and checked against the source. File existence alone is not a quality verdict.
 
 Skill Management (create, modify, duplicate skills):
 - skill_create: Create a new custom skill
@@ -4136,7 +4221,7 @@ ${skillDescriptions}`;
       const execution = await this.executeWithRegisteredHandler(name, input, _runtime);
       return execution?.result ?? execution;
     }
-    await this.assertDocumentTranslationTool(name);
+    await this.assertDocumentTranslationTool(name, input);
     // Optional workspace-local policy hook (.neoworker/policy/tools.monty).
     // Fail-open on policy script errors to avoid bricking tool execution.
     try {
@@ -5367,7 +5452,7 @@ ${skillDescriptions}`;
     return translationCue && !explicitRedesignCue;
   }
 
-  private async inferPresentationSourceContext(): Promise<{
+  private async inferPresentationSourceContext(request?: string): Promise<{
     query: string;
     sourcePaths: string[];
   }> {
@@ -5375,10 +5460,10 @@ ${skillDescriptions}`;
     try {
       task = await this.daemon.getTaskById(this.taskId);
     } catch {
-      return { query: "", sourcePaths: [] };
+      if (!request && !this.documentTranslationContract?.request) return { query: "", sourcePaths: [] };
     }
 
-    const taskText = this.documentTranslationContract?.request || [
+    const taskText = request || this.documentTranslationContract?.request || [
       task?.title,
       task?.prompt,
       task?.rawPrompt,
@@ -7222,7 +7307,7 @@ ${skillDescriptions}`;
             sourcePath: {
               type: "string",
               description:
-                "Template input for ppt-master only. For existing-document translation use office_translation instead of create_presentation.",
+                "User-provided PPTX template. Native template filling is automatic and preserves the source masters, layouts and artwork. For translation of an existing deck use office_translation instead.",
             },
             officeProfile: {
               type: "string",
@@ -9056,9 +9141,14 @@ ${skillDescriptions}`;
   private getShellToolDefinitions(): LLMTool[] {
     return [
       {
+        name: "shell_environment",
+        description: "Read the actual command execution environment before running commands: host OS, sandbox OS, shell capabilities and dependency guidance. Does not run user code or reveal environment variables.",
+        input_schema: { type: "object", properties: {}, required: [] },
+      },
+      {
         name: "run_command",
         description:
-          "Execute a shell command in the workspace directory. IMPORTANT: This tool requires user approval before execution. The user will see the command and can approve or deny it. Use this for installing packages (npm, pip, brew), running build commands, git operations, or terminal commands. Do not use shell heredocs or echo/printf redirection to create artifact files when write_file or edit_file is available; use file tools for file creation and editing.",
+          "Execute a command in the configured sandbox, NOT necessarily the host OS. First call shell_environment to identify the actual OS, shell and available executables. Windows with Docker uses Linux /bin/sh; never send PowerShell or Windows paths there. Without Docker the Windows restricted runner supports direct executables/workspace scripts, not arbitrary PowerShell/CMD/Bash. Use office_translation for Office translation, not pip or external translation scripts. This tool requires permission checks. Use write_file/edit_file instead of shell heredocs to write files.",
         input_schema: {
           type: "object",
           properties: {

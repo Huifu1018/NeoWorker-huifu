@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import JSZip from "jszip";
+import { DOMParser } from "@xmldom/xmldom";
 
 type PptxRelationship = {
   type?: string;
@@ -103,7 +104,7 @@ export async function extractPptxStructuredContentFromFile(
   const zip = await JSZip.loadAsync(zipData);
   const metadata = await extractPptxMetadataFromZip(zip);
 
-  const slideEntries = Object.keys(zip.files)
+  const fallbackEntries = Object.keys(zip.files)
     .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
     .sort((a, b) => {
       const aMatch = a.match(/slide(\d+)\.xml$/i);
@@ -112,6 +113,7 @@ export async function extractPptxStructuredContentFromFile(
       const bIndex = bMatch ? Number(bMatch[1]) : 0;
       return aIndex - bIndex;
     });
+  const slideEntries = await orderedSlideEntries(zip, fallbackEntries);
 
   const slides: PptxExtractedSlide[] = [];
   const truncationNotices: string[] = [];
@@ -133,7 +135,7 @@ export async function extractPptxStructuredContentFromFile(
     const notes = await extractPptxNotesFromZip(zip, relationships, slideNumber);
 
     slides.push({
-      index: slideNumber,
+      index: processedSlideCount,
       title: derivePptxSlideTitle(extracted),
       text: extracted,
       notes: notes || undefined,
@@ -162,6 +164,43 @@ export async function extractPptxStructuredContentFromFile(
     metadata: metadata.entries,
     truncationNotices,
   };
+}
+
+async function orderedSlideEntries(zip: JSZip, fallback: string[]): Promise<string[]> {
+  const presentation = zip.file("ppt/presentation.xml");
+  const relationships = zip.file("ppt/_rels/presentation.xml.rels");
+  if (!presentation || !relationships) return fallback;
+  const parse = (xml: string) => new DOMParser({
+    errorHandler: {
+      warning: () => {},
+      error: () => { throw new Error("Invalid presentation XML"); },
+      fatalError: () => { throw new Error("Invalid presentation XML"); },
+    },
+  }).parseFromString(xml, "application/xml");
+  const rels = Array.from(parse(await relationships.async("string")).getElementsByTagNameNS("*", "Relationship"));
+  const targets = new Map(rels.filter((rel) => rel.getAttribute("TargetMode") !== "External" && /\/slide$/.test(rel.getAttribute("Type") || ""))
+    .map((rel) => {
+      const target = rel.getAttribute("Target") || "";
+      return [rel.getAttribute("Id"), path.posix.normalize(target.startsWith("/") ? target.slice(1) : path.posix.join("ppt", target))];
+    }));
+  // Part filenames are identities, not slide numbers. Template cloning and
+  // reordering routinely leave gaps and unrelated orphan parts in the ZIP.
+  const root = parse(await presentation.async("string")).documentElement;
+  const presentationNamespace = root.namespaceURI || "";
+  // Only the presentation's direct slide list defines page order. Section
+  // extensions also contain sldId elements, but use numeric IDs, not r:id.
+  const slideList = Array.from(root.getElementsByTagNameNS(presentationNamespace, "sldIdLst"))
+    .find((node) => node.parentNode === root);
+  const orderedSlides = slideList
+    ? Array.from(slideList.getElementsByTagNameNS(presentationNamespace, "sldId"))
+      .filter((node) => node.parentNode === slideList)
+    : [];
+  return orderedSlides.map((slide) => {
+    const relationshipId = Array.from(slide.attributes).find((attribute) => attribute.localName === "id" && attribute.namespaceURI?.endsWith("/relationships"))?.value;
+    const target = targets.get(relationshipId || "");
+    if (!target || !target.startsWith("ppt/slides/") || !zip.file(target)) throw new Error("Presentation references a missing slide");
+    return target;
+  });
 }
 
 function decodePptxXmlText(value: string): string {
@@ -529,6 +568,20 @@ function extractPptxContentFromXml(
 
     const name = nameMatch ? nameMatch[2].trim() : "Image";
     const parts = [name];
+    // A media part is not a rendered diagram. In particular, architecture
+    // slides often reuse tiny operator images inside native shape groups.
+    const picture = new DOMParser().parseFromString(
+      `<root xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">${shapeXml}</root>`,
+      "application/xml",
+    );
+    const drawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/main";
+    const transform = picture.getElementsByTagNameNS(drawingNamespace, "xfrm")[0];
+    const extent = transform?.getElementsByTagNameNS(drawingNamespace, "ext")[0];
+    const cx = Number(extent?.getAttribute("cx"));
+    const cy = Number(extent?.getAttribute("cy"));
+    if (cx > 0 && cy > 0) {
+      parts.push(`shape-local size ${(cx / 914400).toFixed(2)} x ${(cy / 914400).toFixed(2)} in (before group transforms)`);
+    }
     if (descMatch?.[2]?.trim()) {
       parts.push(descMatch[2].trim());
     }
@@ -542,7 +595,7 @@ function extractPptxContentFromXml(
     replacements.push({
       index: imageMatch.index as number,
       length: imageMatch[0].length,
-      text: `\n[Image/Diagram: ${parts.join(" - ")}]\n`,
+      text: `\n[Image asset: ${parts.join(" - ")}; not a rendered slide or verified complete diagram]\n`,
     });
   }
 
@@ -550,6 +603,9 @@ function extractPptxContentFromXml(
     /<(?:\w+:)?graphicFrame\b[\s\S]*?<\/(?:\w+:)?graphicFrame>/gi,
   )) {
     const shapeXml = graphicMatch[0];
+    // Tables live inside graphicFrame. Replacing both ranges deletes the
+    // extracted rows and, after their length changes, neighboring content.
+    if (/<(?:\w+:)?tbl\b/i.test(shapeXml)) continue;
     const nameMatch = shapeXml.match(/name=(['"])(.*?)\1/i);
     const descMatch = shapeXml.match(/descr=(['"])(.*?)\1/i);
     const chartMatch = shapeXml.match(/<(?:\w+:)?chart\b[^>]*r:id=(['"])(.*?)\1/i);

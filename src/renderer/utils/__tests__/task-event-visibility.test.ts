@@ -254,7 +254,15 @@ describe("task event visibility helpers", () => {
     ).toBe(true);
   });
 
-  it("keeps follow_up_completed visible in summary mode for completed tasks", () => {
+  it.each(["follow_up_started", "follow_up_completed"])("hides %s receipts in both execution-record states", (type) => {
+    const raw = makeEvent(type as TaskEvent["type"], { followUpMessage: "Translate\nAttached files (relative to workspace):\nINTERNAL_EXTRACT" });
+    const projected = { ...raw, type: "timeline_step_updated", payload: { ...raw.payload, legacyType: type } } as TaskEvent;
+    for (const event of [raw, projected]) {
+      expect(shouldShowTaskEventInSummaryMode(event, "completed")).toBe(false);
+      expect(filterVerboseTimelineNoise([event], { taskStatus: "completed" })).toEqual([]);
+    }
+  });
+  it("hides duplicate follow-up receipts in summary mode", () => {
     expect(
       shouldShowTaskEventInSummaryMode(
         makeEvent("follow_up_completed", {
@@ -262,7 +270,7 @@ describe("task event visibility helpers", () => {
         }),
         "completed",
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("hides generic stage progress in summary mode for non-completed tasks", () => {

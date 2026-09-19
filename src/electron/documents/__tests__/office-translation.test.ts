@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import PptxGenJS from "pptxgenjs";
 import ExcelJS from "exceljs";
 import { Document, Packer, Paragraph, TextRun } from "docx";
-import { applyOfficeTranslation, inspectOfficeTranslation, verifyOfficeTranslationFidelity } from "../office-translation";
+import { applyOfficeTranslation, inspectOfficeTranslation, verifyOfficeTranslationFidelity, translationUnitIssue } from "../office-translation";
 
 async function pptxFixture() {
   const pptx = new PptxGenJS();
@@ -17,11 +17,83 @@ async function pptxFixture() {
 
 async function translated(source: Buffer) {
   const manifest = await inspectOfficeTranslation(source);
-  manifest.units = manifest.units.map((unit) => ({ ...unit, text: `译文 ${unit.text}` }));
+  manifest.units = manifest.units.map((unit) => ({ ...unit, text: unit.text.includes("⟦s0⟧") ? unit.text.replace("⟦s0⟧", "⟦s0⟧译文 ") : `译文 ${unit.text}` }));
   return applyOfficeTranslation(source, manifest);
 }
 
 describe("native Office translation", () => {
+  it("translates mixed-language proofing runs as one paragraph, preserving spaces and real emphasis", async () => {
+    const pptx = new PptxGenJS();
+    pptx.addSlide().addText([{ text: "BCM", options: { lang: "en-US" } }, { text: "采用", options: { lang: "zh-CN" } },
+      { text: "ISO", options: { lang: "en-US" } }, { text: "镜像安装", options: { lang: "zh-CN" } }], { x: 1, y: 1, w: 6, h: 1, fontSize: 18 });
+    const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer);
+    const manifest = await inspectOfficeTranslation(source);
+    const unit = manifest.units.find((unit) => unit.context === "BCM采用ISO镜像安装")!;
+    expect(unit.text).toBe("BCM采用ISO镜像安装");
+    unit.text = "BCM nutzt ISO-Images zur Installation.";
+    const output = await applyOfficeTranslation(source, manifest);
+    const xml = await (await JSZip.loadAsync(output)).file("ppt/slides/slide1.xml")!.async("text");
+    expect(xml).toContain("BCM nutzt ISO-Images zur Installation.");
+    expect(xml).not.toContain("BCMnutzt");
+    await expect(verifyOfficeTranslationFidelity(source, output)).resolves.toBeUndefined();
+  });
+  it("keeps bold and normal sentences in one unit with validated formatting anchors", async () => {
+    expect(translationUnitIssue({ id: "plain", text: "Plain text" }, "⟦s0⟧Injected anchors⟦/s0⟧")).toBe("format_anchors_changed");
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source);
+    const unit = manifest.units.find((unit) => unit.context === "Hello world")!;
+    expect(unit.text).toBe("⟦s0⟧Hello⟦/s0⟧⟦s1⟧ world⟦/s1⟧");
+    for (const invalid of ["Hallo Welt", "extra " + unit.text, "⟦s0⟧Hallo⟦/s0⟧ ⟦s1⟧Welt⟦/s1⟧", "⟦s1⟧Welt⟦/s1⟧⟦s0⟧Hallo⟦/s0⟧"]) {
+      expect(translationUnitIssue(unit, invalid)).toBeTruthy();
+    }
+    unit.text = "⟦s0⟧Hallo⟦/s0⟧⟦s1⟧ Welt⟦/s1⟧";
+    const output = await applyOfficeTranslation(source, manifest);
+    const xml = await (await JSZip.loadAsync(output)).file("ppt/slides/slide1.xml")!.async("text");
+    expect(xml).toContain(">Hallo</a:t>"); expect(xml).toContain("> Welt</a:t>");
+    expect(xml).not.toContain("⟦");
+    await expect(verifyOfficeTranslationFidelity(source, output)).resolves.toBeUndefined();
+  });
+  it.each(["bad\uFFFD", "bad\ud800", "bad\u0001"])("blocks corrupt text %j at final apply", async (text) => {
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units[0].text = text;
+    await expect(applyOfficeTranslation(source, manifest)).rejects.toThrow(manifest.units[0].id);
+  });
+  it("produces identical bytes when retrying a saved translation at a later time", async () => {
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units[0].text = manifest.units[0].text.replace("Hello", "Translated title");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const first = await applyOfficeTranslation(source, manifest);
+      vi.setSystemTime(new Date("2026-09-16T12:00:00Z"));
+      expect(await applyOfficeTranslation(source, manifest)).toEqual(first);
+    } finally { vi.useRealTimers(); }
+  });
+  it("groups adjacent equally formatted Word fragments without changing runs or styles", async () => {
+    const source = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph({ children: [new TextRun("版"), new TextRun("本"), new TextRun({ text: "说明", bold: true })] })] }] }));
+    const manifest = await inspectOfficeTranslation(source, true);
+    expect(manifest.schema).toBe("neoworker.office-translation.v2");
+    expect(manifest.units.map((unit) => unit.text)).toEqual(["版本", "说明"]);
+    manifest.units[0].text = "Version";
+    manifest.units[1].text = "Description";
+    const output = await applyOfficeTranslation(source, manifest);
+    await expect(verifyOfficeTranslationFidelity(source, output)).resolves.toBeUndefined();
+    const xml = await (await JSZip.loadAsync(output)).file("word/document.xml")!.async("text");
+    expect(xml).toContain("Version");
+    expect(xml).toContain("Description");
+  });
+
+  it("keeps legacy manifests readable and names the invalid unit instead of silently deleting text", async () => {
+    const source = await pptxFixture();
+    const manifest = await inspectOfficeTranslation(source, false);
+    expect(manifest.schema).toBe("neoworker.office-translation.v1");
+    manifest.units[0].text = " ";
+    await expect(applyOfficeTranslation(source, manifest)).rejects.toThrow(manifest.units[0].id);
+    manifest.units = manifest.units.map((unit) => ({ ...unit, text: "Translated" }));
+    await expect(applyOfficeTranslation(source, manifest)).resolves.toBeInstanceOf(Buffer);
+  });
   it("changes PPT text while preserving original masters, pictures, slide order and geometry", async () => {
     const source = await pptxFixture();
     const output = await translated(source);

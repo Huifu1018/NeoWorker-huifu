@@ -4,58 +4,12 @@ import * as path from "path";
 import { protocol } from "electron";
 import { repairHiddenHtmlContent } from "../../shared/html-content-visibility";
 
+import { WEB_PREVIEW_MIME_TYPES as MIME_TYPES } from "./mime-types";
+
 const WEB_PREVIEW_SCHEME = "web-preview";
 const TOKEN_TTL_MS = 60 * 60 * 1000;
 const MAX_ACTIVE_PREVIEWS = 200;
 
-const MIME_TYPES: Record<string, string> = {
-  ".aac": "audio/aac",
-  ".apng": "image/apng",
-  ".avif": "image/avif",
-  ".bin": "application/octet-stream",
-  ".bmp": "image/bmp",
-  ".cjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".csv": "text/csv; charset=utf-8",
-  ".flac": "audio/flac",
-  ".gif": "image/gif",
-  ".glb": "model/gltf-binary",
-  ".gltf": "model/gltf+json",
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jfif": "image/jpeg",
-  ".jpg": "image/jpeg",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".jsx": "text/javascript; charset=utf-8",
-  ".m4a": "audio/mp4",
-  ".m4v": "video/mp4",
-  ".map": "application/json; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".mov": "video/quicktime",
-  ".mp3": "audio/mpeg",
-  ".mp4": "video/mp4",
-  ".ogg": "audio/ogg",
-  ".ogv": "video/ogg",
-  ".pdf": "application/pdf",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".txt": "text/plain; charset=utf-8",
-  ".ts": "text/javascript; charset=utf-8",
-  ".tsv": "text/tab-separated-values; charset=utf-8",
-  ".wasm": "application/wasm",
-  ".wav": "audio/wav",
-  ".webm": "video/webm",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-  ".webp": "image/webp",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".otf": "font/otf",
-  ".xml": "application/xml; charset=utf-8",
-};
 
 type WebPreviewRecord = {
   baseDir: string;

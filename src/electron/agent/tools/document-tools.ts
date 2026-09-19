@@ -10,6 +10,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { createHash, randomUUID } from "crypto";
 import { marked } from "marked";
 import { LLMTool } from "../llm/types";
 import { generatePDF } from "../../utils/document-generators/pdf-generator";
@@ -29,7 +30,18 @@ import {
 } from "../../utils/office-artifact-publisher";
 import { normalizePresentationArtifactInput } from "./office-artifact-input-normalizer";
 import { selectOfficeTemplate } from "../../utils/office-template-registry";
-import { inspectOfficeTranslation, applyOfficeTranslation } from "../../documents/office-translation";
+import { inspectOfficeTranslation, applyOfficeTranslation, translationUnitIssue } from "../../documents/office-translation";
+import { fitPptxTranslation } from "../../documents/pptx-translation-layout";
+import { MAX_TRANSLATION_BATCH_UNITS, summarizeTranslationBatch, translationUnitKey } from "../../documents/translation-batches";
+import { reviewTranslationUnits } from "../../documents/translation-review";
+import { translationTextIssue } from "../../documents/translation-text";
+
+// Serialize checkpoint read/modify/write across tasks sharing a workspace.
+const translationQueues = new Map<string, Promise<void>>();
+// Bump this when the native PPTX fit gate changes. Older checkpoints may have
+// exhausted their retry budget because they were measured by the previous
+// checker; carrying that counter forward would permanently strand them.
+const PPTX_LAYOUT_REPAIR_VERSION = 3;
 
 function sanitizeFilename(raw: string, maxLen = 80): string {
   const normalized = (String(raw || "").trim() || "document").replace(
@@ -173,16 +185,21 @@ export class DocumentTools {
     return [
       {
         name: "office_translation",
-        description: "Translate an existing PPTX, DOCX or XLSX without changing its template or pictures. First inspect sourcePath, read the returned JSON manifest, translate ALL units keeping ids/sourceSha256/schema, save it with write_file, then apply using translationsPath and filename. Keeps formulas, numeric cells, images, layout and package parts unchanged. No Python installation. Does not translate image pixels or verify visual text fit. PDF and legacy formats are unsupported: report the limitation rather than rebuild with a new template.",
+        description: "Translate existing PPTX/DOCX/XLSX preserving native structure. Inspect sourcePath with targetLanguage once. The host returns translationId and manages paths. Stage with translationId, batchId and translations [{key,text}] for nextUnits. Valid entries are saved even if some need repair; only repair the returned nextUnits. Never read/rewrite checkpoint JSON or use shell to recover progress. Stop automatic retries if retryable=false. Repeat until remaining=0, then apply with translationId and a new filename. Keeps pictures, fonts, formulas and geometry. Complete paragraphs retain ⟦sN⟧ formatting anchors. PPT text boxes are measured and fitted within legible limits; overflow returns only the affected units for concise rewriting. Image pixels and full visual quality are not checked. Heuristics are not semantic accuracy verification. PDF/legacy formats require an agreed alternative.",
         input_schema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["inspect", "apply"] },
+            action: { type: "string", enum: ["inspect", "stage", "apply"] },
+            translationId: { type: "string", description: "Opaque handle returned by inspect/stage. Pass it instead of sourcePath/translationsPath for stage/apply." },
+            targetLanguage: { type: "string", description: "Target language for resumable inspect, e.g. English or Korean; keep this value consistent on resume" },
+            batchId: { type: "string", description: "Exact batchId returned by the latest inspect/stage; required with translations" },
+            translations: { type: "array", minItems: 1, maxItems: MAX_TRANSLATION_BATCH_UNITS, description: "Preferred stage input: one {key,text} per nextUnit, copying its short key. Order may differ, but keys must be unique and cover the batch exactly. Keep unchanged identifiers. Do not also supply units.", items: { type: "object", properties: { key: { type: "string" }, text: { type: "string" } }, required: ["key", "text"], additionalProperties: false } },
+            units: { type: "array", minItems: 1, maxItems: MAX_TRANSLATION_BATCH_UNITS, description: "Alternative for partial/corrected stage batches: explicit ids and text. Do not also supply translations.", items: { type: "object", properties: { id: { type: "string" }, text: { type: "string" } }, required: ["id", "text"] } },
             sourcePath: { type: "string", description: "Workspace path of the ORIGINAL source file" },
-            translationsPath: { type: "string", description: "Workspace JSON manifest with translated text units, required for apply" },
+            translationsPath: { type: "string", description: "Legacy checkpoint path; unnecessary when translationId is supplied. Never read this file to recover a batch." },
             filename: { type: "string", description: "New output filename with same extension as source, required for apply" },
           },
-          required: ["action", "sourcePath"],
+          required: ["action"],
         },
       },
       {
@@ -273,7 +290,7 @@ export class DocumentTools {
               type: "string",
               description: 'Output filename (e.g. "pitch-deck.pptx")',
             },
-            sourcePath: { type: "string", description: "Template input only for the ppt-master workflow. For translation use office_translation; ordinary generation does not preserve a source template." },
+            sourcePath: { type: "string", description: "User-provided PPTX template. The host automatically uses native template filling, preserving the source masters, layouts and artwork. For existing-document translation use office_translation." },
             title: { type: "string", description: "Presentation title" },
             author: { type: "string", description: "Author name (optional)" },
             audience: {
@@ -689,8 +706,21 @@ export class DocumentTools {
 
   // ── Tool execution ──────────────────────────────────────────────
 
-  async officeTranslation(input: Any): Promise<Any> {
+  async officeTranslation(input: Any, allowedSources?: string[]): Promise<Any> {
     const root = await fs.promises.realpath(this.workspacePath);
+    const operation = (translationQueues.get(root) || Promise.resolve())
+      .then(() => this.executeOfficeTranslation(input, root, allowedSources));
+    const settled = operation.then(() => undefined, () => undefined);
+    translationQueues.set(root, settled);
+    try {
+      return await operation;
+    } finally {
+      if (translationQueues.get(root) === settled) translationQueues.delete(root);
+    }
+  }
+
+  private async executeOfficeTranslation(input: Any, root: string, allowedSources?: string[]): Promise<Any> {
+    input = { ...input };
     const readContained = async (raw: unknown): Promise<Buffer> => {
       if (typeof raw !== "string" || !raw.trim()) throw new Error("必须提供有效的工作区文件路径。");
       const resolved = await fs.promises.realpath(path.resolve(root, raw));
@@ -700,13 +730,142 @@ export class DocumentTools {
       }
       return fs.promises.readFile(resolved);
     };
+    const checkpointName = /^\.neoworker-translation-[a-f0-9]{16}-[a-f0-9]{16}(?:-v3)?\.json$/;
+    if (input.translationId !== undefined) {
+      if (typeof input.translationId !== "string" || !checkpointName.test(input.translationId)) {
+        throw new Error("无效的 translationId；请使用 inspect 返回的句柄。");
+      }
+      const saved = JSON.parse((await readContained(input.translationId)).toString("utf8"));
+      if (!saved.hostSourcePath) throw new Error("旧进度缺少源文件关联；请使用原 sourcePath 和 targetLanguage inspect 恢复。");
+      if (input.sourcePath && await fs.promises.realpath(path.resolve(root, input.sourcePath)) !== await fs.promises.realpath(path.resolve(root, saved.hostSourcePath))) {
+        throw new Error("translationId 与 sourcePath 不匹配。");
+      }
+      if (input.translationsPath && path.resolve(root, input.translationsPath) !== path.resolve(root, input.translationId)) {
+        throw new Error("translationId 与 translationsPath 不匹配。");
+      }
+      input.sourcePath = saved.hostSourcePath;
+      input.translationsPath = input.translationId;
+    }
     const extension = path.extname(String(input?.sourcePath || "")).toLowerCase();
     if (![".pptx", ".docx", ".xlsx"].includes(extension)) {
       throw new Error("当前原版式翻译工具支持 PPTX、DOCX、XLSX；PDF 和旧版 Office 格式尚不支持，不能擅自更换模板或把图片移到附录。");
     }
+    if (allowedSources?.length) {
+      const actual = await fs.promises.realpath(path.resolve(root, String(input.sourcePath || "")));
+      const allowed = await Promise.all(allowedSources.map((source) => fs.promises.realpath(source).catch(() => "")));
+      if (!allowed.includes(actual)) throw new Error("翻译源文件必须是本轮指定的原附件，不能先新建文件再冒充原文件翻译。");
+    }
     const source = await readContained(input.sourcePath);
+    // Recover omitted legacy paths only from an exact batch/source match, never from a guessed language.
+    if (input.action === "stage" && !input.translationsPath && typeof input.batchId === "string") {
+      const sourceHash = createHash("sha256").update(source).digest("hex");
+      const matches: string[] = [];
+      for (const name of await fs.promises.readdir(root)) {
+        if (!checkpointName.test(name) || !name.startsWith(`.neoworker-translation-${sourceHash.slice(0, 16)}-`)) continue;
+        try {
+          const saved = JSON.parse((await readContained(name)).toString("utf8"));
+          if (saved.sourceSha256 === sourceHash && summarizeTranslationBatch(saved).batchId === input.batchId) matches.push(name);
+        } catch { /* Ignore unrelated or invalid checkpoints; validate the selected one below. */ }
+      }
+      if (matches.length === 1) input.translationsPath = matches[0];
+      else throw new Error("无法唯一恢复翻译批次；请用原 sourcePath 和 targetLanguage inspect，不要读取进度 JSON。");
+    }
+    const saveCheckpoint = async (destination: string, checkpoint: Any) => {
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        await fs.promises.writeFile(temporary, JSON.stringify(checkpoint), { flag: "wx" });
+        await fs.promises.rename(temporary, destination);
+      } finally { await fs.promises.rm(temporary, { force: true }); }
+    };
+    const checkpointResponse = (checkpoint: Any, checkpointPath: string) => ({
+      translationId: path.basename(checkpointPath),
+      translationsPath: path.relative(root, path.resolve(root, checkpointPath)),
+      sourcePath: checkpoint.hostSourcePath,
+      ...summarizeTranslationBatch(checkpoint),
+    });
+    const validateCheckpoint = (checkpoint: Any, expected: Any) => {
+      const completed = new Set(Array.isArray(checkpoint?.completedUnitIds) ? checkpoint.completedUnitIds : []);
+      const allowed = new Set(expected.units.map((unit: Any) => unit.id));
+      if (checkpoint?.schema !== expected.schema || checkpoint.sourceSha256 !== expected.sourceSha256
+        || typeof checkpoint.targetLanguage !== "string" || !checkpoint.targetLanguage.trim()
+        || !Array.isArray(checkpoint.units) || checkpoint.units.length !== expected.units.length
+        || checkpoint.units.some((unit: Any, index: number) => unit?.id !== expected.units[index].id
+          || typeof unit.text !== "string" || (!completed.has(unit.id) && unit.text !== expected.units[index].text))
+        || !Array.isArray(checkpoint.completedUnitIds)
+        || new Set(checkpoint.completedUnitIds).size !== checkpoint.completedUnitIds.length
+        || checkpoint.completedUnitIds.some((id: unknown) => !allowed.has(id))) {
+        throw new Error("翻译进度损坏或与原文件不匹配；旧进度已保留，请修复进度文件后重试。");
+      }
+    };
+    const reopenInvalidTranslations = (checkpoint: Any, expected: Any): string[] => {
+      const completed = new Set(checkpoint.completedUnitIds);
+      const invalid = checkpoint.units.filter((unit: Any, index: number) => completed.has(unit.id) && translationUnitIssue(expected.units[index], unit.text)).map((unit: Any) => unit.id);
+      if (invalid.length) {
+        const ids = new Set(invalid);
+        checkpoint.completedUnitIds = checkpoint.completedUnitIds.filter((id: string) => !ids.has(id));
+        checkpoint.repairUnitIds = invalid;
+        checkpoint.units = checkpoint.units.map((unit: Any, index: number) => ids.has(unit.id) ? expected.units[index] : unit);
+      }
+      return invalid;
+    };
     if (input.action === "inspect") {
       const manifest = await inspectOfficeTranslation(source);
+      if (typeof input.targetLanguage === "string" && input.targetLanguage.trim()) {
+        const language = input.targetLanguage.trim().toLowerCase();
+        const languageKey = createHash("sha256").update(language).digest("hex").slice(0, 16);
+        const checkpointPath = path.join(root, `.neoworker-translation-${manifest.sourceSha256.slice(0, 16)}-${languageKey}-v3.json`);
+        let checkpoint: Any = { ...manifest, targetLanguage: language, completedUnitIds: [] };
+        try {
+          const existing = JSON.parse((await readContained(checkpointPath)).toString("utf8"));
+          validateCheckpoint(existing, manifest);
+          if (existing.targetLanguage === language) checkpoint = existing;
+          else throw new Error("翻译进度与原文件不匹配，请保留旧进度并使用新的目标语言标识。");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          // Reuse legacy translations only when an old unit already covers the
+          // same complete passage. Joining independently translated fragments
+          // would preserve the missing-space/repeated-phrase bug in v3.
+          const legacyPath = checkpointPath.replace(/-v3\.json$/, ".json");
+          try {
+            const legacy = JSON.parse((await readContained(legacyPath)).toString("utf8"));
+            const legacySource = await inspectOfficeTranslation(source, legacy.schema);
+            validateCheckpoint(legacy, legacySource);
+            if (legacy.targetLanguage === language) {
+              const completed = new Set(legacy.completedUnitIds);
+              const reusable = new Map(legacySource.units.flatMap((unit, index) =>
+                completed.has(unit.id) && !translationUnitIssue(unit, legacy.units[index].text)
+                  ? [[translationUnitKey(unit), legacy.units[index].text] as const] : []));
+              checkpoint.units = manifest.units.map((unit) => {
+                const text = reusable.get(translationUnitKey(unit));
+                if (typeof text !== "string" || translationUnitIssue(unit, text)) return unit;
+                checkpoint.completedUnitIds.push(unit.id); return { ...unit, text };
+              });
+              checkpoint.migratedLegacyUnits = checkpoint.completedUnitIds.length;
+            }
+          } catch { /* The legacy file stays intact; v3 has its own checkpoint. */ }
+          await fs.promises.writeFile(checkpointPath, JSON.stringify(checkpoint), { flag: "wx" });
+        }
+        checkpoint.hostSourcePath = path.relative(root, await fs.promises.realpath(path.resolve(root, input.sourcePath)));
+        if (extension === ".pptx" && checkpoint.layoutRepairVersion !== PPTX_LAYOUT_REPAIR_VERSION) {
+          // Recheck saved translations with the new renderer rather than
+          // discarding work reopened only by the obsolete layout gate.
+          const completed = new Set<string>(checkpoint.completedUnitIds);
+          checkpoint.units = checkpoint.units.map((unit: Any, index: number) => {
+            const saved = checkpoint.layoutRepairTexts?.[unit.id];
+            if (!completed.has(unit.id) && typeof saved === "string" && !translationUnitIssue(manifest.units[index], saved)) {
+              completed.add(unit.id); return { ...unit, text: saved };
+            }
+            return unit;
+          });
+          checkpoint.completedUnitIds = [...completed];
+          checkpoint.repairUnitIds = (checkpoint.repairUnitIds || []).filter((id: string) => !completed.has(id));
+          checkpoint.layoutRepairVersion = PPTX_LAYOUT_REPAIR_VERSION;
+          checkpoint.layoutRepairAttempts = 0;
+        }
+        const repairIds = reopenInvalidTranslations(checkpoint, manifest);
+        await saveCheckpoint(checkpointPath, checkpoint);
+        return { success: true, ...checkpointResponse(checkpoint, checkpointPath), repairIds };
+      }
       const manifestPath = resolveVersionedOutputPath(path.join(root, `.neoworker-translation-${manifest.sourceSha256.slice(0, 16)}.json`));
       await fs.promises.writeFile(manifestPath, JSON.stringify(manifest, null, 2), { flag: "wx" });
       return {
@@ -715,18 +874,164 @@ export class DocumentTools {
         units: manifest.units.length,
         sourceSha256: manifest.sourceSha256,
         preview: manifest.units.slice(0, 8),
-        guidance: "Read the complete manifest. Translate text units in paragraph order and context, retaining every id, schema and sourceSha256. Keep proper names/identifiers unchanged where appropriate. Save a translated JSON manifest, then call office_translation with action=apply, the ORIGINAL sourcePath, translationsPath and a new filename. Image text is not editable by this tool.",
+        guidance: "Read the complete manifest. Translate whole paragraphs coherently, retaining every id, schema and sourceSha256. Preserve all ⟦sN⟧ formatting anchors in order with words and spaces inside them. Keep proper names/identifiers unchanged where appropriate. Save a translated JSON manifest, then call office_translation with action=apply, the ORIGINAL sourcePath, translationsPath and a new filename. Image text is not editable by this tool.",
       };
     }
-    if (input.action !== "apply") throw new Error("action 必须为 inspect 或 apply。");
+    if (input.action === "stage") {
+      const checkpoint = JSON.parse((await readContained(input.translationsPath)).toString("utf8"));
+      const expected = await inspectOfficeTranslation(source, checkpoint.schema);
+      validateCheckpoint(checkpoint, expected);
+      checkpoint.hostSourcePath = path.relative(root, await fs.promises.realpath(path.resolve(root, input.sourcePath)));
+      const repairIds = reopenInvalidTranslations(checkpoint, expected);
+      if (repairIds.length) {
+        await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), checkpoint);
+        return { success: false, ...checkpointResponse(checkpoint, input.translationsPath), repairIds, retryable: true,
+          message: "旧进度包含异常译文。有效结果已保留，请仅修复返回的 nextUnits；本次提交尚未应用。" };
+      }
+      let units = input.units;
+      const issues: Array<{ key?: string; reason: string }> = [];
+      const legacyRepairIds: string[] = [];
+      let submittedBatch: ReturnType<typeof summarizeTranslationBatch> | undefined;
+      if (input.translations !== undefined) {
+        if (units !== undefined) throw new Error("units 和 translations 不能同时提供；请仅提交一种批次格式。");
+        const batch = summarizeTranslationBatch(checkpoint);
+        if (!batch.batchId || input.batchId !== batch.batchId) throw new Error("翻译批次已过期或不匹配；请使用相同目标语言 inspect 恢复进度，不要重复旧批次。");
+        if (!Array.isArray(input.translations) || input.translations.length > MAX_TRANSLATION_BATCH_UNITS) throw new Error("translations 必须是有效批次数组，不能超过批次上限。");
+        submittedBatch = batch;
+        const keyedUnits = new Map(batch.nextUnits.map((unit) => [unit.key, unit]));
+        const counts = new Map<string, number>();
+        for (const item of input.translations) if (typeof item?.key === "string") counts.set(item.key, (counts.get(item.key) || 0) + 1);
+        units = [];
+        for (const item of input.translations) {
+          const unit = keyedUnits.get(item?.key);
+          const reason = !unit ? "unknown_or_missing_key" : counts.get(item.key)! > 1 ? "duplicate_key" : translationUnitIssue(unit, item.text);
+          if (reason) issues.push({ key: typeof item?.key === "string" ? item.key.slice(0, 100) : undefined, reason });
+          else units.push({ id: unit!.id, text: item.text });
+        }
+        for (const unit of batch.nextUnits) if (!counts.has(unit.key)) issues.push({ key: unit.key, reason: "missing_translation" });
+      }
+      if (!Array.isArray(units) || (!submittedBatch && units.length === 0) || units.length > MAX_TRANSLATION_BATCH_UNITS) throw new Error(`每批应包含 1 至 ${MAX_TRANSLATION_BATCH_UNITS} 个文字单元；请按返回的 nextUnits 处理。`);
+      const allowed = new Set(expected.units.map((unit) => unit.id));
+      const patch = new Map<string, string>();
+      const seenIds = new Set<string>();
+      for (const unit of units) {
+        if (!allowed.has(unit?.id) || seenIds.has(unit.id)) throw new Error(`无效的翻译单元：${String(unit?.id).slice(0,180)}；请使用 inspect 返回的 key/id，不要重新翻译有效内容。`);
+        seenIds.add(unit.id);
+        const reason = translationUnitIssue(expected.units.find((sourceUnit: Any) => sourceUnit.id === unit.id)!, unit.text);
+        if (reason) {
+          issues.push({ key: unit.id, reason });
+          legacyRepairIds.push(unit.id);
+          continue;
+        }
+        patch.set(unit.id, unit.text);
+      }
+      const previous = new Map<string, string>(checkpoint.units.map((unit: Any) => [unit.id, unit.text]));
+      // Reuse translations only for identical source text AND paragraph context.
+      // Every native text object still retains its own ID and formatting.
+      const reusable = new Map<string, string>();
+      const conflicts = new Set<string>();
+      for (const unit of expected.units) {
+        const text = patch.get(unit.id);
+        if (text === undefined) continue;
+        const key = translationUnitKey(unit);
+        if (reusable.has(key) && reusable.get(key) !== text) conflicts.add(key);
+        reusable.set(key, text);
+      }
+      for (const unit of expected.units) {
+        const key = translationUnitKey(unit);
+        if (!patch.has(unit.id) && !checkpoint.completedUnitIds.includes(unit.id) && !conflicts.has(key) && reusable.has(key)) patch.set(unit.id, reusable.get(key)!);
+      }
+      checkpoint.units = expected.units.map((unit) => ({ ...unit, text: patch.get(unit.id) ?? previous.get(unit.id) ?? unit.text }));
+      checkpoint.completedUnitIds = [...new Set([...checkpoint.completedUnitIds.filter((id: string) => allowed.has(id)), ...patch.keys()])];
+      if (submittedBatch) checkpoint.repairUnitIds = submittedBatch.nextUnits.map((unit) => unit.id).filter((id) => !checkpoint.completedUnitIds.includes(id));
+      else if (legacyRepairIds.length) {
+        checkpoint.repairUnitIds = [...new Set([...(checkpoint.repairUnitIds || []), ...legacyRepairIds])];
+        checkpoint.completedUnitIds = checkpoint.completedUnitIds.filter((id: string) => !legacyRepairIds.includes(id));
+        checkpoint.units = checkpoint.units.map((unit: Any, index: number) => legacyRepairIds.includes(unit.id) ? expected.units[index] : unit);
+      }
+      checkpoint.noProgressAttempts = patch.size ? 0 : (checkpoint.noProgressAttempts || 0) + 1;
+      const destination = await fs.promises.realpath(path.resolve(root, input.translationsPath));
+      await saveCheckpoint(destination, checkpoint);
+      const progress = summarizeTranslationBatch(checkpoint);
+      this.reportProgress?.(`翻译进度：${progress.completed}/${progress.total}`, { phase: "translation", completed: progress.completed, total: progress.total });
+      const needsAttention = checkpoint.noProgressAttempts >= 3;
+      return { success: !issues.length, ...checkpointResponse(checkpoint, input.translationsPath), accepted: patch.size,
+        issues, retryable: !needsAttention, needsAttention,
+        ...(needsAttention ? { nextUnits: [], guidance: "Three submissions made no progress. Stop automatic retries and report the validation issues. Saved translations are intact; resume via inspect only after correcting the cause." } : {}),
+        review: reviewTranslationUnits(expected.units, patch) };
+    }
+    if (input.action !== "apply") throw new Error("action 必须为 inspect、stage 或 apply。");
     if (typeof input.filename !== "string" || !input.filename.trim() || path.extname(input.filename).toLowerCase() !== extension) {
       throw new Error("翻译输出必须提供与源文件格式相同的新文件名。");
     }
     const manifest = JSON.parse((await readContained(input.translationsPath)).toString("utf8"));
-    const output = await applyOfficeTranslation(source, manifest);
-    const outputPath = resolveVersionedOutputPath(path.join(root, sanitizeFilename(input.filename, 180)));
+    const expected = await inspectOfficeTranslation(source, manifest?.schema);
+    if (manifest?.completedUnitIds !== undefined) validateCheckpoint(manifest, expected);
+    if (Array.isArray(manifest.completedUnitIds)) {
+      const repairIds = reopenInvalidTranslations(manifest, expected);
+      if (repairIds.length) {
+        await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
+        return { success: false, ...checkpointResponse(manifest, input.translationsPath), repairIds, retryable: true,
+          message: "发现异常字符，尚未生成交付文件。已保留有效译文，仅翻译 nextUnits 后再 apply。" };
+      }
+    }
+    if (Array.isArray(manifest.completedUnitIds) && manifest.units.some((unit: Any) => !manifest.completedUnitIds.includes(unit.id))) throw new Error("翻译批次尚未全部完成，请 inspect 恢复进度并继续 stage；不能交付中间 JSON。");
+    let output = await applyOfficeTranslation(source, manifest);
+    let textFit: { checkedShapes: number; adjustedShapes: number; minimumScale?: number; minimumAdjustedFontPt?: number } | undefined;
+    if (extension === ".pptx") {
+      if (manifest.layoutRepairVersion !== PPTX_LAYOUT_REPAIR_VERSION) {
+        manifest.layoutRepairVersion = PPTX_LAYOUT_REPAIR_VERSION;
+        manifest.layoutRepairAttempts = 0;
+        await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
+      }
+      const fit = await fitPptxTranslation(source, output, manifest);
+      if (!fit.output) {
+        const repairIds = [...new Set(fit.issues.flatMap((issue) => issue.unitIds))];
+        if (Array.isArray(manifest.completedUnitIds) && repairIds.length) {
+          const repair = new Set(repairIds);
+          manifest.layoutRepairTexts = Object.fromEntries(manifest.units.filter((unit: Any) => repair.has(unit.id)).map((unit: Any) => [unit.id, unit.text]));
+          manifest.completedUnitIds = manifest.completedUnitIds.filter((id: string) => !repair.has(id));
+          manifest.repairUnitIds = repairIds;
+          manifest.units = manifest.units.map((unit: Any, index: number) => repair.has(unit.id) ? expected.units[index] : unit);
+          manifest.layoutRepairAttempts = (manifest.layoutRepairAttempts || 0) + 1;
+          await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
+        }
+        const retryable = Array.isArray(manifest.completedUnitIds) && repairIds.length > 0
+          && manifest.layoutRepairAttempts < 3 && fit.issues.every((issue) => ["translation_too_long", "translated_neighbor_text_overlap"].includes(issue.reason));
+        return { success: false, ...(Array.isArray(manifest.completedUnitIds) ? checkpointResponse(manifest, input.translationsPath) : {}),
+          retryable, needsAttention: !retryable, ...(retryable ? {} : { nextUnits: [] }), repairIds,
+          textFit: { status: "needs_repair", checkedShapes: fit.checkedShapes,
+            issues: fit.issues.map(({ slide, unitIds, reason }) => ({ slide, unitIds, reason })) },
+          message: retryable
+            ? "译文超出原文本框或与相邻文字过近，尚未生成交付文件。有效译文已保存；请结合 previousTranslation 将 nextUnits 改为简洁、完整的译文，保留事实和格式标记。禁止通过删除内容、裁切或继续缩小字号绕过检查。"
+            : "译后版式未通过检查，自动修复已停止。有效译文已保存；请报告 textFit.issues 中的具体页码和原因，解决后再恢复，勿重复 apply 或丢弃已译内容。",
+          ...(!retryable ? { guidance: "Stop automatic retries. Report textFit.issues and preserve the saved translation checkpoint. Resume only after the cause is corrected." } : {}),
+        };
+      }
+      output = fit.output;
+      textFit = { checkedShapes: fit.checkedShapes, adjustedShapes: fit.adjustedShapes, minimumScale: fit.minimumScale, minimumAdjustedFontPt: fit.minimumAdjustedFontPt };
+    }
+    const deliveryKey = createHash("sha256").update(source).update(JSON.stringify(manifest)).update(input.filename).digest("hex");
+    const receiptPath = path.join(root, `.neoworker-translation-delivery-${deliveryKey}.json`);
+    let outputPath: string | undefined;
+    try {
+      const receipt = JSON.parse((await readContained(receiptPath)).toString("utf8"));
+      if (typeof receipt.path === "string" && path.basename(receipt.path) === receipt.path && (await readContained(receipt.path)).equals(output)) outputPath = path.join(root, receipt.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const reusedExistingArtifact = Boolean(outputPath);
+    outputPath ||= resolveVersionedOutputPath(path.join(root, sanitizeFilename(input.filename, 180)));
     if (path.extname(outputPath).toLowerCase() !== extension) throw new Error("输出文件名无效。");
-    await fs.promises.writeFile(outputPath, output, { flag: "wx" });
+    if (!reusedExistingArtifact) {
+      await fs.promises.writeFile(outputPath, output, { flag: "wx" });
+      // Save before registration so retrying a failed durable copy reuses the file.
+      const temporary = `${receiptPath}.${randomUUID()}.tmp`;
+      try {
+        await fs.promises.writeFile(temporary, JSON.stringify({ path: path.basename(outputPath) }), { flag: "wx" });
+        await fs.promises.rename(temporary, receiptPath);
+      } finally { await fs.promises.rm(temporary, { force: true }); }
+    }
     const mimeType = extension === ".pptx"
       ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
       : extension === ".xlsx"
@@ -736,12 +1041,15 @@ export class DocumentTools {
     return {
       success: true,
       path: path.relative(root, outputPath),
+      reusedExistingArtifact,
       sourcePath: input.sourcePath,
       size: output.length,
       mimeType,
       sourceFidelity: { verified: true, scope: "native package structure and non-text parts", textUnits: manifest.units.length },
       visualCheck: "not_performed",
-      _modelReminder: "Native source structure, images, styles, formulas and non-text parts were verified unchanged. This is NOT a visual or translation accuracy check. Inspect rendered pages for text fit before claiming visual QA. Disclose that text inside images, embedded objects and calculated fields was not translated. Do not claim 0 issues or complete translation based on this check alone.",
+      ...(textFit ? { textFit: { status: "passed", ...textFit, renderer: "officecli_chromium" } } : {}),
+      review: reviewTranslationUnits(expected.units, new Map(manifest.units.map((unit: Any) => [unit.id, unit.text]))),
+      _modelReminder: "Native source structure, images, fonts, formulas and geometry were verified unchanged; PPT text boxes may use measured native autofit. textFit reports rendered editable text bounds only, not a full visual or translation accuracy review. Inspect rendered pages before claiming visual QA. Disclose that text inside images, embedded objects and calculated fields was not translated. Do not claim 0 issues or complete translation based on this check alone.",
     };
   }
 

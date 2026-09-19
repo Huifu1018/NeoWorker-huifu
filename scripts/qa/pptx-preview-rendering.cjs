@@ -40,6 +40,7 @@ app.on("window-all-closed", () => {});
     .buildPreview({ filePath: source, renderMode: "fast" });
   assert.equal(cached.renderStatus, "cached");
   assert.equal(cached.renderer, preview.renderer);
+  assert.equal(cached.renderMessage, preview.renderMessage);
   assert.equal(hash(await fs.readFile(source)), before, "Source file changed");
   for (const dynamic of [false, true]) {
     const htmlPath = path.join(output, `fixture-${dynamic}.html`);
@@ -53,5 +54,11 @@ app.on("window-all-closed", () => {});
     const limited = await renderOfficeHtmlVisualEvidence({ htmlPath, outputPath: path.join(output, `limited-${dynamic}.png`), maxPages: 1 });
     assert.equal(limited.pageCount, 1);
   }
+  const warningHtml = path.join(output, "warning.html");
+  await fs.writeFile(warningHtml, '<!doctype html><meta charset="utf-8"><style>.slide{width:960px;height:540px;background:white;color:black}</style><div class="slide">Arabic: العربية Japanese: 日本語 Korean: 한국어</div><div class="slide">Invalid: \uFFFD</div>');
+  await assert.rejects(renderOfficeHtmlVisualEvidence({ htmlPath: warningHtml, outputPath: path.join(output, "strict.png") }), /mojibake/);
+  const warned = await renderOfficeHtmlVisualEvidence({ htmlPath: warningHtml, outputPath: path.join(output, "warn.png"), textValidation: "warn" });
+  assert.equal(warned.pageCount, 2);
+  assert.deepEqual(warned.textWarningPages, [2]);
   console.log(JSON.stringify({ output, slides: images.length, distinctImages: new Set(hashes).size, cached: true, sourceUnchanged: true }));
 })().then(() => app.exit(0), (error) => { console.error(error); app.exit(1); });

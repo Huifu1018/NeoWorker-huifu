@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { Workspace } from "../../../../shared/types";
-import { VisionTools } from "../vision-tools";
+import { VisionTools, requestVisionWithRecovery } from "../vision-tools";
 import { LLMProviderFactory } from "../../llm/provider-factory";
 import {
   persistTaskAttachmentSync,
@@ -30,6 +30,19 @@ function createVisionTools() {
 }
 
 describe("VisionTools cache and page range guards", () => {
+  it("recovers empty budget-exhausted vision responses once on the same route", async () => {
+    const answer = { content: [{ type: "text", text: "Visible answer" }], stopReason: "end_turn" };
+    const provider = { createMessage: vi.fn().mockResolvedValueOnce({ content: [], stopReason: "max_tokens" }).mockResolvedValueOnce(answer) };
+    const request = { model: "configured-model", maxTokens: 900, messages: [] };
+    expect(await requestVisionWithRecovery(provider as Any, request as Any)).toEqual(answer);
+    expect(provider.createMessage).toHaveBeenLastCalledWith({ ...request, maxTokens: 4096 });
+    provider.createMessage.mockReset().mockResolvedValue({ content: [], stopReason: "max_tokens" });
+    await requestVisionWithRecovery(provider as Any, request as Any);
+    expect(provider.createMessage).toHaveBeenCalledTimes(2);
+    provider.createMessage.mockReset().mockResolvedValue({ content: [], stopReason: "end_turn" });
+    await requestVisionWithRecovery(provider as Any, request as Any);
+    expect(provider.createMessage).toHaveBeenCalledTimes(1);
+  });
   it("uses request-specific cache keys (prompt changes should not collide)", () => {
     const vision = createVisionTools();
     const keyA = vision.buildCacheKey({

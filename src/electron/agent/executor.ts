@@ -1,3 +1,4 @@
+import { isArtifactRevisionRequest } from "./artifact-output-intent";
 import {
   AgentConfig,
   Task,
@@ -30,7 +31,7 @@ import {
   PermissionMode,
   PromptCacheSurface,
   WebSearchMode,
-  LLM_PROVIDER_TYPES,
+  isLLMProviderType,
   type LLMProviderType,
   type LLMRoutingRuntimeState,
   type LLMRoutingReason,
@@ -163,7 +164,10 @@ import {
   type ToolHostResponse,
 } from "./runtime/tool-host-protocol";
 import { resolveSkillSlashAlias } from "./skill-slash-aliases";
-import { buildDocumentTaskMessage } from "./document-translation-contract";
+import { buildDocumentTaskMessage, resolveDocumentTranslationContract } from "./document-translation-contract";
+import { reviewDocxDeliverables, buildDocxRepairInstruction, appendDocxReviewNotice } from "../utils/docx-delivery-review";
+import { PdfDeliveryReviewer, buildPdfRepairInstruction } from "../utils/pdf-delivery-review";
+import { extractWorkspaceUploadPaths } from "../utils/durable-temp-artifact";
 import {
   buildCanonicalTaskIntentQuery,
   buildTaskOutputLanguageDirective,
@@ -337,9 +341,6 @@ import {
 } from "./tool-policy-engine";
 
 const DEFAULT_FAILOVER_PRIMARY_RETRY_COOLDOWN_MS = 60_000;
-const VALID_LLM_PROVIDER_TYPES = new Set<string>(
-  LLM_PROVIDER_TYPES as readonly string[],
-);
 const logger = createLogger("TaskExecutor");
 
 /**
@@ -1072,6 +1073,8 @@ export class TaskExecutor {
   private activeConversationTurnId: string | null = null;
   /** Artifact contract for the currently executing follow-up turn. */
   private activeFollowUpCompletionContract: CompletionContract | null = null;
+  /** Final-PDF layout review cache; keyed by the actual file identity. */
+  private readonly pdfDeliveryReviewer = new PdfDeliveryReviewer();
   private lastRecoveryFailureSignature = "";
   private recoveredFailureStepIds: Set<string> = new Set();
   /**
@@ -2193,24 +2196,24 @@ export class TaskExecutor {
   }
 
   private buildFollowUpCompletionContract(message: string): CompletionContract {
+    const userIntent = buildCanonicalTaskIntentQuery({ title: "", prompt: message });
     const followUpContract = buildCompletionContractUtil({
       taskTitle: "",
-      taskPrompt: message,
+      taskPrompt: userIntent,
       requiresDirectAnswer: false,
       requiresDecisionSignal: false,
       isWatchSkipRecommendationTask: false,
     });
-    if (followUpContract.requiresArtifactEvidence) return followUpContract;
+    if (
+      followUpContract.requiredArtifactExtensions.length > 0 ||
+      detectReadOnlyConstraintUtil(userIntent) ||
+      !isArtifactRevisionRequest(userIntent)
+    ) return followUpContract;
 
     // Short repair prompts such as "继续" or "生成得不完整" refer to the
     // original deliverable. Without inheriting that contract, a follow-up can
     // mutate an incomplete HTML file and still be marked completed merely
     // because the latest message did not repeat the word "HTML".
-    const continuesArtifactWork =
-      /\b(?:continue|finish|complete|fix|repair|resume|retry|regenerate|rebuild|redo|rerun)\b|(?:继续|补全|补齐|完善|完成|修复|重试|重新生成|重新制作|重做|再生成|重跑|不完整|没生成完|没有生成完)/i.test(
-        String(message || ""),
-      );
-    if (!continuesArtifactWork) return followUpContract;
 
     // A bare continuation belongs to the immediately preceding follow-up run,
     // not necessarily to the task's original root prompt. Long-lived chats can
@@ -2219,11 +2222,11 @@ export class TaskExecutor {
     const inheritedContract =
       this.activeFollowUpCompletionContract?.requiresArtifactEvidence === true
         ? this.activeFollowUpCompletionContract
-        : this.buildCompletionContract();
+        : this.getPreviousArtifactCompletionContract(userIntent);
     if (!inheritedContract.requiresArtifactEvidence) return followUpContract;
     const allowsExistingArtifactEvidence =
       /^\s*(?:继续(?:处理|完成|吧)?|接着(?:做|处理)?|往下做|continue|resume|go\s+on|carry\s+on|proceed)\s*[!！.。?？]*\s*$/i.test(
-        String(message || ""),
+        userIntent,
       );
     return {
       ...inheritedContract,
@@ -2231,6 +2234,39 @@ export class TaskExecutor {
       requiresDecisionSignal: false,
       allowExistingArtifactEvidence: allowsExistingArtifactEvidence,
     };
+  }
+
+  private getPreviousArtifactCompletionContract(currentIntent: string): CompletionContract {
+    const events = this.daemon?.getTaskEvents?.(this.task.id, {
+      types: ["user_message"], limit: 64,
+    }) || [];
+    // The unified runtime has already persisted the current message; Hermes
+    // has not. Ignore only its trailing echo, then walk actual user turns.
+    let isLatest = true;
+    for (const event of [...events].reverse()) {
+      const eventType = event.legacyType || event.payload?.legacyType || event.type;
+      if (eventType !== "user_message") continue;
+      if (this.activeConversationTurnId && event.payload?.stepId === this.activeConversationTurnId) continue;
+      const intent = buildCanonicalTaskIntentQuery({
+        title: "", prompt: String(event.payload?.message || ""),
+      });
+      if (!intent) continue;
+      if (isLatest && intent === currentIntent) {
+        isLatest = false;
+        continue;
+      }
+      isLatest = false;
+      const contract = buildCompletionContractUtil({
+        taskTitle: "", taskPrompt: intent, requiresDirectAnswer: false,
+        requiresDecisionSignal: false, isWatchSkipRecommendationTask: false,
+      });
+      if (
+        contract.requiredArtifactExtensions.length > 0 ||
+        detectReadOnlyConstraintUtil(intent) ||
+        !isArtifactRevisionRequest(intent)
+      ) return contract;
+    }
+    return this.buildCompletionContract();
   }
 
   private isArtifactFormatSwitchFollowUp(
@@ -2816,6 +2852,14 @@ export class TaskExecutor {
     );
     const translationError = this.toolRegistry?.getDocumentTranslationDeliveryError?.(usableEvidenceFiles);
     if (translationError) return translationError;
+    if (contract.requiredArtifactExtensions.includes(".pdf")) {
+      const pdfGuardError = this.pdfDeliveryReviewer?.getGuardError(
+        this.workspace.path,
+        usableEvidenceFiles,
+        extractWorkspaceUploadPaths(this.toolRegistry?.getDocumentTaskContext?.() || buildDocumentTaskMessage(this.task)),
+      );
+      if (pdfGuardError) return pdfGuardError;
+    }
     if (
       hasArtifactEvidenceUtil({
         contract,
@@ -5267,6 +5311,7 @@ export class TaskExecutor {
     isResuming: boolean,
     turnKind: "initial" | "follow_up" | "resume",
   ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
+    const reviewStartedAt = Date.now();
     const maxContinuations = 2;
     let result = await this.runHermesPromptWithTransientRetry(
       runtime,
@@ -5309,7 +5354,111 @@ export class TaskExecutor {
       );
     }
 
+    return this.reviewHermesDocumentDelivery(runtime, result, reviewStartedAt);
+  }
+
+  private async reviewHermesDocumentDelivery(
+    runtime: HermesRuntimeAdapter,
+    result: Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>,
+    startedAt: number,
+  ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
+    if (this.cancelled || this.paused || this.abortController?.signal.aborted || result.stopReason !== "end_turn") return result;
+    const contract = this.activeFollowUpCompletionContract || this.buildCompletionContract();
+    result = await this.reviewHermesPdfDelivery(runtime, result, startedAt, contract);
+    if (this.cancelled || this.paused || this.abortController?.signal.aborted || result.stopReason !== "end_turn") return result;
+    if (!contract.requiresArtifactEvidence || !contract.requiredArtifactExtensions.includes(".docx")) return result;
+    const request = this.toolRegistry?.getDocumentTaskContext?.() || buildDocumentTaskMessage(this.task);
+    // Source-preserving translations must not be reformatted to satisfy report heuristics.
+    if (resolveDocumentTranslationContract(request).preserveSource) return result;
+    const candidates = () => this.getFollowUpArtifactEvidencePaths(startedAt, new Set(), [".docx"])
+      .filter((candidate) => {
+        const resolved = this.resolveArtifactPathForInspection(candidate);
+        try { return Boolean(resolved && fs.statSync(resolved).mtimeMs >= startedAt - 2_000); }
+        catch { return false; }
+      });
+    let reviews;
+    try {
+      reviews = await reviewDocxDeliverables(this.workspace.path, candidates(), this.abortController?.signal, extractWorkspaceUploadPaths(request));
+    } catch {
+      // A review infrastructure failure must not discard a completed deliverable.
+      return { ...result, assistantText: appendDocxReviewNotice(result.assistantText, [{ path: "DOCX", findings: [], unavailable: true }], this.taskRequiresSimplifiedChineseOutput()) };
+    }
+    if (this.cancelled || this.paused || this.abortController?.signal.aborted || !reviews.length) return result;
+    if (reviews.some((review) => review.findings.length > 0)) {
+      this.emitEvent("progress_update", {
+        phase: "document_review", state: "reviewing",
+        message: "正在核对文档图片、表格和单位，并进行一次针对性修正。",
+      });
+      this.emitEvent("log", {
+        metric: "docx_delivery_content_review", fileCount: reviews.length,
+        issueTypes: [...new Set(reviews.flatMap((review) => review.findings.map((finding) => finding.type)))],
+      });
+      try {
+        // Deliberately no continuation/retry loop around quality repair.
+        const repaired = await this.promptHermesDocumentRepair(runtime, buildDocxRepairInstruction(reviews));
+        if (this.cancelled || this.paused || this.abortController?.signal.aborted) return repaired;
+        if (repaired.stopReason === "end_turn" && repaired.assistantText.trim()) result = repaired;
+        // Include original targets even if repair deletes a file or creates a differently named copy.
+        const after = await reviewDocxDeliverables(this.workspace.path, [...reviews.map((review) => review.path), ...candidates()], this.abortController?.signal, extractWorkspaceUploadPaths(request));
+        const missing = reviews.filter((review) => !fs.existsSync(path.resolve(this.workspace.path, review.path)))
+          .map((review) => ({ path: review.path, findings: [], unavailable: true }));
+        reviews = [...after, ...missing];
+      } catch {
+        // Keep the original result and unresolved findings, not a false failure or success.
+      }
+    }
+    return { ...result, assistantText: appendDocxReviewNotice(result.assistantText, reviews, this.taskRequiresSimplifiedChineseOutput()) };
+  }
+
+  /**
+   * PDFs need a page-level layout check before the completion contract can
+   * accept them. Header/page-count checks alone let clipped text escape the
+   * page, which is the failure mode behind malformed analysis reports.
+   */
+  private async reviewHermesPdfDelivery(
+    runtime: HermesRuntimeAdapter,
+    result: Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>,
+    startedAt: number,
+    contract: CompletionContract,
+  ): Promise<Awaited<ReturnType<HermesRuntimeAdapter["prompt"]>>> {
+    if (!contract.requiresArtifactEvidence || !contract.requiredArtifactExtensions.includes(".pdf")) return result;
+    const request = this.toolRegistry?.getDocumentTaskContext?.() || buildDocumentTaskMessage(this.task);
+    const candidates = () => this.getFollowUpArtifactEvidencePaths(startedAt, new Set(), [".pdf"]);
+    let reviews: Awaited<ReturnType<PdfDeliveryReviewer["review"]>>;
+    try {
+      reviews = await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal);
+    } catch (error) {
+      this.emitEvent("log", { metric: "pdf_delivery_layout_review_unavailable", error: String((error as Error)?.message || error).slice(0, 300) });
+      return result;
+    }
+    if (this.cancelled || this.paused || this.abortController?.signal.aborted || !reviews.some((review) => !review.passed)) return result;
+    this.emitEvent("progress_update", { phase: "document_review", state: "reviewing", message: "正在核对 PDF 每页文字是否完整落在页面内，并进行一次针对性修正。" });
+    this.emitEvent("log", { metric: "pdf_delivery_layout_review", fileCount: reviews.length, issueTypes: [...new Set(reviews.flatMap((review) => review.issues.map((issue) => issue.type)))] });
+    try {
+      const repaired = await this.promptHermesDocumentRepair(runtime, buildPdfRepairInstruction(reviews));
+      if (this.cancelled || this.paused || this.abortController?.signal.aborted) return repaired;
+      if (repaired.stopReason === "end_turn" && repaired.assistantText.trim()) result = repaired;
+      // Re-read the actual output after the one allowed repair pass.
+      await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal);
+    } catch (error) {
+      this.emitEvent("log", { metric: "pdf_delivery_layout_repair_failed", error: String((error as Error)?.message || error).slice(0, 300) });
+    }
     return result;
+  }
+
+  private async promptHermesDocumentRepair(runtime: HermesRuntimeAdapter, prompt: string) {
+    const controller = new AbortController();
+    const parentSignal = this.abortController?.signal;
+    const cancel = () => controller.abort();
+    parentSignal?.addEventListener("abort", cancel, { once: true });
+    if (parentSignal?.aborted) cancel();
+    const timer = setTimeout(cancel, 90_000);
+    try {
+      return await runtime.prompt(prompt, controller.signal);
+    } finally {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", cancel);
+    }
   }
 
   /**
@@ -9114,7 +9263,7 @@ ${transcript}
       typeof this.provider?.type === "string" ? this.provider.type.trim() : "";
     if (
       activeProviderType &&
-      VALID_LLM_PROVIDER_TYPES.has(activeProviderType)
+      isLLMProviderType(activeProviderType)
     ) {
       return activeProviderType as LLMProviderType;
     }
@@ -9124,7 +9273,7 @@ ${transcript}
         : "";
     if (
       configuredProviderType &&
-      VALID_LLM_PROVIDER_TYPES.has(configuredProviderType)
+      isLLMProviderType(configuredProviderType)
     ) {
       return configuredProviderType as LLMProviderType;
     }
@@ -10388,7 +10537,7 @@ ${transcript}
     this.toolRegistry = this.buildToolRegistry(workspace);
     this.toolScheduler = new ToolScheduler();
     this.toolExecutionCoordinator = new ToolExecutionCoordinator(
-      this.toolRegistry,
+      () => this.toolRegistry,
     );
     this.toolHost = new NeoWorkerToolHost(this.toolExecutionCoordinator);
     this.deferredToolCatalog = new DeferredToolCatalog(
@@ -10563,6 +10712,7 @@ ${transcript}
       this.modelId || String(hermesSettings.modelKey || ""),
     );
     const hermesHome = path.join(getUserDataDir(), "hermes-runtime");
+    let lastModelActivityAt = 0;
     const options: HermesRuntimeOptions = {
       cwd: this.workspace.path,
       firstByteTimeoutMs: 90_000,
@@ -10623,6 +10773,7 @@ ${transcript}
                   input: effectiveInput,
                 });
                 let callRecorded = false;
+                let toolDispatched = false;
                 try {
                   const policyDecision = this.applyPreToolUsePolicyHook({
                     toolName,
@@ -10650,10 +10801,12 @@ ${transcript}
                   if (canonicalToolName === "web_search") {
                     this.recordWebSearchDispatch(effectiveInput);
                   }
+                  const timeoutMs = this.getToolTimeoutMs(toolName, effectiveInput);
+                  toolDispatched = true;
                   const outcome = await this.executeToolWithHeartbeat(
                     toolName,
                     effectiveInput,
-                    this.getToolTimeoutMs(toolName, effectiveInput),
+                    timeoutMs,
                     toolCallId,
                     signal,
                     checkpoint,
@@ -10735,6 +10888,10 @@ ${transcript}
                     this.emitEvent("tool_error", {
                       ...correlation,
                       error: failureMessage,
+                      result: trackedResult,
+                      durationMs: outcome.durationMs,
+                      envelope: outcome.envelope,
+                      policyTrace: outcome.policyTrace,
                     });
                     return {
                       ...outcome.toolHostResponse,
@@ -10767,7 +10924,9 @@ ${transcript}
                 } catch (error) {
                   const errorMessage =
                     error instanceof Error ? error.message : String(error);
-                  if (!callRecorded) {
+                  // Policy/dedupe rejections did not execute the tool. Recording
+                  // them would extend the window and overwrite its saved result.
+                  if (toolDispatched && !callRecorded) {
                     this.toolCallDeduplicator?.recordCall?.(
                       toolName,
                       effectiveInput as Any,
@@ -10839,7 +10998,17 @@ ${transcript}
 
         // Thought chunks are high-volume internal reasoning and are not part
         // of the user-visible transcript. They should not be persisted.
-        if (sessionUpdate === "agent_thought_chunk") return;
+        if (sessionUpdate === "agent_thought_chunk") {
+          const now = Date.now();
+          if (text && now - lastModelActivityAt >= 15_000) {
+            lastModelActivityAt = now;
+            this.emitEvent("progress_update", {
+              phase: "model_response", state: "active", heartbeat: true,
+              message: "The model is responding...",
+            });
+          }
+          return;
+        }
 
         this.daemon.logEvent(this.task.id, "hermes_runtime_update", update);
       },
@@ -12814,7 +12983,8 @@ ${transcript}
       (/^Task missing direct answer\b/i.test(message) ||
         /^Task missing (artifact|execution|required tool|verification) evidence/i.test(
           message,
-        )) &&
+        ) ||
+        /^PDF layout verification failed:/i.test(message)) &&
       !this.isSourceValidationGuardError(error)
     ) {
       return false;
@@ -13832,7 +14002,7 @@ ${transcript}
     }
     if (!this.toolExecutionCoordinator) {
       this.toolExecutionCoordinator = new ToolExecutionCoordinator(
-        this.toolRegistry,
+        () => this.toolRegistry,
       );
     }
     this.toolHost = new NeoWorkerToolHost(this.toolExecutionCoordinator);
@@ -16680,6 +16850,7 @@ ${transcript}
     const isUserFacingOutputPath = (relativePath: string): boolean => {
       const normalized = normalizePath(relativePath).replace(/^\.\//, "");
       const basename = path.basename(normalized);
+      if (/(?:^|\/)\.neoworker\/(?:tmp|uploads|memory)(?:\/|$)|(?:^|\/)\.neoworker-translation-|(?:^|\/)(?:node_modules|__pycache__)(?:\/|$)/i.test(normalized)) return false;
       if (/^agent\.md\/soul\.md\/user\.md$/i.test(normalized)) return false;
       if (/^__diag(?:[-_.]|$)/i.test(basename)) return false;
       if (requestedArtifactExtensions.size === 0) return true;
@@ -17387,6 +17558,12 @@ ${transcript}
 
   private async buildHermesContextNotes(): Promise<string[]> {
     const notes = [...(this.taskContextNotes || [])];
+    try {
+      const environment = await this.toolRegistry?.getExecutionEnvironmentGuidance?.();
+      if (environment) notes.push(environment);
+    } catch {
+      notes.push("Before running commands, call shell_environment to inspect the actual execution environment. Do not infer it from the host OS.");
+    }
     const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
     if (translationGuidance) notes.push(translationGuidance);
     const isSubAgentTask =
@@ -17975,9 +18152,9 @@ ${transcript}
       ].filter((file, index, files) => files.indexOf(file) === index);
       if (outputFiles.length > 0) {
         return [
-          "任务已完成。",
+          "本轮已生成以下文件，但此处不能确认任务已完成。请以交付校验结果为准。",
           "",
-          "输出文件：",
+          "过程文件（不代表最终交付）：",
           ...outputFiles.map((file) => `- \`${file}\``),
         ].join("\n");
       }
@@ -18550,6 +18727,14 @@ ${transcript}
     );
     const translationError = this.toolRegistry?.getDocumentTranslationDeliveryError?.(usableArtifactEvidenceFiles);
     if (translationError) return translationError;
+    if (contract.requiredArtifactExtensions.includes(".pdf")) {
+      const pdfGuardError = this.pdfDeliveryReviewer?.getGuardError(
+        this.workspace.path,
+        usableArtifactEvidenceFiles,
+        extractWorkspaceUploadPaths(this.toolRegistry?.getDocumentTaskContext?.() || buildDocumentTaskMessage(this.task)),
+      );
+      if (pdfGuardError) return pdfGuardError;
+    }
     const missingArtifactExtensions = this.getMissingArtifactExtensions(
       contract,
       artifactEvidenceFiles,
@@ -20416,6 +20601,14 @@ ${transcript}
     forcedInput?: Any;
   } {
     const canonicalToolName = canonicalizeToolNameUtil(opts.toolName);
+    // Source preservation takes precedence over generic format recovery. A
+    // translation must never be redirected from XLSX generation to PPTX generation.
+    // Preserve the original tool name and payload here. `generate_document`
+    // is a PDF report route while `create_document` can be DOCX or PDF; the
+    // translation contract must inspect that distinction before canonical
+    // aliasing collapses both names.
+    const translationError = this.toolRegistry?.getDocumentTranslationToolError?.(opts.toolName, opts.input);
+    if (translationError) return { blockedResult: { error: translationError } };
     const officeGenerationTools = new Set([
       "create_document",
       "create_spreadsheet",
@@ -21529,9 +21722,9 @@ ${transcript}
 
   /**
    * Hermes keeps one MCP client warm across follow-up turns and may cache the
-   * first tools/list response. Keep the Office creator surface stable so a
-   * later request can switch from analysis/XLSX to PPTX without losing the
-   * required tool. Execution-time policy still enforces the current request.
+   * first tools/list response. Keep creation AND source-preserving translation
+   * available from the first turn, including unrelated tasks such as HTML maps.
+   * Execution-time policy still enforces the current request and permissions.
    */
   private getHermesHostTools() {
     const availableTools = this.getAvailableTools();
@@ -21541,6 +21734,7 @@ ${transcript}
     }
 
     const stableOfficeTools = new Set([
+      "office_translation",
       "create_document",
       "generate_document",
       "create_spreadsheet",
@@ -21870,7 +22064,7 @@ ${transcript}
    * entire task and to probe guessed localhost services instead.
    */
   private getTaskArtifactToolAllowlist(): Set<string> {
-    return new Set(
+    const tools = new Set(
       getExplicitArtifactToolNamesUtil(
         this.task.title || "",
         [this.getContractPrompt(), this.lastUserMessage || ""]
@@ -21878,6 +22072,8 @@ ${transcript}
           .join("\n"),
       ),
     );
+    if (this.toolRegistry?.getDocumentTranslationGuidance?.()) tools.add("office_translation");
+    return tools;
   }
 
   private buildStepToolAllowlist(
@@ -22357,6 +22553,7 @@ ${transcript}
    * This is used when recreating an executor for follow-up messages
    */
   rebuildConversationFromEvents(events: TaskEvent[]): void {
+    this.restoreDocumentTaskContextFromEvents(events);
     this.getSessionRuntime().restoreFromEvents(events);
     this.currentPromptCacheContext = null;
     this.systemPromptBlocks = Array.isArray(this.stableSystemBlocks)
@@ -22425,8 +22622,24 @@ You are continuing a previous conversation. The context from the previous conver
    * Returns true if a snapshot was found and restored, false otherwise.
    */
   private restoreFromSnapshot(events: TaskEvent[]): boolean {
+    this.restoreDocumentTaskContextFromEvents(events);
     this.getSessionRuntime().restoreFromEvents(events);
     return this.conversationHistory.length > 0;
+  }
+
+  private restoreDocumentTaskContextFromEvents(events: TaskEvent[]): void {
+    const registry = this.toolRegistry;
+    if (!registry?.setDocumentTaskContext) return;
+    registry.setDocumentTaskContext(buildDocumentTaskMessage(this.task));
+    // Hermes snapshots can contain only assistant text and lastUserMessage="继续".
+    // Reconstruct intent from authored user events, never tool/assistant output
+    // or extracted document text. A later unrelated request releases the lock.
+    for (const event of [...events].sort((a, b) => a.timestamp - b.timestamp)) {
+      const type = this.getReplayEventType(event);
+      if (type !== "user_message" && type !== "follow_up_started") continue;
+      const message = event.payload?.message || event.payload?.followUpMessage;
+      if (typeof message === "string" && message.trim()) registry.setDocumentTaskContext(message);
+    }
   }
 
   /**
@@ -43375,6 +43588,8 @@ Return ONLY a JSON object:
     createdFilesBefore: Set<string>;
   } {
     const artifactEvidenceStartedAt = Date.now();
+    // Warm external runtimes must not reuse a completed writer from an older turn.
+    this.toolRegistry?.resetOfficeArtifactRequest?.();
     const createdFilesBefore = new Set(
       (this.fileOperationTracker?.getCreatedFiles?.() || []).map((file) =>
         String(file || "")

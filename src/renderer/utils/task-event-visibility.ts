@@ -748,6 +748,7 @@ export function filterVerboseTimelineNoise(
   const completedTaskIds = new Set<string>();
   for (const event of events) {
     if (!isUserVisibleTaskArtifactEvent(event)) continue;
+    if (["follow_up_started", "follow_up_completed"].includes(getEffectiveTaskEventType(event))) continue;
     // Hermes can emit raw assistant_message notes while it is deciding which
     // tool to use. They are not the durable reply and should not become a
     // second transcript in the execution-record view. Timeline-v2 assistant
@@ -827,6 +828,7 @@ export function shouldShowTaskEventInSummaryMode(
   event: TaskEvent,
   taskStatus?: TaskStatus,
 ): boolean {
+  if (["follow_up_started", "follow_up_completed"].includes(getEffectiveTaskEventType(event))) return false;
   if (isHermesRuntimeEvent(event)) return false;
   if (!isUserVisibleTaskArtifactEvent(event)) return false;
   if (isInjectedContextStepFailure(event)) return false;

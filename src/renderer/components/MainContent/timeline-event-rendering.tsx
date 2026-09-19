@@ -23,6 +23,7 @@ import {
 import {
   humanizeTimelineMessage,
   condenseStepText,
+  normalizeInitialPromptText,
 } from "./task-event-presentation";
 import {
   shouldRenderOpenArtifactCardAtEvent,
@@ -152,6 +153,25 @@ function isFailedToolPayload(value: unknown): boolean {
   );
 }
 
+/** Failed execution rows stay visible, but their verbose details are opt-in. */
+export function isFailureTimelineEvent(event: TaskEvent): boolean {
+  const effectiveType = getEffectiveTaskEventType(event);
+  if (effectiveType === "tool_result") {
+    return isFailedToolPayload(event.payload?.result);
+  }
+  return [
+    "timeline_error",
+    "error",
+    "step_failed",
+    "tool_error",
+    "llm_error",
+    "verification_failed",
+    "follow_up_failed",
+    "task_failed",
+    "task_cancelled",
+  ].includes(effectiveType);
+}
+
 function serializeToolPayload(value: unknown): string {
   const safeValue = sanitizeRuntimeDisplayValue(value);
   if (typeof safeValue === "string") return compactToolPayloadText(safeValue, 6000);
@@ -213,6 +233,7 @@ function ToolPayloadDetails({
 
 export function shouldAutoExpandActiveTimelineEvent(event: TaskEvent): boolean {
   const effectiveType = getEffectiveTaskEventType(event);
+  if (isFailureTimelineEvent(event)) return false;
   if (event.payload?.recoveredIntermediateFailure === true) return false;
   if (event.payload?.intermediateFailurePending === true) return false;
   // Approval requests already have a dedicated dialog. Keeping the timeline
@@ -220,8 +241,7 @@ export function shouldAutoExpandActiveTimelineEvent(event: TaskEvent): boolean {
   // Leave the compact row visible and let people expand it deliberately.
   if (effectiveType === "approval_requested") return false;
   if (effectiveType === "tool_call") return false;
-  if (effectiveType === "tool_result")
-    return isFailedToolPayload(event.payload?.result);
+  if (effectiveType === "tool_result") return false;
   return true;
 }
 
@@ -1244,7 +1264,7 @@ export function renderEventTitle(
     case "follow_up_completed": {
       const followUpMessage =
         typeof event.payload?.followUpMessage === "string"
-          ? event.payload.followUpMessage.trim()
+          ? normalizeInitialPromptText(event.payload.followUpMessage)
           : "";
       return followUpMessage
         ? localizeProgressText(`Follow-up: ${followUpMessage}`)
@@ -2284,7 +2304,7 @@ export function renderEventDetails(
     case "follow_up_completed": {
       const followUpMessage =
         typeof event.payload?.followUpMessage === "string"
-          ? event.payload.followUpMessage.trim()
+          ? normalizeInitialPromptText(event.payload.followUpMessage)
           : "";
       return (
         <div className="event-details follow-up-completed-details">

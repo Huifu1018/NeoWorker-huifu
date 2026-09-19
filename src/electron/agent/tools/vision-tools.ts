@@ -23,6 +23,7 @@ import {
   MODELS,
   type LLMImageMimeType,
   type LLMProvider,
+  type LLMRequest,
 } from "../llm/types";
 import { LLMProviderFactory, type LLMSettings } from "../llm/provider-factory";
 import { OpenAIProvider } from "../llm/openai-provider";
@@ -56,6 +57,18 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20MB
 const IMAGE_DOWNSCALE_THRESHOLD = 2 * 1024 * 1024; // 2MB — auto-downscale above this
 const VISION_CACHE_MAX_ENTRIES = 128;
 const logger = createLogger("VisionTools");
+
+export async function requestVisionWithRecovery(provider: LLMProvider, request: LLMRequest) {
+  const first = await provider.createMessage(request);
+  const hasText = first.content?.some((block) => block.type === "text" && block.text.trim());
+  if (hasText || first.stopReason !== "max_tokens") return first;
+  // Retry only explicit output-budget exhaustion, on the same configured route.
+  // Never turn hidden reasoning into a purported visual answer.
+  return provider.createMessage({
+    ...request,
+    maxTokens: Math.min(8192, Math.max(4096, request.maxTokens * 2)),
+  });
+}
 
 const VISION_REFUSAL_PATTERNS = [
   /(?:无法|不能|没法)(?:查看|看到|读取|识别|处理|访问).{0,30}(?:图片|图像|照片|视觉内容)/i,
@@ -685,7 +698,7 @@ export class VisionTools {
             // text. Give the active task model enough room to finish its
             // concise visual answer while keeping the tool call bounded.
             const activeVisionMaxTokens = Math.max(maxTokens, 2_048);
-            const response = await activeRoute.provider.createMessage({
+            const response = await requestVisionWithRecovery(activeRoute.provider, {
               model: activeModel,
               maxTokens: activeVisionMaxTokens,
               system:
@@ -784,7 +797,7 @@ export class VisionTools {
                 type: activeRoute.provider.type,
                 model: fallbackModel,
               });
-              const response = await fallbackProvider.createMessage({
+              const response = await requestVisionWithRecovery(fallbackProvider, {
                 model: fallbackModel,
                 maxTokens: Math.max(maxTokens, 2_048),
                 system:

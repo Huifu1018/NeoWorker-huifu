@@ -15,6 +15,7 @@ import { pathToFileURL } from "url";
 import { marked, Renderer } from "marked";
 import type { OfficeQualityReport } from "../office-document-quality";
 import { isSuspiciousPdfText } from "../pdf-text";
+import { reviewPdfLayout } from "../pdf-layout-review";
 
 interface PDFSection {
   heading?: string;
@@ -499,6 +500,13 @@ export async function generatePDF(
     }
 
     const pageCount = Math.max(1, (pdfStructure.match(/\/Type\s*\/Page\b/g) || []).length);
+    const layoutReview = await reviewPdfLayout(outputPath, { renderDirectory: evidenceDirectory });
+    if (!layoutReview.passed) {
+      throw new Error(
+        layoutReview.issues.map((issue) => issue.message).join(" ") ||
+          "Final PDF layout review did not pass.",
+      );
+    }
     const finalPageEvidence = renderFinalPdfPages(outputPath, evidenceDirectory);
     const visualPreviewPath = finalPageEvidence?.previewPath || renderResult.previewPath;
     if (finalPageEvidence && finalPageEvidence.pagePaths.length !== pageCount) {

@@ -94,7 +94,7 @@ describe("PromptComposerInput", () => {
 
   it("keeps the canonical draft synchronized during IME composition", () => {
     const inputHandlerStart = promptComposerInputSource.indexOf(
-      "const handleInput = () =>",
+      "const handleInput = (event:",
     );
     const inputHandlerEnd = promptComposerInputSource.indexOf(
       "const handleCompositionStart",
