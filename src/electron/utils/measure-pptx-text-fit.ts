@@ -27,7 +27,10 @@ async function measureInBrowser(boxes: TextFitBox[], allowShrink = true): Promis
       .find((element) => {
         if (used.has(element)) return false;
         const clone = element.cloneNode(true) as HTMLElement;
-        clone.querySelectorAll(".bullet").forEach((bullet) => bullet.remove());
+        // Descriptors contain DrawingML a:t text only. Formula glyphs/LaTeX
+        // fallbacks come from unchanged OMML and are measured below, but must
+        // not prevent matching the surrounding translated text to its shape.
+        clone.querySelectorAll(".bullet, .katex-formula").forEach((element) => element.remove());
         return normalize(clone.textContent || "") === normalize(box.text);
       });
     if (!content) { results.push({ key: box.key, scale: 1, fits: false, reason: "text_box_not_rendered" }); continue; }

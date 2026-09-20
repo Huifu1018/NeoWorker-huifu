@@ -39,7 +39,7 @@ if (!process.versions.electron) {
     const copiedExe = path.join(binDir, process.platform === "win32" ? "Office工具.exe" : "Office工具");
     fs.copyFileSync(executable, copiedExe);
     fs.chmodSync(copiedExe, 0o755);
-    for (const kind of ["plain", "large", "transparent-preset"]) {
+    for (const kind of ["plain", "large", "transparent-preset", "inline-math"]) {
       const large = kind === "large";
       const deck = new PptxGenJS();
       const slide = deck.addSlide();
@@ -55,6 +55,13 @@ if (!process.versions.electron) {
         const zip = await JSZip.loadAsync(source);
         const xml = await zip.file("ppt/slides/slide1.xml").async("text");
         zip.file("ppt/slides/slide1.xml", xml.replace(/(<a:rPr[^>]*>)/, '$1<a:solidFill><a:prstClr val="white"><a:alpha val="50000"/></a:prstClr></a:solidFill>'));
+        source = await zip.generateAsync({ type: "nodebuffer" });
+      }
+      if (kind === "inline-math") {
+        const zip = await JSZip.loadAsync(source);
+        const xml = await zip.file("ppt/slides/slide1.xml").async("text");
+        const formula = '<a14:m xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"><m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>≈</m:t></m:r></m:oMath></a14:m>';
+        zip.file("ppt/slides/slide1.xml", xml.replace('</a:r>', '</a:r>' + formula));
         source = await zip.generateAsync({ type: "nodebuffer" });
       }
       if (large) assert(source.length > 24 * 1024 * 1024, `Large fixture too small: ${source.length}`);

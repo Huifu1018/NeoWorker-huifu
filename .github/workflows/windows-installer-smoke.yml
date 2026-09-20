@@ -80,6 +80,9 @@ jobs:
       - name: Verify real Electron broken-proxy recovery
         run: node scripts/qa/proxy-failure-recovery.cjs
 
+      - name: Verify PPT translation rendering on Windows
+        run: node scripts/qa/office-render-smoke.cjs
+
       - name: Verify packaged app contains no API keys
         run: npm run package:secrets:verify
 
