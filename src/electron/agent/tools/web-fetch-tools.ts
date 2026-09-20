@@ -1,3 +1,4 @@
+import { fetchWithSystemProxy } from "../../utils/network-fetch";
 import { Workspace } from "../../../shared/types";
 import { AgentDaemon } from "../daemon";
 import { LLMTool } from "../llm/types";
@@ -8,25 +9,6 @@ const DEFAULT_TEXT_ENCODING = "utf-8";
 const CHINESE_LEGACY_TEXT_ENCODING = "gb18030";
 const SOURCE_SWITCH_REMINDER =
   "This web source is unavailable. Do not retry this URL or hostname with web_fetch or http_request in this task. Use a search result from a different hostname, or continue with already retrieved search snippets when they are sufficient.";
-
-type WebFetch = typeof globalThis.fetch;
-
-function getElectronNetFetch(): WebFetch | null {
-  if (!process.versions.electron) return null;
-
-  try {
-    // Electron's Chromium network stack follows the user's macOS proxy and
-    // certificate settings. Node's undici fetch does not, which can make a
-    // page found by web_search time out when web_fetch reads the same URL.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    // oxlint-disable-next-line typescript-eslint(no-require-imports)
-    const electron = require("electron") as Any;
-    const netFetch = electron?.net?.fetch;
-    return typeof netFetch === "function" ? netFetch.bind(electron.net) : null;
-  } catch {
-    return null;
-  }
-}
 
 function normalizeTextEncoding(
   rawEncoding?: string | null,
@@ -207,7 +189,7 @@ export class WebFetchTools {
   ): Promise<Response> {
     let currentUrl = url;
     let currentInit: RequestInit = { ...init };
-    const requestFetch = getElectronNetFetch() || globalThis.fetch;
+    const requestFetch = fetchWithSystemProxy;
 
     for (let redirectCount = 0; redirectCount <= 10; redirectCount += 1) {
       const parsedUrl = new URL(currentUrl);

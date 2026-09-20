@@ -1,3 +1,4 @@
+import { fetchWithSystemProxy, isProxyConnectionFailure } from "../../utils/network-fetch";
 import {
   SearchProvider,
   SearchProviderConfig,
@@ -11,27 +12,10 @@ import {
   matchesFlightRouteDirection,
 } from "./flight-query";
 
-type SearchFetch = typeof fetch;
-
 let duckDuckGoUnavailableUntil = 0;
 
-function getElectronNetFetch(): SearchFetch | null {
-  try {
-    // DuckDuckGo is often unreachable through Node's undici network path on
-    // proxied macOS networks, while Electron's Chromium network stack honors
-    // the system proxy. Keep the provider usable outside Electron by falling
-    // back to the regular global fetch implementation.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    // oxlint-disable-next-line typescript-eslint(no-require-imports)
-    const electron = require("electron") as Any;
-    const netFetch = electron?.net?.fetch;
-    return typeof netFetch === "function" ? netFetch.bind(electron.net) : null;
-  } catch {
-    return null;
-  }
-}
-
 function describeNetworkError(error: Any): string {
+  if (isProxyConnectionFailure(error)) return error.message;
   const cause = error?.cause;
   const code = cause?.code || error?.code;
   const detail = cause?.message || error?.message;
@@ -126,23 +110,10 @@ export class DuckDuckGoProvider implements SearchProvider {
         signal: controller.signal,
       };
 
-      const electronFetch = getElectronNetFetch();
-      let response: Response;
-
-      try {
-        response = await (electronFetch || globalThis.fetch)(this.baseUrl, requestInit);
-      } catch (primaryError: Any) {
-        // Outside Electron there is no Chromium fetch. Inside Electron, retry
-        // with Node fetch only when the Chromium request itself fails.
-        if (!electronFetch) throw primaryError;
-        try {
-          response = await globalThis.fetch(this.baseUrl, requestInit);
-        } catch (fallbackError: Any) {
-          throw new Error(describeNetworkError(fallbackError), {
-            cause: fallbackError,
-          });
-        }
-      }
+      const response = await fetchWithSystemProxy(this.baseUrl, requestInit, {
+        replaySafeSearch: true,
+        nodeFallback: true,
+      });
 
       clearTimeout(timeout);
 
@@ -231,7 +202,7 @@ export class DuckDuckGoProvider implements SearchProvider {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3_000);
       try {
-        const response = await (getElectronNetFetch() || globalThis.fetch)(`${host}?${params}`, {
+        const response = await fetchWithSystemProxy(`${host}?${params}`, {
           headers: {
             "User-Agent": "Mozilla/5.0",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
