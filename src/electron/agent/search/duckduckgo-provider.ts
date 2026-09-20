@@ -148,7 +148,7 @@ export class DuckDuckGoProvider implements SearchProvider {
   private isRelevant(query: SearchQuery, result: SearchResult): boolean {
     const text = query.query.toLowerCase();
     const fields = `${result.title} ${result.url} ${result.snippet || ""}`.toLowerCase();
-    if (/天气|预报|\bweather|\bforecast/i.test(text) && !/天气|预报|weather|forecast/i.test(fields)) return false;
+    if (/天气|\bweather\b/i.test(text) && !/天气|预报|weather|forecast/i.test(fields)) return false;
     const rail = /高铁|火车|列车|动车|铁路|\btrain|\brail/i.test(text);
     const flight = /航班|机票|航线|起飞|机场|航空|\bflight|\bairfare|\bairline/i.test(text);
     if (rail && !/高铁|火车|列车|动车|铁路|车次|train|rail|gaotie/i.test(fields)) return false;

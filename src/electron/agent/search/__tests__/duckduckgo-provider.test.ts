@@ -151,6 +151,12 @@ describe("public search result quality and recovery", () => {
     expect(result.results[0].url).toBe("https://weather.example.test/forecast");
   });
 
+  it("does not confuse a financial forecast with a weather request", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(response('<a class="result__a" href="https://investor.example.test/nvidia">NVIDIA revenue outlook</a><a class="result__snippet">Quarterly revenue guidance</a>'));
+    const result = await new DuckDuckGoProvider().search({ query: "NVIDIA revenue forecast" });
+    expect(result.results[0].url).toBe("https://investor.example.test/nvidia");
+  });
+
   it("decodes Bing source redirects instead of returning search tracking URLs", async () => {
     const target = "https://weather.example.test/beijing";
     const link = `https://www.bing.com/ck/a?!&amp;u=a1${Buffer.from(target).toString("base64url")}`;
