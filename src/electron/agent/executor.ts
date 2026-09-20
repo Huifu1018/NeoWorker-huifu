@@ -13666,10 +13666,13 @@ ${transcript}
       toolName === "generate_presentation" ||
       toolName === "create_spreadsheet" ||
       toolName === "generate_spreadsheet" ||
+      toolName === "office_translation" ||
       toolName === "compile_latex"
     ) {
       // Approval can legitimately remain pending for five minutes. Preserve a
       // full rendering/QA window instead of reporting a false 30s failure.
+      // Translation apply also performs multiple full-deck render passes;
+      // inspect/stage may queue behind it and need the same host window.
       return Math.max(
         normalizedSettingsTimeout ?? 0,
         TaskExecutor.OFFICE_TOOL_TIMEOUT_MS,
@@ -18992,6 +18995,9 @@ ${transcript}
       this.emitEvent("citations_collected", { citations });
     }
     this.daemon.completeTask(this.task.id, summary, {
+      ...(this.activeFollowUpCompletionContract ? {
+        currentTurnRequiredArtifactExtensions: [...this.activeFollowUpCompletionContract.requiredArtifactExtensions],
+      } : {}),
       terminalStatus,
       failureClass: this.task.failureClass,
       ...(goalAgentConfig ? { agentConfig: goalAgentConfig } : {}),
@@ -19194,6 +19200,9 @@ ${transcript}
       });
     }
     this.daemon.completeTask(this.task.id, summary, {
+      ...(this.activeFollowUpCompletionContract ? {
+        currentTurnRequiredArtifactExtensions: [...this.activeFollowUpCompletionContract.requiredArtifactExtensions],
+      } : {}),
       terminalStatus: this.task.terminalStatus,
       failureClass: this.task.failureClass,
       ...(explicitTerminalState

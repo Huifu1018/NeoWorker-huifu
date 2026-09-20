@@ -11320,6 +11320,8 @@ export class AgentDaemon extends EventEmitter {
       failureClass?: Task["failureClass"];
       budgetUsage?: Task["budgetUsage"];
       outputSummary?: TaskOutputSummary;
+      /** Host-derived contract for the active follow-up; [] means a text-only turn. */
+      currentTurnRequiredArtifactExtensions?: string[];
       waiveFailedStepIds?: string[];
       failedMutationRequiredStepIds?: string[];
       waivedVerificationStepIds?: string[];
@@ -11441,12 +11443,16 @@ export class AgentDaemon extends EventEmitter {
     // requested as outputs. Broad extension inference also sees source attachments
     // (for example two input .docx files for a requested .pptx) and can otherwise
     // turn a successfully delivered artifact into a false terminal failure.
-    const requiredArtifactExtensions = extractExplicitOutputExtensions(
-      "",
-      canonicalTaskIntent ||
-        existingTask.rawPrompt ||
-        existingTask.userPrompt ||
-        existingTask.prompt,
+    // The executor has already resolved continuation vs. a new request. An
+    // explicit empty list must not fall back to a previous PPT task's contract.
+    const requiredArtifactExtensions = (
+      metadata?.currentTurnRequiredArtifactExtensions ?? extractExplicitOutputExtensions(
+        "",
+        canonicalTaskIntent ||
+          existingTask.rawPrompt ||
+          existingTask.userPrompt ||
+          existingTask.prompt,
+      )
     ).map((extension) => extension.toLowerCase());
     const copiedInputArtifactPaths = new Set<string>();
     for (const event of historicalEvents) {

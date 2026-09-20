@@ -92,6 +92,77 @@ describe("TaskExecutor getToolTimeoutMs", () => {
     }
   });
 
+  it("keeps a 110-second Office translation alive through the real executor host boundary", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(BuiltinToolsSettingsManager, "getToolTimeoutMs").mockReturnValue(30_000);
+      const executor = Object.create(TaskExecutor.prototype) as Any;
+      executor.task = { id: "structured-timeout", agentConfig: {} };
+      executor.abortController = new AbortController();
+      executor.currentStepId = null;
+      executor.streamingToolExecutor = null;
+      executor.preparePresentationWorkflowToolInput = (_tool: string, input: unknown) => input;
+      executor.getSchedulerSpecForTool = () => ({
+        concurrencyClass: "read_parallel",
+        idempotent: true,
+      });
+      executor.getToolPolicyContext = () => ({});
+      executor.beginToolExecutionHeartbeat = () => undefined;
+      executor.loadPersistedToolHostRecord = () => undefined;
+      executor.tryWorkspaceBoundaryRecovery = vi.fn();
+      executor.emitEvent = vi.fn();
+      executor.getToolHost = () => ({
+        execute: vi.fn(
+          () =>
+            new Promise((resolve) => {
+              setTimeout(
+                () =>
+                  resolve({
+                    outcome: {
+                      result: {
+                        success: false,
+                        nonBlocking: true,
+                        recoverableFallback: true,
+                        failureKind: "source_unavailable",
+                      },
+                      durationMs: 110_000,
+                      envelope: { status: "error" },
+                    },
+                    response: {
+                      schemaVersion: "neoworker_tool_host_v1",
+                      requestId: "request-1",
+                      toolCallId: "tool-1",
+                      status: "error",
+                    },
+                  }),
+                110_000,
+              );
+            }),
+        ),
+      });
+
+      const resultPromise = TaskExecutor.prototype.executeToolWithHeartbeat.call(
+        executor,
+        "office_translation",
+        { action: "apply", translationId: "checkpoint.json", filename: "translated.pptx" },
+        executor.getToolTimeoutMs("office_translation", { action: "apply" }),
+        "tool-1",
+      );
+      await vi.advanceTimersByTimeAsync(110_000);
+
+      await expect(resultPromise).resolves.toMatchObject({
+        result: {
+          success: false,
+          nonBlocking: true,
+          recoverableFallback: true,
+        },
+      });
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
   it("gives orchestrate_agents enough time to wait for child agents", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = { agentConfig: { deepWorkMode: false } };
@@ -203,6 +274,7 @@ describe("TaskExecutor getToolTimeoutMs", () => {
       "create_spreadsheet",
       "generate_spreadsheet",
       "compile_latex",
+      "office_translation",
     ];
     for (const toolName of officeTools) {
       expect(executor.getToolTimeoutMs(toolName, {}), toolName).toBe(900_000);

@@ -2147,6 +2147,15 @@ function SidebarComponent({
           className="sidebar-brand-identity"
           aria-label={`NeoWorker ${PRODUCT_DISPLAY_VERSION}`}
         >
+          <img
+            className="sidebar-brand-logo"
+            src="./neoworker-app-icon.png"
+            width={28}
+            height={28}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+          />
           <span className="sidebar-brand-name">NeoWorker</span>
           <span className="sidebar-brand-version">
             {PRODUCT_DISPLAY_VERSION}

@@ -251,6 +251,28 @@ describe("DocumentTools", () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it("continues beyond three layout passes while the repair set shrinks", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-fit-progress-"));
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const pptx = new PptxGenJS(), slide = pptx.addSlide();
+      for (let i = 0; i < 4; i++) slide.addText(`Source ${i}`, { x: 1, y: i + 1, w: 2, h: 0.5 });
+      fs.writeFileSync(path.join(directory, "source.pptx"), Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer));
+      const register = vi.fn(), tools = new DocumentTools(directory, "progress-test", register);
+      let progress = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "English" });
+      const translationId = progress.translationId, ids = progress.nextUnits.map((u: Any) => u.id);
+      for (let remaining = 4; remaining > 0; remaining--) {
+        await tools.officeTranslation({ action: "stage", translationId, batchId: progress.batchId,
+          translations: progress.nextUnits.map((u: Any) => ({ key: u.key, text: `Translated ${u.text.match(/\d+/)?.[0]}` })) });
+        vi.mocked(fitPptxTranslation).mockResolvedValueOnce({ output: undefined, checkedShapes: 4, adjustedShapes: 0,
+          issues: ids.slice(0, remaining).map((id: string) => ({ key: id, slide: 1, text: "Translated", unitIds: [id], kind: "shape", reason: "translation_too_long" })) });
+        progress = await tools.officeTranslation({ action: "apply", translationId, filename: "translated.pptx" });
+        expect(progress).toMatchObject({ retryable: true, needsAttention: false, remaining });
+      }
+      expect(register).not.toHaveBeenCalled();
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it.each(["text_box_not_rendered", "translation_too_long"])("stops with actionable diagnostics for %s after automatic repair is unavailable", async reason => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-fit-stop-"));
     try {

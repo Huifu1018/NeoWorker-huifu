@@ -41,7 +41,7 @@ const translationQueues = new Map<string, Promise<void>>();
 // Bump this when the native PPTX fit gate changes. Older checkpoints may have
 // exhausted their retry budget because they were measured by the previous
 // checker; carrying that counter forward would permanently strand them.
-const PPTX_LAYOUT_REPAIR_VERSION = 3;
+const PPTX_LAYOUT_REPAIR_VERSION = 4;
 
 function sanitizeFilename(raw: string, maxLen = 80): string {
   const normalized = (String(raw || "").trim() || "document").replace(
@@ -861,6 +861,8 @@ export class DocumentTools {
           checkpoint.repairUnitIds = (checkpoint.repairUnitIds || []).filter((id: string) => !completed.has(id));
           checkpoint.layoutRepairVersion = PPTX_LAYOUT_REPAIR_VERSION;
           checkpoint.layoutRepairAttempts = 0;
+          checkpoint.layoutRepairStalledAttempts = 0;
+          delete checkpoint.layoutRepairBestRemaining;
         }
         const repairIds = reopenInvalidTranslations(checkpoint, manifest);
         await saveCheckpoint(checkpointPath, checkpoint);
@@ -982,6 +984,8 @@ export class DocumentTools {
       if (manifest.layoutRepairVersion !== PPTX_LAYOUT_REPAIR_VERSION) {
         manifest.layoutRepairVersion = PPTX_LAYOUT_REPAIR_VERSION;
         manifest.layoutRepairAttempts = 0;
+        manifest.layoutRepairStalledAttempts = 0;
+        delete manifest.layoutRepairBestRemaining;
         await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
       }
       let fit: Awaited<ReturnType<typeof fitPptxTranslation>>;
@@ -1004,11 +1008,17 @@ export class DocumentTools {
           manifest.completedUnitIds = manifest.completedUnitIds.filter((id: string) => !repair.has(id));
           manifest.repairUnitIds = repairIds;
           manifest.units = manifest.units.map((unit: Any, index: number) => repair.has(unit.id) ? expected.units[index] : unit);
+          // A shrinking repair set is progress, even after three passes. Stop
+          // repeated stalls, with a separate hard cap to bound total work.
+          const bestRemaining = manifest.layoutRepairBestRemaining;
+          manifest.layoutRepairStalledAttempts = typeof bestRemaining !== "number" || repairIds.length < bestRemaining
+            ? 0 : (manifest.layoutRepairStalledAttempts || 0) + 1;
+          manifest.layoutRepairBestRemaining = Math.min(bestRemaining ?? Infinity, repairIds.length);
           manifest.layoutRepairAttempts = (manifest.layoutRepairAttempts || 0) + 1;
           await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
         }
         const retryable = Array.isArray(manifest.completedUnitIds) && repairIds.length > 0
-          && manifest.layoutRepairAttempts < 3 && fit.issues.every((issue) => ["translation_too_long", "translated_neighbor_text_overlap"].includes(issue.reason));
+          && manifest.layoutRepairAttempts < 8 && manifest.layoutRepairStalledAttempts < 2 && fit.issues.every((issue) => ["translation_too_long", "translated_neighbor_text_overlap"].includes(issue.reason));
         return { success: false, ...(Array.isArray(manifest.completedUnitIds) ? checkpointResponse(manifest, input.translationsPath) : {}),
           retryable, needsAttention: !retryable, ...(retryable ? {} : { nextUnits: [] }), repairIds,
           textFit: { status: "needs_repair", checkedShapes: fit.checkedShapes,

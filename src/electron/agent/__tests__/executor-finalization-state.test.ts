@@ -104,6 +104,15 @@ describe("TaskExecutor terminal finalization state", () => {
     expect(executor.buildTaskOutputSummary).toHaveBeenCalledWith(1234, "Current follow-up completed.");
   });
 
+  it.each([[], [".docx"], [".pptx"]])("passes the current follow-up contract to the daemon: %j", (...extensions) => {
+    const executor = createExecutorForFinalization({
+      activeFollowUpCompletionContract: { requiresArtifactEvidence: extensions.length > 0, requiredArtifactExtensions: extensions },
+    });
+    (TaskExecutor as Any).prototype.finalizeTaskBestEffort.call(executor, "Current answer", "follow-up completed");
+    expect(executor.daemon.completeTask).toHaveBeenCalledWith(executor.task.id, "Current answer",
+      expect.objectContaining({ currentTurnRequiredArtifactExtensions: extensions }));
+  });
+
   it("deactivates a persisted presentation workflow for an explicit non-PPT follow-up", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

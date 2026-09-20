@@ -97,6 +97,24 @@ function createDaemonLike() {
 }
 
 describe("AgentDaemon.completeTask", () => {
+  it.each([
+    { required: [], created: [], blocked: false },
+    { required: [".docx"], created: ["translated.docx"], blocked: false },
+    { required: [".pptx"], created: ["translated.docx"], blocked: true },
+    { required: [".pdf"], created: [], blocked: true },
+  ])("enforces only the active follow-up contract: $required", ({ required, created, blocked }) => {
+    const daemon = createDaemonLike();
+    daemon.taskRepo.findById.mockReturnValue({ id: "task-1", title: "Translate PPT", prompt: "翻译成英文，输出 PPTX",
+      status: "executing", workspaceId: "workspace-1", parentTaskId: "parent-task", agentType: "sub" });
+    AgentDaemon.prototype.completeTask.call(daemon, "task-1", "Current follow-up answer", {
+      currentTurnRequiredArtifactExtensions: required,
+      outputSummary: { created, outputCount: created.length, folders: [] },
+    });
+    expect(daemon.taskRepo.update).toHaveBeenCalledWith("task-1", expect.objectContaining({ status: blocked ? "failed" : "completed" }));
+    if (!blocked) expect(daemon.logEvent).not.toHaveBeenCalledWith("task-1", "timeline_error",
+      expect.objectContaining({ gate: "completion_required_artifact_gate" }));
+  });
+
   it("clears pending approvals before completing the task", () => {
     const daemonLike = createDaemonLike();
     const rejected = vi.fn();

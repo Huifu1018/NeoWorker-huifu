@@ -39,7 +39,7 @@ if (!process.versions.electron) {
     const copiedExe = path.join(binDir, process.platform === "win32" ? "Office工具.exe" : "Office工具");
     fs.copyFileSync(executable, copiedExe);
     fs.chmodSync(copiedExe, 0o755);
-    for (const kind of ["plain", "large", "transparent-preset", "inline-math"]) {
+    for (const kind of ["plain", "large", "transparent-preset", "inline-math", "multi-slide-host"]) {
       const large = kind === "large";
       const deck = new PptxGenJS();
       const slide = deck.addSlide();
@@ -49,6 +49,14 @@ if (!process.versions.electron) {
         png.data = randomBytes(3000 * 3000 * 4);
         const data = PNG.sync.write(png, { colorType: 2, inputColorType: 6 });
         slide.addImage({ data: "image/png;base64," + data.toString("base64"), x: 1, y: 3, w: 2, h: 2 });
+      }
+      if (kind === "multi-slide-host") {
+        for (let page = 1; page < 45; page++) {
+          const extra = deck.addSlide();
+          for (let i = 0; i < 20; i++) extra.addText("翻译检查", {
+            x: 0.2 + (i % 4) * 2.4, y: 0.2 + Math.floor(i / 4) * 1.2, w: 2.2, h: 0.8, fontSize: 14,
+          });
+        }
       }
       let source = Buffer.from(await deck.write({ outputType: "nodebuffer" }));
       if (kind === "transparent-preset") {
@@ -94,6 +102,45 @@ if (!process.versions.electron) {
           console.log(JSON.stringify({ stage: "runtime-path-probe", input: probeInput, code: result.status, stdout: result.stdout, stderr: result.stderr }));
         }
         fs.rmSync(temp, { recursive: true, force: true });
+      }
+      if (kind === "multi-slide-host") {
+        const { TaskExecutor } = require("../../dist/electron/electron/agent/executor.js");
+        const { DocumentTools } = require("../../dist/electron/electron/agent/tools/document-tools.js");
+        const { NeoWorkerToolHost } = require("../../dist/electron/electron/agent/runtime/tool-host-protocol.js");
+        const { ToolExecutionCoordinator } = require("../../dist/electron/electron/agent/runtime/ToolExecutionCoordinator.js");
+        const doc = new DocumentTools(binDir, "host-qa", () => {});
+        let progress = await doc.officeTranslation({ action: "inspect", sourcePath: path.basename(input), targetLanguage: "English" });
+        const translationId = progress.translationId;
+        while (progress.remaining) progress = await doc.officeTranslation({ action: "stage", translationId,
+          batchId: progress.batchId, translations: progress.nextUnits.map(unit => ({ key: unit.key, text: "Translation check" })) });
+        const events = [];
+        const host = new NeoWorkerToolHost(new ToolExecutionCoordinator({
+          executeToolWithRuntime: async (_name, args, runtime) => {
+            // Force the exact production host boundary past the former 32s limit.
+            await new Promise(resolve => setTimeout(resolve, 35_000));
+            assert.equal(runtime.signal.aborted, false);
+            const result = await doc.officeTranslation(args);
+            assert.equal(runtime.signal.aborted, false);
+            return { result };
+          },
+        }));
+        const executor = Object.assign(Object.create(TaskExecutor.prototype), {
+          task: { id: "host-qa", agentConfig: {} }, abortController: new AbortController(), currentStepId: null,
+          streamingToolExecutor: null, preparePresentationWorkflowToolInput: (_name, args) => args,
+          getSchedulerSpecForTool: () => ({ concurrencyClass: "write_serial", idempotent: false }),
+          getToolPolicyContext: () => ({}), beginToolExecutionHeartbeat: () => undefined,
+          loadPersistedToolHostRecord: () => undefined, getToolHost: () => host,
+          emitEvent: (type, payload) => events.push({ type, payload }),
+        });
+        const args = { action: "apply", translationId, filename: "translated-host.pptx" };
+        const timeout = executor.getToolTimeoutMs("office_translation", args);
+        const result = await executor.executeToolWithHeartbeat("office_translation", args, timeout, "host-apply");
+        assert.equal(result.result.success, true, JSON.stringify(result.result));
+        assert.equal(result.toolHostResponse.status, "success");
+        assert(events.some(event => event.payload.metric === "tool_lifecycle" && event.payload.status === "request" && event.payload.timeoutMs === 900_000));
+        assert(fs.existsSync(path.join(binDir, "translated-host.pptx")));
+        console.log(JSON.stringify({ stage: "translation-host", slides: 45, checked: result.result.textFit.checkedShapes, ms: Date.now() - start, timeout }));
+        continue;
       }
       const manifest = await inspectOfficeTranslation(source);
       manifest.units.find(unit => unit.text === "翻译检查").text = "Translation check";

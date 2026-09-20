@@ -80,6 +80,8 @@ jobs:
       - name: Verify real Electron broken-proxy recovery
         run: node scripts/qa/proxy-failure-recovery.cjs
 
+      - name: Translation timeout and follow-up completion regressions
+        run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/executor-tool-timeouts.test.ts src/electron/agent/__tests__/executor-finalization-state.test.ts src/electron/agent/__tests__/daemon-complete-task.test.ts src/electron/agent/tools/__tests__/document-tools.test.ts --maxWorkers=1
       - name: Verify PPT translation rendering on Windows
         run: node scripts/qa/office-render-smoke.cjs
 

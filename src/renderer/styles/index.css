@@ -2024,6 +2024,16 @@ a,
   -webkit-app-region: drag;
 }
 
+.sidebar-brand-logo {
+  display: block;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  margin-right: 8px;
+  object-fit: contain;
+  user-select: none;
+}
+
 .sidebar-brand-name {
   min-width: 0;
   overflow: hidden;
@@ -2053,6 +2063,12 @@ a,
   letter-spacing: 0.02em;
   white-space: nowrap;
   user-select: none;
+}
+
+@container (max-width: 230px) {
+  .sidebar-brand-version {
+    display: none;
+  }
 }
 
 /* Removed: double-border effect - using single border only */
