@@ -8,6 +8,7 @@ import { promisify } from "util";
 import { resolveCodexArtifactToolRuntime } from "./codex-artifact-tool-runtime";
 import { resolveBundledOfficeCliExecutable } from "./officecli-runtime";
 import { renderOfficeHtmlVisualEvidence } from "./office-html-visual-renderer";
+import { preparePptxRenderInput, describePptxRenderFailure } from "./pptx-render-input";
 import { getUserDataDir } from "./user-data-dir";
 import {
   extractPptxStructuredContentFromFile,
@@ -18,7 +19,7 @@ import {
 const execFileAsync = promisify(execFile);
 const DEFAULT_RENDER_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_RENDERED_SLIDES = 80;
-const PPTX_PREVIEW_CACHE_VERSION = "7-text-warning-preview";
+const PPTX_PREVIEW_CACHE_VERSION = "8-normalized-render-input";
 const PPTX_FONTCONFIG_VERSION = "2-cjk-font-aliases";
 
 export type PptxPreviewRenderMode = "fast" | "full";
@@ -52,6 +53,7 @@ type CommandRunner = (
     maxBuffer?: number;
     cwd?: string;
     env?: NodeJS.ProcessEnv;
+    windowsHide?: boolean;
   },
 ) => Promise<unknown>;
 
@@ -280,7 +282,7 @@ export class PptxPreviewService {
     renderedSlideCount: number,
   ): Promise<PptxStructuredExtract> {
     try {
-      return await extractPptxStructuredContentFromFile(resolvedPath);
+      return await extractPptxStructuredContentFromFile(resolvedPath, { includeImageDescriptions: false });
     } catch {
       const slideCount = Math.max(1, renderedSlideCount);
       return {
@@ -671,7 +673,7 @@ export class PptxPreviewService {
   }
 }
 
-async function runBundledOfficeCliRenderer(
+export async function runBundledOfficeCliRenderer(
   commandRunner: CommandRunner,
   input: { sourcePath: string; outputDir: string; maxSlides: number },
   options: { timeout: number },
@@ -680,11 +682,23 @@ async function runBundledOfficeCliRenderer(
   if (!executable) throw new Error("Bundled OfficeCLI is not available.");
   const startedAt = Date.now();
   const htmlPath = path.join(input.outputDir, "preview.html");
-  await commandRunner(executable, ["view", input.sourcePath, "html", "-o", htmlPath, "--json"], {
-    timeout: options.timeout,
-    maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" },
-  });
+  // Use the same renderer compatibility fixes as translation validation. The
+  // preview copy is disposable; never rewrite the user's attachment.
+  let renderPath = input.sourcePath;
+  if (path.extname(input.sourcePath).toLowerCase() === ".pptx") {
+    renderPath = path.join(input.outputDir, "preview-input.pptx");
+    await fs.writeFile(renderPath, await preparePptxRenderInput(await fs.readFile(input.sourcePath)));
+  }
+  try {
+    await commandRunner(executable, ["view", renderPath, "html", "-o", htmlPath, "--json"], {
+      timeout: Math.max(1, options.timeout - (Date.now() - startedAt)),
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+      env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" },
+    });
+  } catch (error) {
+    throw new Error(describePptxRenderFailure(error), { cause: error });
+  }
   const result = await renderOfficeHtmlVisualEvidence({
     htmlPath,
     outputPath: path.join(input.outputDir, "preview.png"),

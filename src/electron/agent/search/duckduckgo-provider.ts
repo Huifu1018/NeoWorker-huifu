@@ -32,8 +32,8 @@ function describeNetworkError(error: Any): string {
 /**
  * Built-in web search provider (free, no API key required).
  * Scrapes DuckDuckGo HTML and falls back to Bing's public SERP when the DDG
- * route is blocked. Chinese lookups prefer the mainland Bing host, while
- * flight lookups keep DDG first so route direction is not lost.
+ * route is blocked. Chinese lookups prefer the mainland Bing host; flight
+ * results are still checked against the requested route direction.
  */
 export class DuckDuckGoProvider implements SearchProvider {
   readonly type = "duckduckgo" as const;
@@ -57,19 +57,15 @@ export class DuckDuckGoProvider implements SearchProvider {
 
     const text = String(query.query || "");
     const hasChinese = /[\u3400-\u9fff]/u.test(text);
-    const isFlight = /(?:航班|机票|航线|起飞|到达|票价|飞行时间|机场|航空|flight|airfare|airline|airport|departure|arrival)/i.test(
-      text,
-    );
     const preferChinaRoute =
       query.preferChinaRoute === true || query.region === "cn" || query.region === "cn-zh" || hasChinese;
 
-    // Prefer the mainland route for Chinese non-flight searches. Flight
-    // lookups keep DDG first because its indexed pages preserve IATA direction
-    // more often; Bing is the bounded fallback when DDG is blocked or empty.
-    if (preferChinaRoute && !isFlight && Date.now() >= duckDuckGoUnavailableUntil) {
+    let bingFailure: unknown;
+    if (preferChinaRoute && Date.now() >= duckDuckGoUnavailableUntil) {
       try {
         return await this.searchBing(query, maxResults, requestedSearchType);
-      } catch {
+      } catch (error) {
+        bingFailure = error;
         // Continue through the regular DDG path below.
       }
     }
@@ -93,7 +89,9 @@ export class DuckDuckGoProvider implements SearchProvider {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    // Keep the whole free-provider chain below the 30s tool budget: at most
+    // two 8s Bing attempts plus 10s DDG for mainland-first queries.
+    const timeout = setTimeout(() => controller.abort(), preferChinaRoute ? 10_000 : 15_000);
 
     try {
       const requestInit: RequestInit = {
@@ -115,8 +113,6 @@ export class DuckDuckGoProvider implements SearchProvider {
         nodeFallback: true,
       });
 
-      clearTimeout(timeout);
-
       if (!response.ok) {
         throw new Error(`DuckDuckGo request failed: ${response.status}`);
       }
@@ -128,6 +124,7 @@ export class DuckDuckGoProvider implements SearchProvider {
         throw new Error("DuckDuckGo returned no results");
       }
 
+      clearTimeout(timeout);
       duckDuckGoUnavailableUntil = 0;
 
       return {
@@ -140,6 +137,9 @@ export class DuckDuckGoProvider implements SearchProvider {
       clearTimeout(timeout);
       duckDuckGoUnavailableUntil = Date.now() + 10 * 60 * 1000;
       try {
+        // A failed primary Bing attempt already tried both hosts. Repeating
+        // it here adds latency without testing another route.
+        if (bingFailure) throw bingFailure;
         return await this.searchBing(query, maxResults, requestedSearchType);
       } catch (fallbackError: Any) {
         const primaryMessage = error?.message?.startsWith("DuckDuckGo")
@@ -197,10 +197,12 @@ export class DuckDuckGoProvider implements SearchProvider {
       if (!flightRoute) return true;
       return matchesFlightRouteDirection({ title, url, snippet }, flightRoute);
     };
-    let lastError: Any = null;
+    const failures: string[] = [];
     for (const host of hosts) {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3_000);
+      // Three seconds was shared by system-proxy failure, direct recovery,
+      // TLS and the response body, prematurely aborting working slow routes.
+      const timeout = setTimeout(() => controller.abort(), 8_000);
       try {
         const response = await fetchWithSystemProxy(`${host}?${params}`, {
           headers: {
@@ -233,14 +235,16 @@ export class DuckDuckGoProvider implements SearchProvider {
           }
         }
         if (results.length > 0) break;
+        failures.push(`${new URL(host).hostname}: no relevant results`);
       } catch (error: Any) {
-        lastError = error;
+        failures.push(`${new URL(host).hostname}: ${controller.signal.aborted
+          ? "request timed out after 8 seconds" : error?.message || String(error)}`);
       } finally {
         clearTimeout(timeout);
       }
     }
     if (!results.length) {
-      throw lastError || new Error("Bing returned no results");
+      throw new Error(failures.join("; ") || "Bing returned no results");
     }
     return {
       results,

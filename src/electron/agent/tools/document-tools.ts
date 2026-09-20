@@ -41,7 +41,7 @@ const translationQueues = new Map<string, Promise<void>>();
 // Bump this when the native PPTX fit gate changes. Older checkpoints may have
 // exhausted their retry budget because they were measured by the previous
 // checker; carrying that counter forward would permanently strand them.
-const PPTX_LAYOUT_REPAIR_VERSION = 4;
+const PPTX_LAYOUT_REPAIR_VERSION = 5;
 
 function sanitizeFilename(raw: string, maxLen = 80): string {
   const normalized = (String(raw || "").trim() || "document").replace(

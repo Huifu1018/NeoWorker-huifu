@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const PptxGenJS = require("pptxgenjs");
+const JSZip = require("jszip");
 const { inspectOfficeTranslation, applyOfficeTranslation } = require("../../dist/electron/electron/documents/office-translation.js");
 const { fitPptxTranslation } = require("../../dist/electron/electron/documents/pptx-translation-layout.js");
 app.on("window-all-closed", () => {});
@@ -57,6 +58,25 @@ app.on("window-all-closed", () => {});
     assert(result.output, JSON.stringify(result.issues));
     assert(result.adjustedShapes > 0, "Overlapping frames must not publish colliding glyphs at full size");
     results.push({ kind: "overlapping-source-frames", checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
+  }
+  for (const kind of ["local-font", "vertical-autofit", "duplicate-unchanged", "centered-blank-line"]) {
+    const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+    if (kind === "duplicate-unchanged") slide.addText("Same", { x: 1, y: 1, w: 2, h: 0.5, fontSize: 14 });
+    slide.addText("原文", { x: 1, y: 3, w: kind === "vertical-autofit" ? 0.8 : 3, h: kind === "local-font" ? 0.18 : 1.6,
+      fontSize: kind === "local-font" ? 10 : 14, margin: 0, valign: "mid", vert: kind === "vertical-autofit" ? "eaVert" : undefined });
+    let source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }));
+    const zip = await JSZip.loadAsync(source);
+    let xml = await zip.file("ppt/slides/slide1.xml").async("text");
+    if (kind === "local-font") xml = xml.replace(/ sz="1000"/g, "").replace('<a:lstStyle/>', '<a:lstStyle><a:lvl1pPr><a:defRPr sz="1000"/></a:lvl1pPr></a:lstStyle>');
+    if (kind === "vertical-autofit") xml = xml.replace('</a:bodyPr>', '<a:spAutoFit/></a:bodyPr>');
+    if (kind === "centered-blank-line") xml = xml.replace('</p:txBody>', '<a:p><a:endParaRPr sz="1200"/></a:p></p:txBody>');
+    zip.file("ppt/slides/slide1.xml", xml); source = await zip.generateAsync({ type: "nodebuffer" });
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units.find(unit => unit.text === "原文").text = kind === "duplicate-unchanged" ? "Same" : kind === "vertical-autofit" ? "Memory" : "Source text";
+    const result = await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest);
+    assert(result.output, JSON.stringify({ kind, issues: result.issues }));
+    if (kind === "duplicate-unchanged") assert.equal(result.adjustedShapes, 0);
+    results.push({ kind, checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
   }
   await fs.writeFile(path.join(output, "results.json"), JSON.stringify(results, null, 2));
   console.log(JSON.stringify({ output, casesPassed: results.length }));

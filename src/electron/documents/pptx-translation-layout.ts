@@ -8,7 +8,7 @@ const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const serializer = new XMLSerializer();
 const parse = (text: string) => new DOMParser().parseFromString(text, "application/xml");
 export type TextFitRect = { left: number; top: number; right: number; bottom: number };
-export type TextFitBox = { key: string; slide: number; text: string; unitIds: string[]; kind: "shape" | "table"; safeBounds?: TextFitRect };
+export type TextFitBox = { key: string; slide: number; text: string; unitIds: string[]; kind: "shape" | "table"; safeBounds?: TextFitRect; shapeId?: string; textOccurrence?: number };
 export type TextFitMeasurement = { key: string; scale: number; fits: boolean; reason?: string; minFontPt?: number; geometry?: { frame: TextFitRect; ink: TextFitRect };
   overflow?: { left: number; right: number; top: number; bottom: number; lines: number } };
 export type TextFitIssue = TextFitBox & { reason: string };
@@ -80,6 +80,8 @@ export async function fitPptxTranslation(
     const newBodies = textBodies(document);
     const elements = officeTranslationTextElements(before, manifest.schema === "neoworker.office-translation.v3");
     const text = (body: Element) => Array.from(body.getElementsByTagNameNS(A, "t")).map((item) => item.textContent || "").join("");
+    const occurrence = (list: Element[], index: number) => list.slice(0, index).filter(body => body.namespaceURI === list[index].namespaceURI
+      && text(body).replace(/\s|\u200b/g, "") === text(list[index]).replace(/\s|\u200b/g, "")).length;
     newBodies.forEach((body, index) => {
       if (!text(body).trim() || (body.namespaceURI !== A && text(oldBodies[index]) === text(body))) return;
       const unitIds = elements.flatMap((element, elementIndex) => {
@@ -103,8 +105,11 @@ export async function fitPptxTranslation(
       const following = Array.from(properties.childNodes).find((child) => child.nodeType === 1
         && ["scene3d", "sp3d", "flatTx", "extLst"].includes((child as Element).localName));
       properties.insertBefore(fit, following || null);
-      boxes.push({ key, slide: slideIndex + 1, text: text(body), unitIds, kind: body.namespaceURI === A ? "table" : "shape" });
-      sourceBoxes.push({ ...boxes[boxes.length - 1], text: text(oldBodies[index]) });
+      const parent = body.parentNode as Element;
+      const shapeId = (parent.parentNode as Element | null)?.localName === "spTree"
+        ? parent.getElementsByTagNameNS(P, "cNvPr")[0]?.getAttribute("id") || undefined : undefined;
+      boxes.push({ key, slide: slideIndex + 1, text: text(body), unitIds, kind: body.namespaceURI === A ? "table" : "shape", shapeId, textOccurrence: occurrence(newBodies, index) });
+      sourceBoxes.push({ ...boxes[boxes.length - 1], text: text(oldBodies[index]), textOccurrence: occurrence(oldBodies, index) });
       bodies.set(key, { fit, baseScale });
       parts.set(name, document);
     });
@@ -128,7 +133,12 @@ export async function fitPptxTranslation(
   for (const box of boxes) {
     const own = sourceGeometry.get(box.key);
     if (!own || box.kind !== "shape") continue;
-    const safe = { ...own.frame };
+    // Preserve the source's actual text footprint. Compact templates can
+    // intentionally extend glyphs/leading outside the nominal text frame;
+    // requiring them to fit a smaller area forces destructive rewrites even
+    // for shorter translations. Page edges and neighboring text still bound it.
+    const safe = { left: Math.min(own.frame.left, own.ink.left), top: Math.min(own.frame.top, own.ink.top),
+      right: Math.max(own.frame.right, own.ink.right), bottom: Math.max(own.frame.bottom, own.ink.bottom) };
     for (const other of boxes) {
       if (other.key === box.key || other.slide !== box.slide) continue;
       const neighbor = sourceGeometry.get(other.key);

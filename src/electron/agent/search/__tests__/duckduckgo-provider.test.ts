@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DuckDuckGoProvider } from "../duckduckgo-provider";
 
 function response(body: string, status = 200): Response {
@@ -23,8 +23,22 @@ const bingFlightRss = `<?xml version="1.0"?>
 </item></channel></rss>`;
 
 describe("DuckDuckGoProvider transport fallback", () => {
+  afterEach(() => { vi.useRealTimers(); });
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("allows a recovering mainland request to finish after the former three-second limit", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      setTimeout(() => resolve(response(bingFlightRss)), 4500);
+    }));
+    const pending = new DuckDuckGoProvider().search({ query: "杭州到西安航班" });
+    await vi.advanceTimersByTimeAsync(4500);
+    const result = await pending;
+    expect(result.results).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses the mainland Bing route first for Chinese non-flight searches", async () => {
@@ -48,11 +62,8 @@ describe("DuckDuckGoProvider transport fallback", () => {
     });
   });
 
-  it("keeps DuckDuckGo first for flight searches and parses route evidence", async () => {
-    const html = `<div class="result">
-      <a class="result__a" href="https://example.test/flight">HGH to XIY flight schedule</a>
-      <a class="result__snippet">HGH → XIY schedule</a>
-    </div>`;
+  it("uses mainland Bing for Chinese flight queries and filters reversed routes", async () => {
+    const html = bingFlightRss.replace("</channel>", `<item><title>西安到杭州航班</title><link>https://flight.example.test/xiy-hgh</link><description>西安到杭州航班查询</description></item></channel>`);
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(response(html));
@@ -65,10 +76,11 @@ describe("DuckDuckGoProvider transport fallback", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
-      "html.duckduckgo.com",
+      "cn.bing.com/search",
     );
+    expect(result.results).toHaveLength(1);
     expect(result.results[0]).toMatchObject({
-      title: "HGH to XIY flight schedule",
+      title: "杭州到西安航班时刻 - 航班查询",
     });
   });
 
@@ -76,10 +88,10 @@ describe("DuckDuckGoProvider transport fallback", () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(new Error("connect timeout"))
-      .mockResolvedValueOnce(response(bingFlightRss));
+      .mockResolvedValueOnce(response(bingFlightRss.replace("杭州到西安航班时刻 - 航班查询", "HGH to XIY flights")));
 
     const result = await new DuckDuckGoProvider().search({
-      query: "杭州到西安航班",
+      query: "HGH to XIY flights",
       maxResults: 3,
       preferFlight: true,
     });
@@ -89,7 +101,7 @@ describe("DuckDuckGoProvider transport fallback", () => {
       "html.duckduckgo.com",
     );
     expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
-      "cn.bing.com/search",
+      "www.bing.com/search",
     );
     expect(result.results).toHaveLength(1);
     expect(result.metadata?.fallbackProvider).toBe("bing");

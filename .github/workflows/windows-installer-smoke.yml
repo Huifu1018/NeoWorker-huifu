@@ -6,7 +6,7 @@ on:
       expected_version:
         description: "Expected package version"
         required: true
-        default: "0.1.8-8"
+        default: "0.1.8-10"
 
 permissions:
   contents: read
@@ -84,6 +84,9 @@ jobs:
         run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/executor-tool-timeouts.test.ts src/electron/agent/__tests__/executor-finalization-state.test.ts src/electron/agent/__tests__/daemon-complete-task.test.ts src/electron/agent/tools/__tests__/document-tools.test.ts --maxWorkers=1
       - name: Verify PPT translation rendering on Windows
         run: node scripts/qa/office-render-smoke.cjs
+
+      - name: Verify translation layout regressions on Windows
+        run: node node_modules/electron/cli.js scripts/qa/translation-text-fit-fixtures.cjs
 
       - name: Verify packaged app contains no API keys
         run: npm run package:secrets:verify

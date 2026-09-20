@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import JSZip from "jszip";
+import { extractPptxStructuredContentFromFile } from "../pptx-extractor";
 import { PptxPreviewService } from "../PptxPreviewService";
 
 const PNG_BYTES = Buffer.from("presentation-preview");
@@ -52,6 +53,19 @@ async function createDeck(filePath: string): Promise<void> {
 }
 
 describe("PptxPreviewService", () => {
+  it("omits model-only image diagnostics from preview text while preserving model extraction", async () => {
+    const deckPath = path.join(tempRoot, "image.pptx");
+    await createDeck(deckPath);
+    const zip = await JSZip.loadAsync(await fs.readFile(deckPath));
+    const xml = await zip.file("ppt/slides/slide1.xml")!.async("string");
+    zip.file("ppt/slides/slide1.xml", xml.replace("</p:spTree>", '<p:pic><p:nvPicPr><p:cNvPr id="90" name="Internal image"/></p:nvPicPr><p:blipFill><a:blip r:embed="rId90"/></p:blipFill></p:pic></p:spTree>'));
+    await fs.writeFile(deckPath, await zip.generateAsync({ type: "nodebuffer" }));
+    expect((await extractPptxStructuredContentFromFile(deckPath)).slides[0].text).toContain("Image asset:");
+    const preview = await new PptxPreviewService({ cacheRoot: path.join(tempRoot, "cache") }).buildPreview({ filePath: deckPath, renderMode: "fast" });
+    expect(preview.slides[0].text).toContain("Opening slide");
+    expect(preview.slides[0].text).not.toContain("Image asset:");
+    expect(preview.slides[0].text).not.toContain("Internal image");
+  });
   it("preserves local text warnings with rendered images and across cache reloads", async () => {
     const deckPath = path.join(tempRoot, "warning.pptx");
     await createDeck(deckPath);

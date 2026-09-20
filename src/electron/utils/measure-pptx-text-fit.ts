@@ -23,16 +23,18 @@ async function measureInBrowser(boxes: TextFitBox[], allowShrink = true): Promis
   const geometry = new Map<string, NonNullable<TextFitMeasurement["geometry"]>>();
   for (const box of boxes) {
     const slide = slides[box.slide - 1];
-    const content = slide && Array.from(slide.querySelectorAll<HTMLElement>(box.kind === "table" ? ".slide-table td" : ".shape > .shape-text"))
-      .find((element) => {
-        if (used.has(element)) return false;
+    const matches = slide ? Array.from(slide.querySelectorAll<HTMLElement>(box.kind === "table" ? ".slide-table td" : ".shape > .shape-text"))
+      .filter((element) => {
         const clone = element.cloneNode(true) as HTMLElement;
         // Descriptors contain DrawingML a:t text only. Formula glyphs/LaTeX
         // fallbacks come from unchanged OMML and are measured below, but must
         // not prevent matching the surrounding translated text to its shape.
         clone.querySelectorAll(".bullet, .katex-formula").forEach((element) => element.remove());
         return normalize(clone.textContent || "") === normalize(box.text);
-      });
+      }) : [];
+    const content = box.shapeId
+      ? matches.find(element => element.parentElement?.getAttribute("data-path") === `/slide[${box.slide}]/shape[@id=${box.shapeId}]`)
+      : box.textOccurrence !== undefined ? matches[box.textOccurrence] : matches.find(element => !used.has(element));
     if (!content) { results.push({ key: box.key, scale: 1, fits: false, reason: "text_box_not_rendered" }); continue; }
     used.add(content);
     // Flexbox must not compress paragraph line boxes while leaving glyphs
@@ -102,10 +104,10 @@ async function measureInBrowser(boxes: TextFitBox[], allowShrink = true): Promis
     });
     const safe = box.safeBounds;
     const visibleFrame = {
-      left: Math.max(shapeRect.left, slideRect.left, safe ? slideRect.left + safe.left : -Infinity),
-      right: Math.min(shapeRect.right, slideRect.right, safe ? slideRect.left + safe.right : Infinity),
-      top: Math.max(shapeRect.top, slideRect.top, safe ? slideRect.top + safe.top : -Infinity),
-      bottom: Math.min(shapeRect.bottom, slideRect.bottom, safe ? slideRect.top + safe.bottom : Infinity),
+      left: Math.max(slideRect.left, safe ? slideRect.left + safe.left : shapeRect.left),
+      right: Math.min(slideRect.right, safe ? slideRect.left + safe.right : shapeRect.right),
+      top: Math.max(slideRect.top, safe ? slideRect.top + safe.top : shapeRect.top),
+      bottom: Math.min(slideRect.bottom, safe ? slideRect.top + safe.bottom : shapeRect.bottom),
     };
     const fits = () => {
       if (activeTableState) {
@@ -162,7 +164,7 @@ async function measureInBrowser(boxes: TextFitBox[], allowShrink = true): Promis
       results.push({ key: box.key, scale: 1, fits: false, reason: "translation_too_long", minFontPt: minFont, overflow: overflow() }); continue;
     }
     scaleTo(lowerBound);
-    if (!fits() || content.classList.contains("has-vert-text")) {
+    if (!fits()) {
       results.push({ key: box.key, scale: lowerBound, fits: false, reason: "translation_too_long", minFontPt: minFont * lowerBound, overflow: overflow() }); continue;
     }
     let low = lowerBound; let high = upperBound;

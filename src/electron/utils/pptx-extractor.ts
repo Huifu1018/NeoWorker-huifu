@@ -29,6 +29,8 @@ export interface PptxExtractOptions {
   textCandidateLimit?: number;
   outputCharLimit?: number;
   maxFileSizeBytes?: number;
+  /** Model-facing asset diagnostics are omitted from the attachment viewer. */
+  includeImageDescriptions?: boolean;
 }
 
 const DEFAULT_MAX_SLIDES_TO_PROCESS = 250;
@@ -131,7 +133,7 @@ export async function extractPptxStructuredContentFromFile(
     const slideNumber = match ? Number(match[1]) : slides.length + 1;
     const relationships = await extractPptxSlideRelationships(zip, entryName);
     const xml = await file.async("string");
-    const extracted = extractPptxContentFromXml(xml, relationships);
+    const extracted = extractPptxContentFromXml(xml, relationships, options.includeImageDescriptions !== false);
     const notes = await extractPptxNotesFromZip(zip, relationships, slideNumber);
 
     slides.push({
@@ -544,6 +546,7 @@ function escapePptxTableCell(value: string): string {
 function extractPptxContentFromXml(
   xml: string,
   relationships: Record<string, PptxRelationship> = {},
+  includeImageDescriptions = true,
 ): string {
   if (!xml) return "";
 
@@ -560,6 +563,10 @@ function extractPptxContentFromXml(
   }
 
   for (const imageMatch of xml.matchAll(/<(?:\w+:)?pic\b[\s\S]*?<\/(?:\w+:)?pic>/gi)) {
+    if (!includeImageDescriptions) {
+      replacements.push({ index: imageMatch.index as number, length: imageMatch[0].length, text: "" });
+      continue;
+    }
     const shapeXml = imageMatch[0];
     const nameMatch = shapeXml.match(/name=(['"])(.*?)\1/i);
     const descMatch = shapeXml.match(/descr=(['"])(.*?)\1/i);

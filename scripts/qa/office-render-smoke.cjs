@@ -89,6 +89,30 @@ if (!process.versions.electron) {
         assert.equal(render.status, 0, "OfficeCLI view html failed");
         assert(fs.statSync(html).size > 0);
       }
+      if (["transparent-preset", "multi-slide-host"].includes(kind)) {
+        const { PptxPreviewService } = require("../../dist/electron/electron/utils/PptxPreviewService.js");
+        const { execFile } = require("node:child_process");
+        const { promisify } = require("node:util");
+        const previewStart = Date.now();
+        const previewService = new PptxPreviewService({
+          cacheRoot: path.join(root, `preview-${kind}`), artifactToolRunner: null,
+          commandRunner: (command, args, options) => {
+            if (command !== executable) throw new Error("External converters deliberately unavailable");
+            return promisify(execFile)(copiedExe, args, options);
+          },
+        });
+        const preview = await previewService.buildPreview({ filePath: input, renderMode: "full" });
+        assert.equal(preview.renderStatus, "rendered", preview.renderMessage);
+        assert.equal(preview.renderer, "officecli");
+        const expectedSlides = kind === "multi-slide-host" ? 45 : 1;
+        assert.equal(preview.slides.filter(slide => slide.imageDataUrl).length, expectedSlides);
+        for (const slide of preview.slides) assert(PNG.sync.read(Buffer.from(slide.imageDataUrl.split(",")[1], "base64")).width > 100);
+        const cached = await previewService.buildPreview({ filePath: input, renderMode: "fast" });
+        assert.equal(cached.renderStatus, "cached");
+        assert.equal(cached.slides.length, expectedSlides);
+        assert.deepEqual(fs.readFileSync(input), source);
+        console.log(JSON.stringify({ stage: "attachment-preview", kind, slides: expectedSlides, ms: Date.now() - previewStart }));
+      }
       if (kind === "plain") {
         // Compare packaged-name and copied-name execution, including Windows
         // short temp paths, so a runtime assembly error is not misdiagnosed.

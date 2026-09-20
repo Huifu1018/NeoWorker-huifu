@@ -28,6 +28,28 @@ describe("PPT translation text fitting", () => {
     const issues = findNewTextCollisions(boxes, before, after);
     expect(issues.map(item => item.key)).toEqual(["new-overlap", "touching"].includes(scenario) ? ["a", "b"] : []);
   });
+  it("reserves the original text footprint but does not grant new space beyond it", async () => {
+    const { source, manifest, translated } = await fixture();
+    const frame = { left: 10, top: 10, right: 100, bottom: 30 };
+    const ink = { left: 10, top: 6, right: 80, bottom: 32 };
+    await fitPptxTranslation(source, translated, manifest, async (candidate, boxes) => {
+      if (!candidate.equals(source)) expect(boxes[0].safeBounds).toEqual({ left: 10, top: 6, right: 100, bottom: 32 });
+      return boxes.map(box => ({ key: box.key, scale: 1, fits: true, geometry: { frame, ink } }));
+    });
+  });
+  it("identifies translated duplicates independently of preceding unchanged text", async () => {
+    const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+    slide.addText("Same", { x: 1, y: 1, w: 2, h: 1 });
+    slide.addText("Source", { x: 1, y: 3, w: 2, h: 1 });
+    const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer);
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units.find(unit => unit.text === "Source")!.text = "Same";
+    await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest, async (candidate, boxes) => {
+      expect(boxes[0].shapeId).toBeTruthy();
+      expect(boxes[0].textOccurrence).toBe(candidate.equals(source) ? 0 : 1);
+      return boxes.map(box => ({ key: box.key, scale: 1, fits: true }));
+    });
+  });
   it("writes native bounded autofit without moving shapes or changing original font properties", async () => {
     const { source, manifest, translated } = await fixture();
     const result = await fitPptxTranslation(source, translated, manifest, async (_, boxes, options) => {

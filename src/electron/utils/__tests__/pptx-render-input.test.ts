@@ -46,6 +46,33 @@ describe("PPTX rendering compatibility", () => {
     expect(await preparePptxRenderInput(source)).toBe(source);
   });
 
+  it("resolves local font defaults and empty line metrics without overwriting explicit run sizes", async () => {
+    const zip = new JSZip();
+    zip.file("ppt/slides/slide1.xml", `<p:txBody xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="${A}"><a:bodyPr/><a:lstStyle><a:lvl1pPr><a:defRPr sz="1000"/></a:lvl1pPr></a:lstStyle>
+      <a:p><a:pPr/><a:r><a:rPr/><a:t>Inherited</a:t></a:r><a:r><a:rPr sz="1400"/><a:t>Explicit</a:t></a:r></a:p>
+      <a:p><a:pPr><a:defRPr sz="1100"/></a:pPr><a:r><a:t>Paragraph</a:t></a:r></a:p>
+      <a:p><a:pPr/><a:endParaRPr sz="1200"/></a:p></p:txBody>`);
+    const source = await zip.generateAsync({ type: "nodebuffer" });
+    const result = await JSZip.loadAsync(await preparePptxRenderInput(source));
+    const doc = new DOMParser().parseFromString(await result.file("ppt/slides/slide1.xml")!.async("text"), "application/xml");
+    expect(Array.from(doc.getElementsByTagNameNS(A, "rPr")).map(node => node.getAttribute("sz"))).toEqual(["1000", "1400", "1100", "1200"]);
+    expect(await preparePptxRenderInput(await result.generateAsync({ type: "nodebuffer" }))).toBeInstanceOf(Buffer);
+    expect((await JSZip.loadAsync(source)).file("ppt/slides/slide1.xml")).toBeTruthy();
+  });
+  it.each(["eaVert", "vert270"])("retains saved geometry for vertical %s instead of auto-growing the wrong axis", async vert => {
+    const source = await fixture(`<a:txBody><a:bodyPr vert="${vert}"><a:spAutoFit/></a:bodyPr></a:txBody>`);
+    const result = await JSZip.loadAsync(await preparePptxRenderInput(source));
+    const xml = await result.file("ppt/slides/slide1.xml")!.async("text");
+    expect(xml).toContain('a:noAutofit'); expect(xml).not.toContain('a:spAutoFit');
+  });
+
+  it("renders Latin East Asian vertical text sideways while retaining stacked WordArt and CJK", async () => {
+    for (const [vert, text, expected] of [["eaVert", "Long-term memory", "vert"], ["eaVert", "长期记忆", "eaVert"], ["wordArtVert", "Memory", "wordArtVert"]]) {
+      const source = await fixture(`<a:txBody><a:bodyPr vert="${vert}"/><a:p><a:r><a:t>${text}</a:t></a:r></a:p></a:txBody>`);
+      const result = await JSZip.loadAsync(await preparePptxRenderInput(source));
+      expect(await result.file("ppt/slides/slide1.xml")!.async("text")).toContain(`vert="${expected}"`);
+    }
+  });
   it("surfaces the actual structured stdout error instead of only Command failed", () => {
     const error = { code: 1, killed: false, message: "Command failed: officecli view ...",
       stdout: JSON.stringify({ success: false, error: { code: "internal_error", error: "Could not find any recognizable digits." } }), stderr: "" };
