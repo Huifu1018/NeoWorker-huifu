@@ -33,6 +33,7 @@ import {
 } from "./artifact-logic";
 import { SpreadsheetArtifactCard } from "../SpreadsheetArtifactCard";
 import { DocumentArtifactCard } from "../DocumentArtifactCard";
+import { CodeArtifactCard } from "../CodeArtifactCard";
 import { PresentationArtifactCard } from "../PresentationArtifactCard";
 import { WebArtifactCard } from "../WebArtifactCard";
 import { ArtifactDownloadButton } from "../ArtifactDownloadButton";
@@ -101,6 +102,7 @@ const END_OF_TASK_ARTIFACT_KINDS = new Set<GeneratedInlinePreviewKind>([
   "spreadsheet",
   "presentation",
   "document",
+  "code",
 ]);
 
 const TOOL_PAYLOAD_SUMMARY_KEYS = [
@@ -1814,6 +1816,16 @@ export function renderEventDetails(
               />
             );
           }
+          if (previewKind === "code") {
+            return (
+              <CodeArtifactCard
+                key={artifactPath}
+                filePath={artifactPath}
+                workspacePath={workspacePath}
+                onOpenViewer={onOpenViewer}
+              />
+            );
+          }
           if (previewKind === "document") {
             return (
               <DocumentArtifactCard
@@ -2207,6 +2219,19 @@ export function renderEventDetails(
                       filePath={primaryOutputPath}
                       workspacePath={workspacePath}
                       onOpenViewer={onOpenSpreadsheetArtifact || onOpenViewer}
+                    />
+                  </div>
+                )}
+              {!latexPair &&
+                getInlinePreviewKindForGeneratedFile({ path: primaryOutputPath }) === "code" &&
+                primaryOutputPath &&
+                workspacePath &&
+                shouldRenderOpenArtifactCard(primaryOutputPath) && (
+                  <div className="completion-output-preview">
+                    <CodeArtifactCard
+                      filePath={primaryOutputPath}
+                      workspacePath={workspacePath}
+                      onOpenViewer={onOpenViewer}
                     />
                   </div>
                 )}
@@ -2798,6 +2823,22 @@ export function renderEventDetails(
       }
 
       if (
+        fcPreviewKind === "code" &&
+        fcPath &&
+        workspacePath &&
+        shouldRenderOpenArtifactCard(String(fcPath))
+      ) {
+        return (
+          <div className="event-details event-details-file-preview">
+            <CodeArtifactCard
+              filePath={fcPath}
+              workspacePath={workspacePath}
+              onOpenViewer={onOpenViewer}
+            />
+          </div>
+        );
+      }
+      if (
         fcPreviewKind === "document" &&
         fcPath &&
         workspacePath &&
@@ -3015,6 +3056,22 @@ export function renderEventDetails(
       }
 
       if (
+        fmPreviewKind === "code" &&
+        fmPath &&
+        workspacePath &&
+        shouldRenderOpenArtifactCard(String(fmPath))
+      ) {
+        return (
+          <div className="event-details event-details-file-preview">
+            <CodeArtifactCard
+              filePath={fmPath}
+              workspacePath={workspacePath}
+              onOpenViewer={onOpenViewer}
+            />
+          </div>
+        );
+      }
+      if (
         fmPreviewKind === "document" &&
         fmPath &&
         workspacePath &&
@@ -3223,6 +3280,21 @@ export function renderEventDetails(
           );
         }
 
+        if (
+          artifactPreviewKind === "code" &&
+          workspacePath &&
+          shouldRenderOpenArtifactCard(artifactPath)
+        ) {
+          return (
+            <div className="event-details event-details-file-preview">
+              <CodeArtifactCard
+                filePath={artifactPath}
+                workspacePath={workspacePath}
+                onOpenViewer={onOpenViewer}
+              />
+            </div>
+          );
+        }
         if (
           artifactPreviewKind === "document" &&
           workspacePath &&

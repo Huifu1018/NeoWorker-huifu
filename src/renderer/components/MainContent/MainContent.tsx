@@ -189,6 +189,7 @@ import {
 } from "lucide-react";
 import { SpreadsheetArtifactCard } from "../SpreadsheetArtifactCard";
 import { DocumentArtifactCard } from "../DocumentArtifactCard";
+import { CodeArtifactCard } from "../CodeArtifactCard";
 import { PresentationArtifactCard } from "../PresentationArtifactCard";
 import { WebArtifactCard } from "../WebArtifactCard";
 import { ReplayControlsBar } from "../ReplayControls";
@@ -2322,6 +2323,16 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                 />
               );
             }
+            if (kind === "code") {
+              return (
+                <CodeArtifactCard
+                  key={artifactPath}
+                  filePath={artifactPath}
+                  workspacePath={workspace.path}
+                  onOpenViewer={setViewerFilePath}
+                />
+              );
+            }
             if (kind === "document") {
               return (
                 <DocumentArtifactCard
@@ -2511,6 +2522,16 @@ const TaskConversationFlow = memo(function TaskConversationFlow(props: any) {
                             filePath={artifact.path}
                             workspacePath={workspace.path}
                             onOpenViewer={onOpenSpreadsheetArtifact || setViewerFilePath}
+                          />
+                        );
+                      }
+                      if (artifact.kind === "code") {
+                        return (
+                          <CodeArtifactCard
+                            key={artifact.path}
+                            filePath={artifact.path}
+                            workspacePath={workspace.path}
+                            onOpenViewer={setViewerFilePath}
                           />
                         );
                       }

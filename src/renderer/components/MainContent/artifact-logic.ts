@@ -1,4 +1,5 @@
 import type { TaskEvent, TaskOutputSummary } from "../../../shared/types";
+import { CODE_ARTIFACT_EXTENSIONS, isCodeArtifactFile } from "../../../shared/code-formats";
 import { getEffectiveTaskEventType } from "../../utils/task-event-compat";
 import { resolveTaskOutputSummaryFromCompletionEvent } from "../../utils/task-outputs";
 import { getCompletionSummaryText } from "./task-event-presentation";
@@ -27,12 +28,13 @@ import {
 } from "./main-content-constants";
 
 export type GeneratedInlinePreviewKind =
-  "image" | "video" | "html" | "spreadsheet" | "presentation" | "document";
+  "image" | "video" | "html" | "spreadsheet" | "presentation" | "document" | "code";
 export const END_OF_TASK_ARTIFACT_KINDS = new Set<GeneratedInlinePreviewKind>([
   "html",
   "spreadsheet",
   "presentation",
   "document",
+  "code",
 ]);
 const END_OF_TASK_ARTIFACT_COLLAPSED_LIMIT = 5;
 const END_OF_TASK_ARTIFACT_CARD_ESTIMATED_HEIGHT = 86;
@@ -133,14 +135,14 @@ export function estimateEndOfTaskArtifactStackHeight(
 }
 
 const GENERATED_ARTIFACT_LINK_EXTENSIONS =
-  "html?|pdf|xlsx?|xlsm|xlsb|csv|tsv|ods|numbers|gsheet|md|markdown|docx|docm|dotx|dotm|doc|rtf|odt|ott|pages|pptx|pptm?|potx|potm|ppsx|ppsm";
+  "html?|pdf|xlsx?|xlsm|xlsb|csv|tsv|ods|numbers|gsheet|md|markdown|docx|docm|dotx|dotm|doc|rtf|odt|ott|pages|pptx|pptm?|potx|potm|ppsx|ppsm|" + CODE_ARTIFACT_EXTENSIONS.join("|");
 
 const GENERATED_ARTIFACT_LINK_RE = new RegExp(
   "`([^`\\r\\n]+\\.(?:" +
     GENERATED_ARTIFACT_LINK_EXTENSIONS +
     "))`|((?:\\.{1,2}/|[\\w@.-]+/)?[\\w@./-]+\\.(?:" +
     GENERATED_ARTIFACT_LINK_EXTENSIONS +
-    "))",
+    "))(?!\\w|\\.\\w)",
   "gi",
 );
 
@@ -211,6 +213,7 @@ export function getInlinePreviewKindForGeneratedFile(args: {
     return "document";
   }
 
+  if (isCodeArtifactFile(filePath)) return "code";
   return null;
 }
 
