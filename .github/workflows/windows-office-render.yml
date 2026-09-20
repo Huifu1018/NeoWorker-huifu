@@ -7,6 +7,7 @@ on:
       - .github/workflows/windows-office-render.yml
       - scripts/qa/office-render-smoke.cjs
       - src/electron/utils/measure-pptx-text-fit.ts
+      - src/electron/utils/pptx-render-input.ts
 
 permissions:
   contents: read
@@ -30,6 +31,8 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npm run setup:officecli
       - run: npm run build:electron
+      - name: Renderer and checkpoint regression tests
+        run: npx vitest --config config/vitest.config.ts run src/electron/utils/__tests__/pptx-render-input.test.ts src/electron/agent/tools/__tests__/document-tools.test.ts --maxWorkers=1
       - name: Real translation render with large assets and Unicode paths
         run: node scripts/qa/office-render-smoke.cjs
       - name: Real translation layout fixtures

@@ -211,6 +211,35 @@ describe("DocumentTools", () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it("preserves completed translations and reports renderer failures without requesting retranslation", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "translation-render-failure-"));
+    const register = vi.fn();
+    try {
+      const { default: PptxGenJS } = await import("pptxgenjs");
+      const pptx = new PptxGenJS();
+      pptx.addSlide().addText("Original", { x: 1, y: 1, w: 4, h: 1 });
+      const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer);
+      fs.writeFileSync(path.join(directory, "source.pptx"), source);
+      const tools = new DocumentTools(directory, "render-failure", register);
+      const inspection = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "German" });
+      await tools.officeTranslation({ action: "stage", translationId: inspection.translationId, batchId: inspection.batchId,
+        translations: inspection.nextUnits.map((unit: Any) => ({ key: unit.key, text: "Übersetzt" })) });
+      vi.mocked(fitPptxTranslation).mockRejectedValueOnce(new Error("Office 版式渲染失败（退出码 1）：Could not find any recognizable digits."));
+      const result = await tools.officeTranslation({ action: "apply", translationId: inspection.translationId, filename: "German.pptx" });
+      expect(result).toMatchObject({ success: false, retryable: false, needsAttention: true, remaining: 0,
+        textFit: { status: "renderer_failed" }, nextUnits: [] });
+      expect(result.message).toContain("Could not find any recognizable digits.");
+      expect(register).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(directory, "German.pptx"))).toBe(false);
+      expect(fs.readFileSync(path.join(directory, "source.pptx"))).toEqual(source);
+      const resumed = await tools.officeTranslation({ action: "inspect", sourcePath: "source.pptx", targetLanguage: "German" });
+      expect(resumed.remaining).toBe(0);
+      const delivered = await tools.officeTranslation({ action: "apply", translationId: inspection.translationId, filename: "German.pptx" });
+      expect(delivered.success).toBe(true);
+      expect(register).toHaveBeenCalledTimes(1);
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("rejects unsupported PDF preservation without publishing a replacement report", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "office-translation-pdf-"));
     const register = vi.fn();

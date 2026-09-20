@@ -5,6 +5,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomUUID } from "crypto";
 import { resolveBundledOfficeCliExecutable } from "./officecli-runtime";
+import { preparePptxRenderInput, describePptxRenderFailure } from "./pptx-render-input";
 import type { TextFitBox, TextFitMeasurement } from "../documents/pptx-translation-layout";
 
 // Runs in the isolated renderer against OfficeCLI's actual HTML, including its
@@ -188,11 +189,15 @@ export async function measurePptxTextFit(candidate: Buffer, boxes: TextFitBox[],
   try {
     const sourcePath = path.join(staging, "candidate.pptx");
     const htmlPath = path.join(staging, "candidate.html");
-    await fs.writeFile(sourcePath, candidate);
-    await promisify(execFile)(executable, ["view", sourcePath, "html", "-o", htmlPath, "--json"], {
-      timeout: 60000, maxBuffer: 8 * 1024 * 1024,
-      env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" },
-    });
+    await fs.writeFile(sourcePath, await preparePptxRenderInput(candidate));
+    try {
+      await promisify(execFile)(executable, ["view", sourcePath, "html", "-o", htmlPath, "--json"], {
+        timeout: 60000, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
+        env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" },
+      });
+    } catch (error) {
+      throw new Error(describePptxRenderFailure(error), { cause: error });
+    }
     const { app, BrowserWindow } = await import("electron");
     await app.whenReady();
     window = new BrowserWindow({ show: false, width: 1800, height: 1400,

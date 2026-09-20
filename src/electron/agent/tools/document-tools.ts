@@ -984,7 +984,18 @@ export class DocumentTools {
         manifest.layoutRepairAttempts = 0;
         await saveCheckpoint(await fs.promises.realpath(path.resolve(root, input.translationsPath)), manifest);
       }
-      const fit = await fitPptxTranslation(source, output, manifest);
+      let fit: Awaited<ReturnType<typeof fitPptxTranslation>>;
+      try {
+        fit = await fitPptxTranslation(source, output, manifest);
+      } catch (error) {
+        return { success: false,
+          ...(Array.isArray(manifest.completedUnitIds) ? checkpointResponse(manifest, input.translationsPath) : {}),
+          retryable: false, needsAttention: true, nextUnits: [],
+          textFit: { status: "renderer_failed", error: error instanceof Error ? error.message : String(error) },
+          message: `译文已保存，但版式渲染器运行失败，尚未交付文件。${error instanceof Error ? error.message : String(error)}`,
+          guidance: "Report the textFit.error diagnostic and preserve the completed translation checkpoint. Do not repeat apply, retranslate, rewrite the source, or create a replacement deck. Resume with the saved checkpoint after the renderer failure is corrected.",
+        };
+      }
       if (!fit.output) {
         const repairIds = [...new Set(fit.issues.flatMap((issue) => issue.unitIds))];
         if (Array.isArray(manifest.completedUnitIds) && repairIds.length) {

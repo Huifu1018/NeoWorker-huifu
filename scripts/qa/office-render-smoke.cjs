@@ -21,6 +21,7 @@ if (!process.versions.electron) {
   const { app } = require("electron");
   const { randomBytes } = require("node:crypto");
   const PptxGenJS = require("pptxgenjs");
+  const JSZip = require("jszip");
   const { PNG } = require("pngjs");
   const { inspectOfficeTranslation, applyOfficeTranslation, verifyOfficeTranslationFidelity } = require("../../dist/electron/electron/documents/office-translation.js");
   const { fitPptxTranslation } = require("../../dist/electron/electron/documents/pptx-translation-layout.js");
@@ -38,7 +39,8 @@ if (!process.versions.electron) {
     const copiedExe = path.join(binDir, process.platform === "win32" ? "Office工具.exe" : "Office工具");
     fs.copyFileSync(executable, copiedExe);
     fs.chmodSync(copiedExe, 0o755);
-    for (const large of [false, true]) {
+    for (const kind of ["plain", "large", "transparent-preset"]) {
+      const large = kind === "large";
       const deck = new PptxGenJS();
       const slide = deck.addSlide();
       slide.addText("翻译检查", { x: 1, y: 1, w: 5, h: 1, fontSize: 20 });
@@ -48,7 +50,13 @@ if (!process.versions.electron) {
         const data = PNG.sync.write(png, { colorType: 2, inputColorType: 6 });
         slide.addImage({ data: "image/png;base64," + data.toString("base64"), x: 1, y: 3, w: 2, h: 2 });
       }
-      const source = Buffer.from(await deck.write({ outputType: "nodebuffer" }));
+      let source = Buffer.from(await deck.write({ outputType: "nodebuffer" }));
+      if (kind === "transparent-preset") {
+        const zip = await JSZip.loadAsync(source);
+        const xml = await zip.file("ppt/slides/slide1.xml").async("text");
+        zip.file("ppt/slides/slide1.xml", xml.replace(/(<a:rPr[^>]*>)/, '$1<a:solidFill><a:prstClr val="white"><a:alpha val="50000"/></a:prstClr></a:solidFill>'));
+        source = await zip.generateAsync({ type: "nodebuffer" });
+      }
       if (large) assert(source.length > 24 * 1024 * 1024, `Large fixture too small: ${source.length}`);
       const input = path.join(binDir, "原文件 candidate.pptx");
       const html = path.join(binDir, "候选预览.html");
@@ -57,17 +65,36 @@ if (!process.versions.electron) {
       const render = spawnSync(copiedExe, ["view", input, "html", "-o", html, "--json"], {
         env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" }, encoding: "utf8", timeout: 60_000, windowsHide: true,
       });
-      console.log(JSON.stringify({ stage: "view-html", large, bytes: source.length, ms: Date.now() - start,
+      console.log(JSON.stringify({ stage: "view-html", kind, bytes: source.length, ms: Date.now() - start,
         status: render.status, signal: render.signal, error: render.error?.message, stdout: render.stdout, stderr: render.stderr }));
-      assert.equal(render.status, 0, "OfficeCLI view html failed");
-      assert(fs.statSync(html).size > 0);
+      if (kind === "transparent-preset") {
+        assert.notEqual(render.status, 0, "Pinned renderer should reproduce transparent preset failure");
+        assert.match(render.stdout, /Could not find any recognizable digits/);
+      } else {
+        assert.equal(render.status, 0, "OfficeCLI view html failed");
+        assert(fs.statSync(html).size > 0);
+      }
+      if (kind === "plain") {
+        // Compare packaged-name and copied-name execution, including Windows
+        // short temp paths, so a runtime assembly error is not misdiagnosed.
+        const temp = fs.mkdtempSync(path.join(os.tmpdir(), "neoworker-office-path-"));
+        const probe = path.join(temp, "candidate.pptx");
+        fs.writeFileSync(probe, source);
+        for (const probeInput of [input, probe, fs.realpathSync(probe)]) {
+          const result = spawnSync(executable, ["view", probeInput, "html", "-o", html, "--json"], {
+            env: { ...process.env, OFFICECLI_NO_AUTO_RESIDENT: "1" }, encoding: "utf8", timeout: 60_000, windowsHide: true,
+          });
+          console.log(JSON.stringify({ stage: "runtime-path-probe", input: probeInput, code: result.status, stdout: result.stdout, stderr: result.stderr }));
+        }
+        fs.rmSync(temp, { recursive: true, force: true });
+      }
       const manifest = await inspectOfficeTranslation(source);
       manifest.units.find(unit => unit.text === "翻译检查").text = "Translation check";
       const translated = await applyOfficeTranslation(source, manifest);
       const fitted = await fitPptxTranslation(source, translated, manifest);
       assert(fitted.output, JSON.stringify(fitted.issues));
       await verifyOfficeTranslationFidelity(source, fitted.output, true);
-      console.log(JSON.stringify({ stage: "translation-fit", large, checked: fitted.checkedShapes, ms: Date.now() - start }));
+      console.log(JSON.stringify({ stage: "translation-fit", kind, checked: fitted.checkedShapes, ms: Date.now() - start }));
     }
     console.log("PASS: real Office HTML rendering and translation fitting, including >24 MiB PPTX and Chinese executable/file paths.");
   }).then(() => app.exit(0), error => { console.error(error); app.exit(1); });
