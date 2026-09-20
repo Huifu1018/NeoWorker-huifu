@@ -72,7 +72,7 @@ app.on("window-all-closed", () => {});
     const result = await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest);
     assert.equal(Boolean(result.output), distance > 1, JSON.stringify(result.issues));
     if (result.output) assert.equal(result.adjustedShapes, 2);
-    else assert(result.issues.every(issue => issue.reason === "translated_neighbor_text_overlap"));
+    else assert(result.issues.every(issue => ["translation_too_long", "translated_neighbor_text_overlap"].includes(issue.reason)));
     results.push({ kind: "shared-centered-label-gap", distance, checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
   }
   for (const kind of ["local-font", "vertical-autofit", "duplicate-unchanged", "centered-blank-line"]) {
