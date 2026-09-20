@@ -59,6 +59,22 @@ app.on("window-all-closed", () => {});
     assert(result.adjustedShapes > 0, "Overlapping frames must not publish colliding glyphs at full size");
     results.push({ kind: "overlapping-source-frames", checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
   }
+  // Both centered labels grow into the same gap; fitting each against only
+  // the neighbor's old glyphs passes, then the final overlap check fails.
+  for (const distance of [1, 1.2]) {
+    const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+    slide.addText("甲", { x: 1, y: 1, w: 2, h: 0.3, fontSize: 14, margin: 0, align: "center" });
+    slide.addText("乙", { x: 1 + distance, y: 1, w: 2, h: 0.3, fontSize: 14, margin: 0, align: "center" });
+    const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }));
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units[0].text = "Centralized storage";
+    manifest.units[1].text = "Distributed storage";
+    const result = await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest);
+    assert.equal(Boolean(result.output), distance > 1, JSON.stringify(result.issues));
+    if (result.output) assert.equal(result.adjustedShapes, 2);
+    else assert(result.issues.every(issue => issue.reason === "translated_neighbor_text_overlap"));
+    results.push({ kind: "shared-centered-label-gap", distance, checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
+  }
   for (const kind of ["local-font", "vertical-autofit", "duplicate-unchanged", "centered-blank-line"]) {
     const pptx = new PptxGenJS(); const slide = pptx.addSlide();
     if (kind === "duplicate-unchanged") slide.addText("Same", { x: 1, y: 1, w: 2, h: 0.5, fontSize: 14 });

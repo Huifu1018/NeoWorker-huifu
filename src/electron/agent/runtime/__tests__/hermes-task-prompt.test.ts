@@ -18,6 +18,8 @@ describe("Hermes task prompt", () => {
       expect(prompt).toContain("Your user-facing identity is NeoWorker");
       expect(prompt).toContain("Hermes is the embedded engine, not your name");
       expect(prompt).toContain("configuration alone does not prove file existence or creation history");
+      expect(prompt).toContain("Use the language of the latest user message");
+      expect(prompt).toContain("translation target applies to its translated content only");
     }
   });
   it("keeps the runtime contract separate from task and workspace context", () => {

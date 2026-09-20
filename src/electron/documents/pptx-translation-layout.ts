@@ -184,10 +184,18 @@ export async function fitPptxTranslation(
       : EMERGENCY_FONT_SCALE]));
   // Try the largest native size first instead of jumping directly to the
   // emergency floor. Every trial is measured without any further DOM shrink.
-  for (const scale of [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5]) {
-    const eligible = new Set([...unresolved].filter(key => scale >= nativeMinimumScales.get(key)! - 0.001));
+  const floorTried = new Set<string>();
+  for (const step of [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5]) {
+    const eligible = new Set([...unresolved].filter(key => !floorTried.has(key)));
     if (!eligible.size) break;
+    const trialScales = new Map<string, number>();
     for (const key of eligible) {
+      // Always test the exact readable floor. A 12pt source has an 8pt floor
+      // at 66.67%; the 70%/65% grid previously skipped that valid size.
+      const minimum = nativeMinimumScales.get(key)!;
+      const scale = Math.max(step, minimum);
+      if (step <= minimum) floorTried.add(key);
+      trialScales.set(key, scale);
       const body = bodies.get(key)!;
       body.fit.setAttribute("fontScale", String(Math.floor(body.baseScale * scale)));
     }
@@ -195,6 +203,7 @@ export async function fitPptxTranslation(
     const resolved = new Map<string, TextFitMeasurement>();
     for (const result of nativeResults) {
       if (!eligible.has(result.key) || !result.fits || result.scale !== 1) continue;
+      const scale = trialScales.get(result.key)!;
       if (scale < 1 && typeof result.minFontPt === "number" && result.minFontPt < fontFloors.get(result.key)! - 0.01) continue;
       resolved.set(result.key, { ...result, scale });
       unresolved.delete(result.key);
@@ -214,8 +223,33 @@ export async function fitPptxTranslation(
     if (result.scale < 1) adjustedShapes++;
   }
   if (issues.length) return { output: undefined, checkedShapes: boxes.length, adjustedShapes, issues };
-  const output = await generate();
-  const finalMeasurements = boxes.length ? await measureBoxes(output, boxes, { allowShrink: false }) : [];
+  let output = await generate();
+  let finalMeasurements = boxes.length ? await measureBoxes(output, boxes, { allowShrink: false }) : [];
+  // Two translations can each fit their frame yet expand into the same gap.
+  // Resolve the final rendered collision with native autofit before asking
+  // for another rewrite. Only affected boxes change, down to the same floor.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const collisions = findNewTextCollisions(boxes, sourceMeasurements, finalMeasurements);
+    if (!collisions.length) break;
+    const current = new Map(finalMeasurements.map(result => [result.key, result]));
+    const changed = new Map<string, number>();
+    for (const issue of collisions) {
+      const body = bodies.get(issue.key)!;
+      const font = current.get(issue.key)?.minFontPt;
+      if (typeof font !== "number" || font <= 0) continue;
+      const scale = Number(body.fit.getAttribute("fontScale")) / body.baseScale;
+      const minimum = Math.max(EMERGENCY_FONT_SCALE, scale * fontFloors.get(issue.key)! / font);
+      const next = Math.max(minimum, scale - 0.05);
+      if (next >= scale - 0.0001) continue;
+      body.fit.setAttribute("fontScale", String(Math.floor(body.baseScale * next)));
+      changed.set(issue.key, next);
+    }
+    if (!changed.size) break;
+    measurements = measurements.map(result => changed.has(result.key) ? { ...result, scale: changed.get(result.key)! } : result);
+    output = await generate();
+    finalMeasurements = await measureBoxes(output, boxes, { allowShrink: false });
+  }
+  adjustedShapes = measurements.filter(result => result.scale < 1).length;
   const finalMap = new Map(finalMeasurements.map(result => [result.key, result]));
   for (const box of boxes) {
     const result = finalMap.get(box.key);

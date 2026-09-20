@@ -117,6 +117,19 @@ describe("PPT translation text fitting", () => {
     });
     expect(result.output).toBeUndefined();
   });
+  it("tests the exact readable font floor between the native trial steps", async () => {
+    const { source, manifest, translated } = await fixture();
+    const result = await fitPptxTranslation(source, translated, manifest, async (candidate, boxes, options) => {
+      if (candidate.equals(source)) return [];
+      if (options?.allowShrink !== false) return boxes.map(box => ({ key: box.key, scale: 2 / 3, fits: false, minFontPt: 8 }));
+      const xml = await (await JSZip.loadAsync(candidate)).file("ppt/slides/slide1.xml")!.async("text");
+      const scale = Number(xml.match(/fontScale="(\d+)"/)![1]) / 100000;
+      return boxes.map(box => ({ key: box.key, scale: 1, fits: scale <= 0.667, minFontPt: 12 * scale }));
+    });
+    expect(result.output).toBeInstanceOf(Buffer);
+    expect(result.minimumScale).toBeCloseTo(2 / 3);
+    expect(result.minimumAdjustedFontPt).toBeCloseTo(8);
+  });
 
   it("does not publish a DOM-only fit when serialized text still overflows", async () => {
     const { source, manifest, translated } = await fixture();
