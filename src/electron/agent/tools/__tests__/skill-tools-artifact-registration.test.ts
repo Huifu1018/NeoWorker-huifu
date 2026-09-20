@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
+import PptxGenJS from "pptxgenjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../../../shared/types";
 
@@ -173,7 +174,11 @@ describe("SkillTools artifact registration", () => {
     );
     mocks.createPresentation.mockImplementation(async (outputPath: string) => {
       await fs.mkdir(path.dirname(outputPath), { recursive: true });
-      await fs.writeFile(outputPath, "pptx-bytes");
+      const deck = new PptxGenJS();
+      const slide = deck.addSlide();
+      slide.addText("Title", { x: 1, y: 1, w: 8, h: 1 });
+      slide.addText("Body", { x: 1, y: 2, w: 8, h: 2 });
+      await deck.writeFile({ fileName: outputPath });
     });
     mocks.qualityCheck.mockResolvedValue({
       available: true,
@@ -206,6 +211,7 @@ describe("SkillTools artifact registration", () => {
       registerArtifact: vi.fn(),
     };
     const tools = new SkillTools(workspace, daemon as never, "task-1");
+    vi.spyOn(tools as Any, "createOfficeArtifactBuilder").mockReturnValue({ createPresentation: mocks.createPresentation });
 
     const result = await tools.createPresentation({
       filename: ".neoworker/report.pptx",
@@ -213,7 +219,7 @@ describe("SkillTools artifact registration", () => {
     });
 
     const absoluteOutputPath = path.join(tempDir, ".neoworker", "report.pptx");
-    expect(result.path).toBe(".neoworker/report.pptx");
+    expect(result.path.replace(/\\/g, "/")).toBe(".neoworker/report.pptx");
     expect(daemon.registerArtifact).toHaveBeenCalledWith(
       "task-1",
       absoluteOutputPath,
@@ -223,7 +229,7 @@ describe("SkillTools artifact registration", () => {
       "task-1",
       "artifact_created",
       expect.objectContaining({
-        path: ".neoworker/report.pptx",
+        path: result.path,
         type: "presentation",
       }),
     );

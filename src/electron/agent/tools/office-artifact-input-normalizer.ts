@@ -147,7 +147,7 @@ function normalizeSlideContent(slide: InputRecord): string[] {
   ]);
 }
 
-export function normalizePresentationArtifactInput(input: InputRecord): any {
+export function normalizePresentationArtifactInput(input: InputRecord, preserveMissingTitles = false): any {
   const assetsById = new Map<string, InputRecord>(
     (Array.isArray(input?.assets) ? input.assets : [])
       .filter((asset: InputRecord) => asset?.id)
@@ -193,7 +193,7 @@ export function normalizePresentationArtifactInput(input: InputRecord): any {
       const rawImagePath =
         slide?.image?.path || referencedAsset?.path || slide?.imagePath;
       return {
-        title: asText(slide?.title) || `Slide ${index + 1}`,
+        title: asText(slide?.title) || (preserveMissingTitles || input?.sourcePath ? "" : `Slide ${index + 1}`),
         subtitle: slide?.subtitle,
         templateReplacements: slide?.templateReplacements,
         content: normalizeSlideContent(slide),

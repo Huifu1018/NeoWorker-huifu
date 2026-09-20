@@ -414,7 +414,7 @@ describe("Skill tool", () => {
       registry.setDocumentTaskContext(attached);
       await registry.executeTool(name, input);
       expect(writer).toHaveBeenCalledWith(expect.objectContaining({
-        sourcePath: "/mock/workspace/.neoworker/uploads/123/模板(2).pptx",
+        sourcePath: path.resolve("/mock/workspace/.neoworker/uploads/123/模板(2).pptx"),
         generationMode: "ppt-master", sourceTemplateHash: expect.any(String),
       }), expect.anything());
     });
@@ -425,10 +425,13 @@ describe("Skill tool", () => {
       await (registry as Any).runCanonicalPresentation({ ...input, preserveSlideStructure: false });
       expect(writer.mock.calls[0][0].preserveSlideStructure).toBe(true);
       expect(registry.getPresentationEditGuidance()).toContain("原页数");
+      registry.setDocumentTaskContext("精简正文内容");
+      await (registry as Any).runCanonicalPresentation({ filename: "partial.pptx", slides: [{content: ["Concise body"]}] });
+      expect(writer.mock.calls[1][0].slides[0].title).toBe("");
       registry.setDocumentTaskContext("增加两页，拆分进展和风险");
       await (registry as Any).runCanonicalPresentation(input);
-      expect(writer.mock.calls[1][0].preserveSlideStructure).toBe(false);
-      expect(writer.mock.calls[1][0].sourcePath).toContain("模板(2).pptx");
+      expect(writer.mock.calls[2][0].preserveSlideStructure).toBe(false);
+      expect(writer.mock.calls[2][0].sourcePath).toContain("模板(2).pptx");
     });
 
     it("recognizes editing an attachment without the word template", async () => {
@@ -696,8 +699,8 @@ Attached files (relative to workspace):
         }),
       );
       expect(JSON.parse(String(resolved?.parameters?.source_paths))).toEqual([
-        "/mock/workspace/.neoworker/uploads/123/one.pptx",
-        "/mock/workspace/.neoworker/uploads/123/two.pptx",
+        path.resolve("/mock/workspace/.neoworker/uploads/123/one.pptx"),
+        path.resolve("/mock/workspace/.neoworker/uploads/123/two.pptx"),
       ]);
       expect(resolved?.content).toContain("Native PPTX translation lock");
       expect(resolved?.content).toContain("never a deck-creation operation");
@@ -865,13 +868,13 @@ Attached files (relative to workspace):
       const resolved = takeResolvedSkill(result);
 
       expect(result.success).toBe(true);
-      expect(resolved?.content).toContain(
+      expect(resolved?.content?.replace(/\\/g, "/")).toContain(
         "/mock/resources/skills/script-skill/scripts/run.sh",
       );
-      expect(resolved?.content).toContain(
+      expect(resolved?.content?.replace(/\\/g, "/")).toContain(
         "/mock/workspace/artifacts/skills/test-task-123/script-skill/result.txt",
       );
-      expect(resolved?.content).toContain("/mock/workspace/artifacts/result.txt");
+      expect(resolved?.content?.replace(/\\/g, "/")).toContain("/mock/workspace/artifacts/result.txt");
       expect(resolved?.contextDirectives).toEqual(
         expect.objectContaining({
           artifactDirectories: expect.any(Array),

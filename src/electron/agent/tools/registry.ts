@@ -1038,7 +1038,7 @@ export class ToolRegistry {
     input: Any,
     signal?: AbortSignal,
   ): Promise<Any> {
-    const normalized = normalizePresentationArtifactInput(input);
+    const normalized = normalizePresentationArtifactInput(input, this.preservePresentationSlideStructure);
     if (this.presentationTemplateRequest) {
       const context = await this.inferPresentationSourceContext(this.presentationTemplateRequest);
       if (!normalized.sourcePath && context.sourcePaths.length === 1) {
