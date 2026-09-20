@@ -1,0 +1,36 @@
+name: Windows Office Render
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/windows-office-render.yml
+      - scripts/qa/office-render-smoke.cjs
+      - src/electron/utils/measure-pptx-text-fit.ts
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Force HTTPS for Git dependencies
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+      - run: npm ci --no-audit --no-fund
+      - run: node node_modules/electron/install.js
+      - run: npm run setup:officecli
+      - run: npm run build:electron
+      - name: Real translation render with large assets and Unicode paths
+        run: node scripts/qa/office-render-smoke.cjs
+      - name: Real translation layout fixtures
+        run: node node_modules/electron/cli.js scripts/qa/translation-text-fit-fixtures.cjs
