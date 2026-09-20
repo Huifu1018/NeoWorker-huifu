@@ -235,6 +235,26 @@ export async function applyOfficeTranslation(bytes: Buffer, manifest: OfficeTran
   return output;
 }
 
+/** A one-character-wide CJK label needs sideways Latin text in the same frame.
+ * Keep this restricted to short, unrotated portrait labels, never body prose,
+ * tables, mixed scripts or text with an explicitly chosen writing direction. */
+export function canRotateTranslatedCjkLabel(before: Element, after: Element): boolean {
+  const shape = before.parentNode as Element;
+  if (shape?.localName !== "sp") return false;
+  const properties = before.getElementsByTagNameNS(DRAWING, "bodyPr")[0];
+  if (!properties || (properties.getAttribute("vert") && properties.getAttribute("vert") !== "horz") || Number(properties.getAttribute("rot"))) return false;
+  const transform = shape.getElementsByTagNameNS(DRAWING, "xfrm")[0];
+  const extent = transform?.getElementsByTagNameNS(DRAWING, "ext")[0];
+  const width = Number(extent?.getAttribute("cx")), height = Number(extent?.getAttribute("cy"));
+  if (Number(transform?.getAttribute("rot")) || width <= 0 || width > 32 * 12700 || height < width * 3) return false;
+  const text = (body: Element) => Array.from(body.getElementsByTagNameNS(DRAWING, "t")).map(node => node.textContent || "").join("").trim();
+  const original = text(before), translated = text(after);
+  const paragraphs = Array.from(before.childNodes).filter(node => node.nodeType === 1 && (node as Element).localName === "p"
+    && text(node as Element));
+  return paragraphs.length === 1 && /^[\u3400-\u9fff\s]{2,20}$/.test(original)
+    && /[A-Za-z]/.test(translated) && /^[\x20-\x7e\u00a0-\u024f]*$/.test(translated);
+}
+
 /** Compare native package structure, not merely whether an output can open. */
 export async function verifyOfficeTranslationFidelity(source: Buffer, output: Buffer, allowTextFit = false): Promise<void> {
   const original = await openPackage(source);
@@ -247,6 +267,10 @@ export async function verifyOfficeTranslationFidelity(source: Buffer, output: Bu
     if (!isTextPart(name)) throw new Error(`翻译不允许修改原图片、样式、公式或附件：${name}`);
     const before = parseXml(bytes.toString("utf8"));
     const after = parseXml(result.toString("utf8"));
+    const oldBodies = Array.from(before.getElementsByTagNameNS(DRAWING, "bodyPr"));
+    const newBodies = Array.from(after.getElementsByTagNameNS(DRAWING, "bodyPr"));
+    const rotatedLabels = new Set(oldBodies.flatMap((body, index) => newBodies[index]?.getAttribute("vert") === "vert"
+      && canRotateTranslatedCjkLabel(body.parentNode as Element, newBodies[index].parentNode as Element) ? [index] : []));
     const left = textElements(before, true);
     const right = textElements(after, true);
     if (left.length !== right.length) throw new Error(`翻译改变了文字对象数量：${name}`);
@@ -255,8 +279,6 @@ export async function verifyOfficeTranslationFidelity(source: Buffer, output: Bu
       element.removeAttribute("xml:space");
     }
     if (allowTextFit && /^ppt\/slides\/slide\d+\.xml$/.test(name)) {
-      const oldBodies = Array.from(before.getElementsByTagNameNS(DRAWING, "bodyPr"));
-      const newBodies = Array.from(after.getElementsByTagNameNS(DRAWING, "bodyPr"));
       if (oldBodies.length !== newBodies.length) throw new Error(`翻译改变了文本框数量：${name}`);
       for (let index = 0; index < oldBodies.length; index++) {
         const old = oldBodies[index]; const next = newBodies[index];
@@ -271,11 +293,16 @@ export async function verifyOfficeTranslationFidelity(source: Buffer, output: Bu
           || (fit[0].getAttribute("lnSpcReduction") || "0") !== (oldFit?.getAttribute("lnSpcReduction") || "0")
           || Array.from(fit[0].attributes).some((attr) => !["fontScale", "lnSpcReduction"].includes(attr.name))
           || fit[0].hasChildNodes()) throw new Error(`无效的文字适配设置：${name}`);
-        // Only the native text-fit child may change. Font faces, sizes, colors,
+        // Only the native text-fit child and a verified narrow CJK-to-Latin
+        // label direction may change. Font faces, sizes, colors,
         // insets, shape geometry and every other body property remain protected.
         for (const body of [old, next]) for (const node of Array.from(body.childNodes)) {
           if (node.nodeType === 1 && (node as Element).namespaceURI === DRAWING
             && ["noAutofit", "spAutoFit", "normAutofit"].includes((node as Element).localName)) body.removeChild(node);
+        }
+        if (rotatedLabels.has(index)) {
+          if (old.hasAttribute("vert")) next.setAttribute("vert", old.getAttribute("vert")!);
+          else next.removeAttribute("vert");
         }
       }
     }

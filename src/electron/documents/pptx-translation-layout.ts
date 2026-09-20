@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
-import { officeTranslationTextElements, verifyOfficeTranslationFidelity, type OfficeTranslationManifest } from "./office-translation";
+import { canRotateTranslatedCjkLabel, officeTranslationTextElements, verifyOfficeTranslationFidelity, type OfficeTranslationManifest } from "./office-translation";
 
 const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
@@ -62,6 +62,7 @@ export async function fitPptxTranslation(
   const bodies = new Map<string, { fit: Element; baseScale: number }>();
   const boxes: TextFitBox[] = [];
   const sourceBoxes: TextFitBox[] = [];
+  let rotatedLabels = 0;
   const knownIds = new Set(manifest.units.map((unit) => unit.id));
   const relationships = parse(await zip.file("ppt/_rels/presentation.xml.rels")!.async("text"));
   const targets = new Map(Array.from(relationships.getElementsByTagName("Relationship"))
@@ -93,6 +94,10 @@ export async function fitPptxTranslation(
       const key = `${name}@${index}`;
       const properties = body.getElementsByTagNameNS(A, "bodyPr")[0];
       if (!properties) throw new Error(`Missing text body properties in ${name}`);
+      if (canRotateTranslatedCjkLabel(oldBodies[index], body)) {
+        properties.setAttribute("vert", "vert");
+        rotatedLabels++;
+      }
       const previous = properties.getElementsByTagNameNS(A, "normAutofit")[0];
       const baseScale = previous?.hasAttribute("fontScale") ? Number(previous.getAttribute("fontScale")) : 100000;
       const lineReduction = previous?.getAttribute("lnSpcReduction") || "0";
@@ -222,7 +227,7 @@ export async function fitPptxTranslation(
   const adjustedKeys = new Set(measurements.filter(result => result.scale < 1).map(result => result.key));
   const adjustedFonts = finalMeasurements.filter(result => adjustedKeys.has(result.key)
     && typeof result.minFontPt === "number").map(result => result.minFontPt!);
-  return { output, checkedShapes: boxes.length, adjustedShapes, issues,
+  return { output, checkedShapes: boxes.length, adjustedShapes, rotatedLabels, issues,
     minimumScale: Math.min(1, ...measurements.map(result => result.scale)),
     minimumAdjustedFontPt: adjustedFonts.length ? Math.min(...adjustedFonts) : undefined };
 }

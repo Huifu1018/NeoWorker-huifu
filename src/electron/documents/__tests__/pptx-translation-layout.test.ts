@@ -50,6 +50,22 @@ describe("PPT translation text fitting", () => {
       return boxes.map(box => ({ key: box.key, scale: 1, fits: true }));
     });
   });
+  it("adapts only a narrow CJK label's direction, retaining every character and geometry", async () => {
+    const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+    slide.addText("全链路安全合规", { x: 1, y: 1, w: 0.25, h: 2, fontSize: 12, margin: 0 });
+    const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }) as Buffer);
+    const manifest = await inspectOfficeTranslation(source); manifest.units[0].text = "End-to-end security & compliance";
+    const result = await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest, async (_, boxes) =>
+      boxes.map(box => ({ key: box.key, scale: 1, fits: true })));
+    expect(result.rotatedLabels).toBe(1);
+    await expect(verifyOfficeTranslationFidelity(source, result.output!, true)).resolves.toBeUndefined();
+    await expect(verifyOfficeTranslationFidelity(source, result.output!)).rejects.toThrow();
+    const zip = await JSZip.loadAsync(result.output!);
+    const xml = await zip.file("ppt/slides/slide1.xml")!.async("text");
+    expect(xml).toContain('vert="vert"');
+    zip.file("ppt/slides/slide1.xml", xml.replace('vert="vert"', 'vert="vert270"'));
+    await expect(verifyOfficeTranslationFidelity(source, await zip.generateAsync({ type: "nodebuffer" }), true)).rejects.toThrow();
+  });
   it("writes native bounded autofit without moving shapes or changing original font properties", async () => {
     const { source, manifest, translated } = await fixture();
     const result = await fitPptxTranslation(source, translated, manifest, async (_, boxes, options) => {

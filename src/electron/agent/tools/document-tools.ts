@@ -979,7 +979,7 @@ export class DocumentTools {
     }
     if (Array.isArray(manifest.completedUnitIds) && manifest.units.some((unit: Any) => !manifest.completedUnitIds.includes(unit.id))) throw new Error("翻译批次尚未全部完成，请 inspect 恢复进度并继续 stage；不能交付中间 JSON。");
     let output = await applyOfficeTranslation(source, manifest);
-    let textFit: { checkedShapes: number; adjustedShapes: number; minimumScale?: number; minimumAdjustedFontPt?: number } | undefined;
+    let textFit: { checkedShapes: number; adjustedShapes: number; rotatedLabels?: number; minimumScale?: number; minimumAdjustedFontPt?: number } | undefined;
     if (extension === ".pptx") {
       if (manifest.layoutRepairVersion !== PPTX_LAYOUT_REPAIR_VERSION) {
         manifest.layoutRepairVersion = PPTX_LAYOUT_REPAIR_VERSION;
@@ -1030,7 +1030,7 @@ export class DocumentTools {
         };
       }
       output = fit.output;
-      textFit = { checkedShapes: fit.checkedShapes, adjustedShapes: fit.adjustedShapes, minimumScale: fit.minimumScale, minimumAdjustedFontPt: fit.minimumAdjustedFontPt };
+      textFit = { checkedShapes: fit.checkedShapes, adjustedShapes: fit.adjustedShapes, rotatedLabels: fit.rotatedLabels, minimumScale: fit.minimumScale, minimumAdjustedFontPt: fit.minimumAdjustedFontPt };
     }
     const deliveryKey = createHash("sha256").update(source).update(JSON.stringify(manifest)).update(input.filename).digest("hex");
     const receiptPath = path.join(root, `.neoworker-translation-delivery-${deliveryKey}.json`);
@@ -1070,7 +1070,7 @@ export class DocumentTools {
       visualCheck: "not_performed",
       ...(textFit ? { textFit: { status: "passed", ...textFit, renderer: "officecli_chromium" } } : {}),
       review: reviewTranslationUnits(expected.units, new Map(manifest.units.map((unit: Any) => [unit.id, unit.text]))),
-      _modelReminder: "Native source structure, images, fonts, formulas and geometry were verified unchanged; PPT text boxes may use measured native autofit. textFit reports rendered editable text bounds only, not a full visual or translation accuracy review. Inspect rendered pages before claiming visual QA. Disclose that text inside images, embedded objects and calculated fields was not translated. Do not claim 0 issues or complete translation based on this check alone.",
+      _modelReminder: "Native source structure, images, fonts, formulas and geometry were verified unchanged; PPT text boxes may use measured native autofit. If textFit.rotatedLabels is nonzero, narrow CJK labels were adapted to sideways Latin text inside their original frames; disclose that adjustment. textFit reports rendered editable text bounds only, not a full visual or translation accuracy review. Inspect rendered pages before claiming visual QA. Disclose that text inside images, embedded objects and calculated fields was not translated. Do not claim 0 issues or complete translation based on this check alone.",
     };
   }
 

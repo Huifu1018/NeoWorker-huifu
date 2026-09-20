@@ -78,6 +78,17 @@ app.on("window-all-closed", () => {});
     if (kind === "duplicate-unchanged") assert.equal(result.adjustedShapes, 0);
     results.push({ kind, checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
   }
+  {
+    const pptx = new PptxGenJS(); const slide = pptx.addSlide();
+    slide.addText("全链路安全合规", { x: 1, y: 1, w: 0.25, h: 2, fontSize: 12, margin: 0 });
+    const source = Buffer.from(await pptx.write({ outputType: "nodebuffer" }));
+    const manifest = await inspectOfficeTranslation(source);
+    manifest.units[0].text = "End-to-end security & compliance";
+    const result = await fitPptxTranslation(source, await applyOfficeTranslation(source, manifest), manifest);
+    assert(result.output, JSON.stringify(result.issues));
+    assert.equal(result.rotatedLabels, 1);
+    results.push({ kind: "narrow-cjk-label", checked: result.checkedShapes, adjusted: result.adjustedShapes, issues: result.issues });
+  }
   await fs.writeFile(path.join(output, "results.json"), JSON.stringify(results, null, 2));
   console.log(JSON.stringify({ output, casesPassed: results.length }));
 })().then(() => app.exit(0), (error) => { console.error(error); app.exit(1); });
