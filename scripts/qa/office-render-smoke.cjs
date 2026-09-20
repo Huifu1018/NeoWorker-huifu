@@ -43,8 +43,8 @@ if (!process.versions.electron) {
       const slide = deck.addSlide();
       slide.addText("翻译检查", { x: 1, y: 1, w: 5, h: 1, fontSize: 20 });
       if (large) {
-        const png = new PNG({ width: 2900, height: 2900 });
-        png.data = randomBytes(2900 * 2900 * 4);
+        const png = new PNG({ width: 3000, height: 3000 });
+        png.data = randomBytes(3000 * 3000 * 4);
         const data = PNG.sync.write(png, { colorType: 2, inputColorType: 6 });
         slide.addImage({ data: "image/png;base64," + data.toString("base64"), x: 1, y: 3, w: 2, h: 2 });
       }
