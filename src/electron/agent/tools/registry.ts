@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import { preservePresentationStructure, isPresentationEditContinuation, PRESENTATION_EDIT_GUIDANCE } from "../presentation-edit-policy";
 import * as fsPromises from "fs/promises";
 import * as path from "path";
 import { isArtifactRevisionRequest } from "../artifact-output-intent";
@@ -742,13 +743,16 @@ export class ToolRegistry {
   private documentTranslationContract?: DocumentTranslationContract;
   private verifiedTranslationOutputs = new Map<string, { hash: string; sourcePath: string }>();
   private presentationTemplateRequest = "";
+  private preservePresentationSlideStructure = false;
   private documentTaskMessage = "";
 
   setDocumentTaskContext(message: string): void {
     if (message !== this.documentTaskMessage) this.officeArtifactCoordinator.clear();
     const instruction = stripGeneratedTaskContext(message);
     const rejectsTemplate = /(?:不用|不要|无需).{0,8}(?:模板|模版)|(?:do not|don't).{0,12}template/i.test(instruction);
-    const hasTemplate = /(?:模板|模版|\btemplate\b)/i.test(instruction) && !rejectsTemplate
+    const attachedPptx = extractWorkspaceUploadPaths(message).some((source) => /\.pptx$/i.test(source));
+    const editsAttachedDeck = attachedPptx && preservePresentationStructure(instruction);
+    const hasTemplate = (/(?:模板|模版|\btemplate\b)/i.test(instruction) || editsAttachedDeck) && !rejectsTemplate
       && (extractWorkspaceUploadPaths(message).some((source) => /\.pptx$/i.test(source))
         || Boolean(this.presentationTemplateRequest)
         || /(?:这个|这份|原|上传|提供|附件|第[一二三\d]+个).{0,20}(?:模板|模版)|\b(?:this|attached|uploaded|provided|original)\b.{0,30}\btemplate\b/i.test(instruction));
@@ -757,13 +761,19 @@ export class ToolRegistry {
         rawPrompt: message,
         prompt: this.presentationTemplateRequest || this.documentTaskMessage,
       });
-    } else if (rejectsTemplate || !isArtifactRevisionRequest(instruction)) {
+    } else if (rejectsTemplate || !(isArtifactRevisionRequest(instruction) || isPresentationEditContinuation(instruction))) {
       this.presentationTemplateRequest = "";
     }
+    this.preservePresentationSlideStructure = Boolean(this.presentationTemplateRequest)
+      && preservePresentationStructure(instruction, attachedPptx ? false : this.preservePresentationSlideStructure);
     this.documentTaskMessage = message;
     const next = resolveDocumentTranslationContract(message, this.documentTranslationContract);
     if (next.request !== this.documentTranslationContract?.request) this.verifiedTranslationOutputs.clear();
     this.documentTranslationContract = next;
+  }
+
+  getPresentationEditGuidance(): string {
+    return this.preservePresentationSlideStructure ? PRESENTATION_EDIT_GUIDANCE : "";
   }
 
   getDocumentTranslationGuidance(): string {
@@ -1052,6 +1062,7 @@ export class ToolRegistry {
       normalized.generationMode = "ppt-master";
       normalized.presentationWorkflow = "ppt-master";
     }
+    normalized.preserveSlideStructure = this.preservePresentationSlideStructure;
     const result = await this.officeArtifactCoordinator.run(
       "pptx",
       () => this.skillTools.createPresentation(normalized, { signal }),
@@ -7353,6 +7364,11 @@ ${skillDescriptions}`;
                 type: "object",
                 properties: {
                   title: { type: "string" },
+                  templateReplacements: {
+                    type: "array",
+                    description: "For source-template content edits: use inspected shape IDs and full replacement text. Unlisted shapes remain unchanged. Do not repeat these values in content/subtitle. Keep original slide count unless the user asks to restructure.",
+                    items: { type: "object", properties: { shapeId: { type: "string" }, text: { type: "string" } }, required: ["shapeId", "text"] },
+                  },
                   content: { type: "array", items: { type: "string" } },
                   bullets: { type: "array", items: { type: "string" } },
                   subtitle: { type: "string" },

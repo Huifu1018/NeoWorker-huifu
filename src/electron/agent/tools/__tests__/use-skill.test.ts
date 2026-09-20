@@ -419,6 +419,32 @@ describe("Skill tool", () => {
       }), expect.anything());
     });
 
+    it("pins content optimization to the attached source and ignores model scope overrides", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached.replace("基于 PDF 内容，使用这个 PPT 模板生成 PPT", "基于PPT形式，优化内容，同样使用这个PPT模板"));
+      await (registry as Any).runCanonicalPresentation({ ...input, preserveSlideStructure: false });
+      expect(writer.mock.calls[0][0].preserveSlideStructure).toBe(true);
+      expect(registry.getPresentationEditGuidance()).toContain("原页数");
+      registry.setDocumentTaskContext("增加两页，拆分进展和风险");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[1][0].preserveSlideStructure).toBe(false);
+      expect(writer.mock.calls[1][0].sourcePath).toContain("模板(2).pptx");
+    });
+
+    it("recognizes editing an attachment without the word template", async () => {
+      const writer = mockWriter();
+      registry.setDocumentTaskContext(attached.replace("基于 PDF 内容，使用这个 PPT 模板生成 PPT", "优化这个PPT的内容"));
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[0][0].preserveSlideStructure).toBe(true);
+      expect(writer.mock.calls[0][0].sourcePath).toContain("模板(2).pptx");
+      registry.setDocumentTaskContext("再优化一下内容");
+      await (registry as Any).runCanonicalPresentation(input);
+      expect(writer.mock.calls[1][0].sourcePath).toContain("模板(2).pptx");
+      expect(writer.mock.calls[1][0].preserveSlideStructure).toBe(true);
+      registry.setDocumentTaskContext("查一下明天的天气");
+      expect(registry.getPresentationEditGuidance()).toBe("");
+    });
+
     it("keeps the template on a revision but never returns the previous turn's output", async () => {
       const writer = mockWriter();
       registry.setDocumentTaskContext(attached);

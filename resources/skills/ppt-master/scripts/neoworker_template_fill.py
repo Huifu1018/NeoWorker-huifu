@@ -128,19 +128,37 @@ def _replacement_slots(source_slide: dict[str, Any]) -> list[dict[str, Any]]:
         for slot in titles:
             if slot is not primary:
                 slot["role"] = "subtitle_candidate" if source_slide.get("page_type") == "cover_candidate" else "label_candidate"
-    if source_slide.get("page_type") != "cover_candidate":
-        for slot in slots:
-            geometry = slot.get("geometry") or {}
-            if slot["role"] == "label_candidate" and geometry.get("height", 0) >= 160 and geometry.get("width", 0) >= 240:
-                slot["role"] = "body_candidate"
+    for slot in slots:
+        geometry = slot.get("geometry") or {}
+        if slot["role"] in {"label_candidate", "subtitle_candidate"} and geometry.get("height", 0) >= 160 and geometry.get("width", 0) >= 240:
+            slot["role"] = "body_candidate"
     return slots
 
 
 def _replacement_plan(
     source_slide: dict[str, Any],
     requested_slide: dict[str, Any],
+    preserve_structure: bool = False,
 ) -> list[dict[str, Any]]:
     slots = _replacement_slots(source_slide)
+    explicit = requested_slide.get("templateReplacements")
+    if explicit is not None:
+        if not isinstance(explicit, list) or not explicit:
+            raise RuntimeError("templateReplacements must be a nonempty array of inspected shapeId/text pairs")
+        by_id = {str(slot.get("shape_id") or str(slot["slot_id"]).rsplit("_sh", 1)[-1]): slot for slot in slots}
+        result = []
+        seen = set()
+        for edit in explicit:
+            if not isinstance(edit, dict) or not isinstance(edit.get("text"), str):
+                raise RuntimeError("Each template replacement requires shapeId and string text")
+            shape_id = str(edit.get("shapeId", ""))
+            if shape_id not in by_id or shape_id in seen:
+                raise RuntimeError(f"Unknown or duplicate template shapeId: {shape_id}")
+            seen.add(shape_id)
+            slot = by_id[shape_id]
+            result.append({"slot_id": slot["slot_id"], "old_text": slot["text"], "text": edit["text"]})
+        # Explicit edits are authoritative. Never also fill title/body/labels.
+        return result
 
     title = _text(requested_slide.get("title"))
     subtitle = _text(requested_slide.get("subtitle"))
@@ -150,48 +168,32 @@ def _replacement_plan(
         quote = f"{quote} — {attribution}"
     body = _content_lines(requested_slide)
     body_slots = [slot for slot in slots if slot.get("role") == "body_candidate"]
-    body_values = _split_lines(body, max(len(body_slots), 1))
-    body_index = 0
-    remaining = list(body)
-    replacements: list[dict[str, Any]] = []
-
+    # Allocate each piece once. Labels/KPIs must never consume a second copy
+    # of the body queue, and a subtitle must never be repeated across boxes.
+    values = {}
+    title_slot = next((slot for slot in slots if slot.get("role") == "title_candidate"), None)
+    if title and title_slot:
+        values[title_slot["slot_id"]] = title
+    extras = [value for value in (subtitle, quote) if value]
+    if body_slots:
+        for slot, value in zip(body_slots, _split_lines(extras + body, len(body_slots))):
+            if value or not preserve_structure:
+                values[slot["slot_id"]] = value
+    else:
+        # Cover templates can legitimately contain a single subtitle. More
+        # content requires explicit shape mapping, not dumping it in a KPI.
+        candidates = [slot for slot in slots if slot.get("role") in {"subtitle_candidate", "caption_candidate", "quote_candidate"} or (slot.get("role") == "label_candidate" and (slot.get("geometry") or {}).get("height", 0) >= 64 and (slot.get("geometry") or {}).get("width", 0) >= 320)]
+        remaining = extras + body
+        if len(remaining) > len(candidates):
+            raise RuntimeError("Template has no suitable body frame. Inspect shape IDs and use templateReplacements; do not place paragraphs in KPI/label boxes.")
+        for slot, value in zip(candidates, remaining):
+            values[slot["slot_id"]] = value
+    replacements = []
     for slot in slots:
-        role = _text(slot.get("role"))
-        if role == "title_candidate":
-            replacement = title or (body[0] if body else _text(slot.get("text")))
-        elif role == "body_candidate":
-            replacement = body_values[body_index] if body_values else ""
-            body_index += 1
-        elif role in {"subtitle_candidate", "caption_candidate"}:
-            replacement = subtitle or (remaining.pop(0) if remaining else "")
-        elif role == "quote_candidate":
-            replacement = quote or (remaining.pop(0) if remaining else "")
-        elif role == "label_candidate":
-            replacement = remaining.pop(0) if remaining else ""
-        else:
-            replacement = remaining.pop(0) if remaining else ""
-
-        # Empty replacements intentionally clear sample copy from the template
-        # instead of leaving misleading placeholder content behind.
-        replacements.append(
-            {
-                "slot_id": slot["slot_id"],
-                "old_text": slot.get("text", ""),
-                "text": replacement,
-            }
-        )
-    # Never silently lose body lines or a subtitle when the template has only
-    # one short label in addition to its title.
-    expected = [title, subtitle, quote, *body]
-    written = "\n".join(item["text"] for item in replacements)
-    missing = [value for value in expected if value and value not in written]
-    if missing:
-        target = next((item for item in replacements if item["slot_id"] in {
-            slot["slot_id"] for slot in slots if slot.get("role") != "title_candidate"
-        }), None)
-        if target is None:
-            raise RuntimeError("The selected template slide has no body slot for the requested content")
-        target["text"] = "\n".join([target["text"], *missing]).strip()
+        if slot["slot_id"] in values:
+            replacements.append({"slot_id": slot["slot_id"], "old_text": slot.get("text", ""), "text": values[slot["slot_id"]]})
+        elif not preserve_structure:
+            replacements.append({"slot_id": slot["slot_id"], "old_text": slot.get("text", ""), "text": ""})
     return replacements
 
 
@@ -263,11 +265,14 @@ def _chart_edits(
     ]
 
 
-def build_plan(library: dict[str, Any], requested_slides: list[dict[str, Any]]) -> dict[str, Any]:
+def build_plan(library: dict[str, Any], requested_slides: list[dict[str, Any]], preserve_structure: bool = False) -> dict[str, Any]:
+    source_slides = library.get("slides", [])
+    if preserve_structure and len(requested_slides) != len(source_slides):
+        raise RuntimeError(f"Content optimization must keep the original {len(source_slides)} slide(s), received {len(requested_slides)}. Keep one plan entry per source slide in order; do not add a cover or split pages without user authorization.")
     used: set[int] = set()
     planned: list[dict[str, Any]] = []
-    for requested_slide in requested_slides:
-        source_slide = _choose_source_slide(library, requested_slide, used)
+    for index, requested_slide in enumerate(requested_slides):
+        source_slide = source_slides[index] if preserve_structure else _choose_source_slide(library, requested_slide, used)
         planned.append(
             {
                 "source_slide": int(source_slide["slide_index"]),
@@ -277,7 +282,7 @@ def build_plan(library: dict[str, Any], requested_slides: list[dict[str, Any]]) 
                     "why_fit": "host-selected source slide matches the requested slide purpose",
                     "risk": "long text may require shortening after visual review",
                 },
-                "replacements": _replacement_plan(source_slide, requested_slide),
+                "replacements": _replacement_plan(source_slide, requested_slide, preserve_structure),
                 "table_edits": _table_edits(source_slide, requested_slide),
                 "chart_edits": _chart_edits(source_slide, requested_slide),
                 "notes": _text(requested_slide.get("notes")),
@@ -294,6 +299,7 @@ def build_plan(library: dict[str, Any], requested_slides: list[dict[str, Any]]) 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--preserve-slide-structure", action="store_true", help="Host-owned content edit: keep source slide count/order and unspecified text")
     parser.add_argument("--source", required=True, help="Source/template PPTX")
     parser.add_argument("--slides-json", required=True, help="Normalized slide plan JSON")
     parser.add_argument("--project", required=True, help="Task-scoped PPT Master project root")
@@ -328,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not isinstance(requested_slides, list) or not requested_slides:
         raise RuntimeError("create_presentation supplied no slides for template fill")
-    plan = build_plan(library, requested_slides)
+    plan = build_plan(library, requested_slides, args.preserve_slide_structure)
     plan_path = analysis_dir / "fill_plan.json"
     _write_json(plan_path, plan)
 

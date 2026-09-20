@@ -241,6 +241,7 @@ export class SkillTools {
     slides: unknown[],
     filename: string,
     signal?: AbortSignal,
+    preserveSlideStructure = false,
   ): Promise<{ outputPath: string; size: number }> {
     if (signal?.aborted) {
       throw new Error("PPT Master template fill was cancelled.");
@@ -302,6 +303,7 @@ export class SkillTools {
       artifactRoot,
       "--output",
       outputPath,
+      ...(preserveSlideStructure ? ["--preserve-slide-structure"] : []),
     ];
     const pythonCandidates = Array.from(
       new Set(
@@ -1082,6 +1084,7 @@ export class SkillTools {
   async createPresentation(input: {
     filename: string;
     sourcePath?: string;
+    preserveSlideStructure?: boolean;
     generationMode?: "default" | "ppt-master";
     presentationWorkflow?: string;
     workflowArtifactRoot?: string;
@@ -1179,10 +1182,11 @@ export class SkillTools {
           : slide.imagePath,
     }));
     const planningStartedAt = Date.now();
-    const presentationPlan = planOfficePresentation(
-      resolvedSlides,
-      input.contentSnapshot,
-    );
+    // A source edit may intentionally omit unchanged content. The new-deck
+    // planner removes sparse slides and infers roles; neither is valid here.
+    const presentationPlan = input.sourcePath?.trim()
+      ? { value: resolvedSlides, diagnostics: [] }
+      : planOfficePresentation(resolvedSlides, input.contentSnapshot);
     const slides = presentationPlan.value;
     if (
       typeof input.sourcePath === "string" &&
@@ -1213,6 +1217,7 @@ export class SkillTools {
         slides,
         filename,
         execution.signal,
+        input.preserveSlideStructure,
       );
       const outputPath = templateResult.outputPath;
       const outputRelativePath =
@@ -1221,11 +1226,16 @@ export class SkillTools {
       const mimeType =
         "application/vnd.openxmlformats-officedocument.presentationml.presentation";
       const qualityCheck = await this.inspectOfficeArtifact(outputPath);
-      if (qualityCheck.validation?.passed === false) {
+      const layoutDefects = (qualityCheck.issues || []).filter((issue) =>
+        /text overflow|text.*clip|文本溢出|文字溢出|文字截断/i.test(String(issue.message || "")),
+      );
+      if (qualityCheck.validation?.passed === false || qualityCheck.status === "failed" || layoutDefects.length > 0) {
         throw new Error(
           `PPT Master template output failed Office validation: ${
-            qualityCheck.modelGuidance || "validation failed"
-          }`,
+            layoutDefects.length > 0
+              ? JSON.stringify(layoutDefects.map((issue) => ({ path: issue.path, message: issue.message })))
+              : qualityCheck.modelGuidance || "validation failed"
+          }. Draft retained at ${outputPath}. Repair only the reported shapes; do not repeat the unchanged plan.`,
         );
       }
       const validationDir = path.join(artifactRoot, "validation");
@@ -1234,7 +1244,7 @@ export class SkillTools {
         path.join(validationDir, "workflow.log"),
         [
           "workflow=ppt-master",
-          "engine=template-fill-pptx-v1",
+          "engine=template-fill-pptx-v2",
           `source=${input.sourcePath}`,
           `output=${outputPath}`,
           `completedAt=${new Date().toISOString()}`,
@@ -1246,9 +1256,9 @@ export class SkillTools {
         JSON.stringify(
           {
             schema: "ppt-master.pptx-delivery-check.v1",
-            status: "passed",
+            status: qualityCheck.status === "passed" ? "passed" : "passed-with-advisories",
             presentationWorkflow: "ppt-master",
-            engine: "template-fill-pptx-v1",
+            engine: "template-fill-pptx-v2",
             sourcePath: input.sourcePath,
             slides: slides.length,
             file: {
@@ -1279,7 +1289,7 @@ export class SkillTools {
         size: templateResult.size,
         qualityStatus: qualityCheck.status,
         issueCount: qualityCheck.issueCount,
-        generationEngine: "template-fill-pptx-v1",
+        generationEngine: "template-fill-pptx-v2",
         sourcePath: input.sourcePath,
       });
       this.daemon.logEvent(this.taskId, "artifact_created", {
@@ -1292,7 +1302,7 @@ export class SkillTools {
         issueCount: qualityCheck.issueCount,
         previewPath: qualityCheck.previewPath,
         qualityEngine: qualityCheck.engine,
-        generationEngine: "template-fill-pptx-v1",
+        generationEngine: "template-fill-pptx-v2",
         sourcePath: input.sourcePath,
         deduplicated: false,
         reusedExistingArtifact: false,
@@ -1300,7 +1310,7 @@ export class SkillTools {
       });
       this.reportOfficePublishPhase("pptx", "published", {
         presentationWorkflow: "ppt-master",
-        engine: "template-fill-pptx-v1",
+        engine: "template-fill-pptx-v2",
         path: outputRelativePath,
       });
 
@@ -1312,7 +1322,7 @@ export class SkillTools {
         qualityCheck,
         deduplicated: false,
         _modelReminder:
-          "The PPTX was filled from the user's native template. The editable source project and validation files remain under the PPT Master artifact directory.",
+          "The PPTX was filled from the user's native template. The editable source project and validation files remain under the PPT Master artifact directory. Report qualityCheck accurately: XML validation does not prove visual correctness. Do not claim every page was visually inspected or free of overlap without inspecting the rendered slides. " + qualityCheck.modelGuidance,
       };
     }
 

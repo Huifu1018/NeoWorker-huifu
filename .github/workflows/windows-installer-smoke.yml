@@ -6,7 +6,7 @@ on:
       expected_version:
         description: "Expected package version"
         required: true
-        default: "0.1.8-11"
+        default: "0.1.8-12"
 
 permissions:
   contents: read
@@ -65,6 +65,15 @@ jobs:
           if ($version -ne "${{ inputs.expected_version }}") {
             throw "Expected version ${{ inputs.expected_version }}, found $version"
           }
+
+      - name: Test source-preserving PPT content editing
+        run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/presentation-edit-policy.test.ts src/electron/agent/tools/__tests__/use-skill.test.ts src/electron/agent/tools/__tests__/skill-tools-artifact-registration.test.ts src/electron/agent/tools/__tests__/office-artifact-input-normalizer.test.ts --maxWorkers=1
+
+      - name: Verify native PPT template editing
+        run: |
+          python scripts/qa/test_presentation_template_edit.py
+          node scripts/qa/presentation-content-edit.mjs
+          node scripts/qa/presentation-template-fill.mjs
 
       - name: Package Windows installer
         run: npm run package:win:x64

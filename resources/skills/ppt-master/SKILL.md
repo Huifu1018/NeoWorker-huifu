@@ -41,7 +41,8 @@ metadata:
   gallery, icon corpus, and sound corpus. Use user-provided assets, native
   Office shapes, or task-scoped generated assets when a route needs them.
 - After the route has produced a complete slide plan, call NeoWorker's
-  `create_presentation` tool exactly once. The host pins that call to the
+  `create_presentation` tool once for the complete plan (only retry with a corrected
+  plan when validation identifies a concrete defect, subject to the retry limit below). The host pins that call to the
   PPT Master advanced renderer, canonical output path, and validation ledger;
   it is not the ordinary quick-template path while this skill is active.
 - When `source_path` points to a PPTX/POTX/PPT/POT file, treat that file as
@@ -49,6 +50,19 @@ metadata:
   its slide master, layouts, theme colors, fonts, aspect ratio, and reusable
   assets. Do not create a blank deck or generic template that merely imitates
   the source colors, typography, or rough style.
+- For content optimization, polishing, or revisions of an existing deck, keep
+  the original slide count and order by default. A one-page report remains one
+  page. Add, split, delete or reorder pages only when the user's request asks
+  for that change. Keep KPI values, units and project status distinct from
+  targets. Inspect the actual source shape IDs and use per-slide
+  `templateReplacements: [{shapeId, text}]` for precise edits of dense slides;
+  unlisted shapes retain their original text and formatting. Do not also put
+  the same replacement paragraphs in `content` or in KPI/label fields.
+- Inspect the exported file and its rendered pages before claiming visual
+  correctness. Structural validation alone does not establish "no overlap".
+  If a build reports specific layout defects, revise only those shapes and
+  retry at most twice. Preserve the draft and report unresolved defects instead
+  of claiming completion or repeatedly regenerating the same slide plan.
 - `create_presentation` is a NeoWorker host tool, not an upstream Python
   renderer. If the tool catalog exposes it, do not report it as missing and do
   not substitute upstream full-page renderers for the final delivery. The

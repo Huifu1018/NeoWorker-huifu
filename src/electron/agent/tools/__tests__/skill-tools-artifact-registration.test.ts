@@ -123,6 +123,33 @@ describe("SkillTools artifact registration", () => {
     expect(daemon.registerArtifact).toHaveBeenCalledTimes(2);
   });
 
+  it("retains every source page for precise edits, including otherwise empty slides", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-edit-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { write: true } } as Workspace, daemon as never, "edit");
+    const fill = vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockResolvedValue({ outputPath: path.join(tempDir, "output.pptx"), size: 200 });
+    vi.spyOn(tools as Any, "inspectOfficeArtifact").mockResolvedValue({ status: "issues", validation: { passed: true }, issues: [{ message: "Mixed punctuation" }] });
+    const slides = [{ title: "Existing", templateReplacements: [{ shapeId: "6", text: "Concise body" }] }, { title: "Unchanged" }];
+    const result = await tools.createPresentation({ filename: "edited.pptx", sourcePath: "source.pptx", preserveSlideStructure: true, slides });
+    expect(fill.mock.calls[0][2]).toEqual(slides);
+    expect(fill.mock.calls[0][5]).toBe(true);
+    expect(result._modelReminder).toContain("does not prove visual correctness");
+    const roots = await fs.readdir(path.join(tempDir, "artifacts/skills/edit/ppt-master"));
+    const report = JSON.parse(await fs.readFile(path.join(tempDir, "artifacts/skills/edit/ppt-master", roots[0], "validation/pptx-delivery-check.json"), "utf8"));
+    expect(report.status).toBe("passed-with-advisories");
+  });
+
+  it("keeps an overflowing template as a draft without publishing or writing a passed ledger", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-overflow-"));
+    const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };
+    const tools = new SkillTools({ path: tempDir, permissions: { write: true } } as Workspace, daemon as never, "edit");
+    vi.spyOn(tools as Any, "runPptMasterTemplateFill").mockResolvedValue({ outputPath: path.join(tempDir, "draft.pptx"), size: 200 });
+    vi.spyOn(tools as Any, "inspectOfficeArtifact").mockResolvedValue({ status: "issues", validation: { passed: true }, issues: [{ path: "/slide[1]/shape[3]", message: "text overflow: 12 lines in KPI" }] });
+    await expect(tools.createPresentation({ filename: "edited.pptx", sourcePath: "source.pptx", slides: [{ title: "Title", content: ["Body"] }] })).rejects.toThrow(/shape\[3\].*Draft retained/s);
+    expect(daemon.registerArtifact).not.toHaveBeenCalled();
+    expect(daemon.logEvent.mock.calls.some(call => call[1] === "artifact_created")).toBe(false);
+  });
+
   it("never substitutes a built-in deck after native filling fails", async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-native-template-"));
     const daemon = { logEvent: vi.fn(), registerArtifact: vi.fn() };

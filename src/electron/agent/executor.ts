@@ -2916,6 +2916,8 @@ export class TaskExecutor {
   ): string {
     const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
     if (translationGuidance) return `\n${translationGuidance}`;
+    const editGuidance = this.toolRegistry?.getPresentationEditGuidance?.();
+    if (editGuidance) return `\n${editGuidance}`;
     const documentInstruction = contract.requiredArtifactExtensions.includes(
       ".docx",
     )
@@ -17569,6 +17571,8 @@ ${transcript}
     }
     const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
     if (translationGuidance) notes.push(translationGuidance);
+    const presentationEditGuidance = this.toolRegistry?.getPresentationEditGuidance?.();
+    if (presentationEditGuidance) notes.push(presentationEditGuidance);
     const isSubAgentTask =
       (this.task.agentType ?? "main") === "sub" || !!this.task.parentTaskId;
     const retainMemory = this.task.agentConfig?.retainMemory ?? !isSubAgentTask;
@@ -27512,6 +27516,8 @@ You are continuing a previous conversation. The context from the previous conver
   ): string {
     const translationGuidance = this.toolRegistry?.getDocumentTranslationGuidance?.();
     if (translationGuidance) return `\n\n${translationGuidance}`;
+    const editGuidance = this.toolRegistry?.getPresentationEditGuidance?.();
+    if (editGuidance) return `\n${editGuidance}`;
     const strictLengthArtifactTask = this.isStrictLengthArtifactTask();
     if (!strictLengthArtifactTask && contract.artifactKind !== "presentation")
       return "";

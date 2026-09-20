@@ -158,6 +158,7 @@ export function normalizePresentationArtifactInput(input: InputRecord): any {
       const allowedSlideKeys = new Set([
         "title",
         "subtitle",
+        "templateReplacements",
         "content",
         "bullets",
         "quote",
@@ -194,6 +195,7 @@ export function normalizePresentationArtifactInput(input: InputRecord): any {
       return {
         title: asText(slide?.title) || `Slide ${index + 1}`,
         subtitle: slide?.subtitle,
+        templateReplacements: slide?.templateReplacements,
         content: normalizeSlideContent(slide),
         data: normalizeSlideData(slide),
         imagePath: rawImagePath,

@@ -7,6 +7,7 @@ by ``table_fill`` for table-cell edits.
 from __future__ import annotations
 
 from typing import Any
+from copy import deepcopy
 from xml.etree import ElementTree as ET
 
 from .ooxml import NS, _qn, _shape_identity, _text_containers
@@ -66,28 +67,32 @@ def _set_paragraph_text(paragraph: ET.Element, text: str) -> None:
 
 
 def _set_container_text(container: ET.Element, text: str) -> None:
-    lines = text.splitlines() or [""]
-    paragraphs = container.findall(".//a:p", NS)
-    if len(lines) > 1 and paragraphs:
-        for index, paragraph in enumerate(paragraphs):
-            if index < len(lines):
-                _set_paragraph_text(paragraph, lines[index])
-            else:
-                _set_paragraph_text(paragraph, "")
-        if len(lines) > len(paragraphs):
-            _set_paragraph_text(paragraphs[-1], "\n".join(lines[len(paragraphs) - 1 :]))
-        return
-
-    text_nodes = _ensure_text_nodes(container)
-    if not text_nodes:
+    # Unchanged KPI runs often have separate number/unit/label formatting.
+    # Do not collapse them into the first (large, bold) run.
+    tx_body = container.find(".//p:txBody", NS)
+    if tx_body is None:
+        tx_body = container.find(".//a:txBody", NS)
+    if tx_body is None:
         raise RuntimeError("Matched shape does not contain a text body")
-    if len(lines) <= len(text_nodes):
-        for index, node in enumerate(text_nodes):
-            node.text = lines[index] if index < len(lines) else ""
+    paragraphs = tx_body.findall("a:p", NS)
+    original = "\n".join("".join(node.text or "" for node in p.findall(".//a:t", NS)) for p in paragraphs)
+    if original == text:
         return
-    text_nodes[0].text = text
-    for node in text_nodes[1:]:
-        node.text = ""
+    lines = text.splitlines() or [""]
+    # Native paragraphs preserve line spacing and editable structure. Remove
+    # trailing sample paragraphs rather than retaining invisible blank lines.
+    if not paragraphs:
+        paragraphs = [ET.SubElement(tx_body, _qn(NS["a"], "p"))]
+    prototype = deepcopy(paragraphs[-1])
+    for index, line in enumerate(lines):
+        if index < len(paragraphs):
+            paragraph = paragraphs[index]
+        else:
+            paragraph = deepcopy(prototype)
+            tx_body.append(paragraph)
+        _set_paragraph_text(paragraph, line)
+    for paragraph in paragraphs[len(lines):]:
+        tx_body.remove(paragraph)
 
 
 def _apply_replacements_to_slide(
