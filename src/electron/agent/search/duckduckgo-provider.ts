@@ -12,7 +12,6 @@ import {
   matchesFlightRouteDirection,
 } from "./flight-query";
 
-let duckDuckGoUnavailableUntil = 0;
 
 function describeNetworkError(error: Any): string {
   if (isProxyConnectionFailure(error)) return error.message;
@@ -60,20 +59,27 @@ export class DuckDuckGoProvider implements SearchProvider {
     const preferChinaRoute =
       query.preferChinaRoute === true || query.region === "cn" || query.region === "cn-zh" || hasChinese;
 
-    let bingFailure: unknown;
-    if (preferChinaRoute && Date.now() >= duckDuckGoUnavailableUntil) {
+    // Each independent engine gets one bounded attempt. A failed query must
+    // never disable a healthy engine for later queries or other tasks.
+    const attempts = preferChinaRoute
+      ? [() => this.searchBing(query, maxResults, requestedSearchType),
+         () => this.search360(query, maxResults),
+         () => this.searchDuckDuckGo(query, maxResults)]
+      : [() => this.searchDuckDuckGo(query, maxResults),
+         () => this.searchBing(query, maxResults, requestedSearchType)];
+    const failures: string[] = [];
+    for (const attempt of attempts) {
       try {
-        return await this.searchBing(query, maxResults, requestedSearchType);
+        const result = await attempt();
+        return { ...result, metadata: { ...result.metadata, priorEngineFailures: failures } };
       } catch (error) {
-        bingFailure = error;
-        // Continue through the regular DDG path below.
+        failures.push(error instanceof Error ? error.message : String(error));
       }
     }
+    throw new Error(`Search engines did not return usable results: ${failures.join("; ")}. This does not establish that other websites are unreachable.`);
+  }
 
-    if (Date.now() < duckDuckGoUnavailableUntil) {
-      return this.searchBing(query, maxResults, requestedSearchType);
-    }
-
+  private async searchDuckDuckGo(query: SearchQuery, maxResults: number): Promise<SearchResponse> {
     const params = new URLSearchParams({
       q: query.query,
     });
@@ -90,8 +96,8 @@ export class DuckDuckGoProvider implements SearchProvider {
 
     const controller = new AbortController();
     // Keep the whole free-provider chain below the 30s tool budget: at most
-    // two 8s Bing attempts plus 10s DDG for mainland-first queries.
-    const timeout = setTimeout(() => controller.abort(), preferChinaRoute ? 10_000 : 15_000);
+    // 8s Bing, 8s 360 and 10s DDG for mainland-first queries.
+    const timeout = setTimeout(() => controller.abort(), 10_000);
 
     try {
       const requestInit: RequestInit = {
@@ -118,14 +124,13 @@ export class DuckDuckGoProvider implements SearchProvider {
       }
 
       const html = await response.text();
-      const results = this.parseResults(html, maxResults);
+      const results = this.parseResults(html, 20).filter((result) => this.isRelevant(query, result)).slice(0, maxResults);
 
       if (results.length === 0) {
         throw new Error("DuckDuckGo returned no results");
       }
 
       clearTimeout(timeout);
-      duckDuckGoUnavailableUntil = 0;
 
       return {
         results,
@@ -134,22 +139,64 @@ export class DuckDuckGoProvider implements SearchProvider {
         provider: "duckduckgo",
       };
     } catch (error: Any) {
+      throw new Error(error?.message?.startsWith("DuckDuckGo") ? error.message : describeNetworkError(error));
+    } finally {
       clearTimeout(timeout);
-      duckDuckGoUnavailableUntil = Date.now() + 10 * 60 * 1000;
-      try {
-        // A failed primary Bing attempt already tried both hosts. Repeating
-        // it here adds latency without testing another route.
-        if (bingFailure) throw bingFailure;
-        return await this.searchBing(query, maxResults, requestedSearchType);
-      } catch (fallbackError: Any) {
-        const primaryMessage = error?.message?.startsWith("DuckDuckGo")
-          ? error.message
-          : describeNetworkError(error);
-        throw new Error(
-          `${primaryMessage}; Bing fallback failed: ${fallbackError?.message || fallbackError}`,
-          { cause: fallbackError },
-        );
+    }
+  }
+
+  private isRelevant(query: SearchQuery, result: SearchResult): boolean {
+    const text = query.query.toLowerCase();
+    const fields = `${result.title} ${result.url} ${result.snippet || ""}`.toLowerCase();
+    if (/天气|预报|\bweather|\bforecast/i.test(text) && !/天气|预报|weather|forecast/i.test(fields)) return false;
+    const rail = /高铁|火车|列车|动车|铁路|\btrain|\brail/i.test(text);
+    const flight = /航班|机票|航线|起飞|机场|航空|\bflight|\bairfare|\bairline/i.test(text);
+    if (rail && !/高铁|火车|列车|动车|铁路|车次|train|rail|gaotie/i.test(fields)) return false;
+    if (flight && !/航班|机票|航线|航空|机场|flight|airfare|airline|airport/i.test(fields)) return false;
+    const route = (rail || flight) ? extractFlightRoute(text) : null;
+    if (route && !matchesFlightRouteDirection(result, route)) return false;
+    const tokens: string[] = text.match(/[a-z0-9]{3,}/g) || [];
+    for (const run of text.match(/[\u3400-\u9fff]{2,}/g) || []) {
+      for (let i = 0; i < run.length - 1; i++) tokens.push(run.slice(i, i + 2));
+    }
+    return !tokens.length || tokens.some((token) => fields.includes(token));
+  }
+
+  private async search360(query: SearchQuery, maxResults: number): Promise<SearchResponse> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetchWithSystemProxy(`https://www.so.com/s?${new URLSearchParams({ q: query.query })}`, {
+        signal: controller.signal,
+        headers: { "User-Agent": "Mozilla/5.0", "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const html = await response.text();
+      const results: SearchResult[] = [];
+      // Only organic res-title cards. Sponsored g-title cards, AI summaries
+      // and opaque tracking redirects are not source documents.
+      const cards = html.split(/(?=<h3\b)/i);
+      for (const card of cards) {
+        if (!/^<h3\b[^>]*class=["'][^"']*\bres-title\b/i.test(card)) continue;
+        const heading = card.match(/^<h3\b[^>]*>([\s\S]*?)<\/h3>/i)?.[1];
+        const target = heading?.match(/\bdata-mdurl=["']([^"']+)["']/i)?.[1];
+        if (!heading || !target) continue;
+        const url = this.extractUrl(target);
+        const title = this.stripHtml(heading).trim();
+        // A bounded excerpt after the title, excluding scripts/style metadata.
+        const body = card.slice(card.indexOf("</h3>") + 5).split(/<\/li>/i)[0];
+        const snippet = this.stripHtml(body.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")).trim().slice(0, 600);
+        const result = { title, url, snippet, source: this.extractHostname(url) };
+        if (!url || !title || !this.isRelevant(query, result) || results.some((r) => r.url === url)) continue;
+        results.push(result);
+        if (results.length >= maxResults) break;
       }
+      if (!results.length) throw new Error("no relevant organic results");
+      return { results, query: query.query, searchType: "web", provider: "duckduckgo", metadata: { fallbackProvider: "360", fallbackFrom: "duckduckgo" } };
+    } catch (error) {
+      throw new Error(`360 Search: ${controller.signal.aborted ? "request timed out after 8 seconds" : (error as Error).message}`);
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -169,34 +216,9 @@ export class DuckDuckGoProvider implements SearchProvider {
       /[\u3400-\u9fff]/u.test(String(query.query || ""));
     const results: SearchResult[] = [];
     const hosts = chinaRoute
-      ? ["https://cn.bing.com/search", "https://www.bing.com/search"]
+      ? ["https://cn.bing.com/search"]
       : ["https://www.bing.com/search"];
-    const queryTokens: string[] = [];
-    const queryText = String(query.query || "").toLowerCase();
-    const flightRoute = /(?:航班|机票|航线|起飞|到达|票价|飞行时间|机场|航空|flight|airfare|airline|airport|departure|arrival)/i.test(
-      queryText,
-    )
-      ? extractFlightRoute(queryText)
-      : null;
-    for (const token of queryText.match(/[a-z0-9]{3,}/g) || []) {
-      queryTokens.push(token);
-    }
-    // Chinese SERP titles often insert a suffix between two query terms, so
-    // use bounded bigrams instead of requiring the whole query verbatim.
-    for (const run of queryText.match(/[\u3400-\u9fff]{2,}/g) || []) {
-      for (let index = 0; index < run.length - 1; index += 1) {
-        queryTokens.push(run.slice(index, index + 2));
-      }
-    }
-    const isRelevant = (title: string, url: string, snippet: string) => {
-      if (queryTokens.length === 0) return true;
-      const fields = [title, url, snippet].map((field) => field.toLowerCase());
-      if (!queryTokens.some((token) => fields.some((field) => field.includes(token)))) {
-        return false;
-      }
-      if (!flightRoute) return true;
-      return matchesFlightRouteDirection({ title, url, snippet }, flightRoute);
-    };
+    const isRelevant = (title: string, url: string, snippet: string) => this.isRelevant(query, { title, url, snippet });
     const failures: string[] = [];
     for (const host of hosts) {
       const controller = new AbortController();
@@ -218,7 +240,7 @@ export class DuckDuckGoProvider implements SearchProvider {
         let match: RegExpExecArray | null;
         while ((match = htmlRegex.exec(html)) && results.length < maxResults) {
           const title = this.stripHtml(match[2]).trim();
-          const url = this.stripHtml(match[1]).trim();
+          const url = this.extractUrl(match[1]);
           const snippet = this.stripHtml(match[3] || match[4] || "").trim();
           if (!title || !url || !isRelevant(title, url, snippet)) continue;
           results.push({ title, url, snippet, source: this.extractHostname(url) });
@@ -228,7 +250,7 @@ export class DuckDuckGoProvider implements SearchProvider {
             /<item>[\s\S]*?<title>([\s\S]*?)<\/title>[\s\S]*?<link>([\s\S]*?)<\/link>[\s\S]*?<description>([\s\S]*?)<\/description>[\s\S]*?<\/item>/gi;
           while ((match = rssRegex.exec(html)) && results.length < maxResults) {
             const title = this.stripHtml(match[1]).trim();
-            const url = this.stripHtml(match[2]).trim();
+            const url = this.extractUrl(match[2]);
             const snippet = this.stripHtml(match[3] || "").trim();
             if (!title || !url || !isRelevant(title, url, snippet)) continue;
             results.push({ title, url, snippet, source: this.extractHostname(url) });
@@ -262,7 +284,7 @@ export class DuckDuckGoProvider implements SearchProvider {
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
-      const result = await this.search({ query: "test", maxResults: 1 });
+      const result = await this.search({ query: "天气预报 weather forecast", maxResults: 3 });
       if (result.results.length === 0) {
         return { success: false, error: "No results returned from DuckDuckGo" };
       }
@@ -319,16 +341,21 @@ export class DuckDuckGoProvider implements SearchProvider {
    */
   private extractUrl(rawUrl: string): string {
     try {
-      if (rawUrl.includes("uddg=")) {
-        const urlObj = new URL(rawUrl, "https://duckduckgo.com");
-        const uddg = urlObj.searchParams.get("uddg");
-        if (uddg) return uddg;
+      let url = new URL(this.stripHtml(rawUrl), "https://duckduckgo.com");
+      if (/(^|\.)duckduckgo\.com$/.test(url.hostname)) {
+        const target = url.searchParams.get("uddg");
+        if (!target) return ""; // ad click trackers and internal navigation
+        url = new URL(target);
       }
-      if (rawUrl.startsWith("http")) return rawUrl;
+      if (/(^|\.)bing\.com$/.test(url.hostname) && url.pathname === "/ck/a") {
+        const target = url.searchParams.get("u");
+        if (!target?.startsWith("a1")) return "";
+        url = new URL(Buffer.from(target.slice(2), "base64url").toString("utf8"));
+      }
+      return ["https:", "http:"].includes(url.protocol) ? url.href : "";
     } catch {
-      // Fall through
+      return "";
     }
-    return rawUrl;
   }
 
   private stripHtml(html: string): string {
@@ -356,6 +383,8 @@ export class DuckDuckGoProvider implements SearchProvider {
 
   private mapRegion(region: string): string {
     const regionMap: Record<string, string> = {
+      cn: "cn-zh",
+      "cn-zh": "cn-zh",
       us: "us-en",
       uk: "uk-en",
       gb: "uk-en",

@@ -532,7 +532,7 @@ export function SearchSettings({ onStatusChange }: SearchSettingsProps) {
                   <span className="provider-description">
                     {t(
                       "searchSettings.primary.autoDescription",
-                      "Prefer configured providers. Use DuckDuckGo/Bing only as the free route when none are configured.",
+                      "Prefer configured providers. Use DuckDuckGo/Bing/360 only as the free route when none are configured.",
                     )}
                   </span>
                 </div>

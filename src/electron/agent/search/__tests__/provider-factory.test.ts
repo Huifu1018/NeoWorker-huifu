@@ -429,6 +429,16 @@ describe("SearchProviderFactory", () => {
       expect(tavilyProvider.search).not.toHaveBeenCalled();
     });
 
+    it("does not replay the entire built-in multi-engine timeout chain", async () => {
+      const provider = { search: vi.fn().mockRejectedValue(new Error("connection timed out")) };
+      vi.spyOn(SearchProviderFactory, "loadSettings").mockReturnValue({} as Any);
+      vi.spyOn(SearchProviderFactory as Any, "getProviderExecutionOrder").mockReturnValue(["duckduckgo"]);
+      vi.spyOn(SearchProviderFactory as Any, "getProviderConfig").mockReturnValue({ type: "duckduckgo" });
+      vi.spyOn(SearchProviderFactory as Any, "createProviderFromConfig").mockReturnValue(provider);
+      await expect(SearchProviderFactory.searchWithFallback({ query: "北京高铁" })).rejects.toThrow();
+      expect(provider.search).toHaveBeenCalledTimes(1);
+    });
+
     it("should fallback to next configured provider when prior provider fails", async () => {
       const braveProvider = { search: vi.fn().mockRejectedValue(new Error("Brave failed")) };
       const tavilyProvider = { search: vi.fn().mockResolvedValue({ provider: "tavily" }) };

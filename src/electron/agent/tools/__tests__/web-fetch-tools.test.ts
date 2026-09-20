@@ -61,6 +61,32 @@ describe("WebFetchTools", () => {
     vi.restoreAllMocks();
   });
 
+  it("removes credentials when a redirect crosses origins", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://other.example.com/source" } }))
+      .mockResolvedValueOnce(new Response("source", { headers: { "content-type": "text/plain" } }));
+    const result = await webFetchTools.httpRequest({ url: "https://example.com", headers: { Authorization: "Bearer test-only", Cookie: "test=1" } });
+    expect(result.success).toBe(true);
+    const headers = new Headers(mockFetch.mock.calls[1][1].headers);
+    expect(headers.has("authorization")).toBe(false);
+    expect(headers.has("cookie")).toBe(false);
+  });
+
+  it("routes a JavaScript shell to the browser without poisoning the source circuit", async () => {
+    mockFetch.mockResolvedValueOnce(new Response('<html><title>Travel</title><div id="root"></div><script src="app.js"></script></html>', { headers: { "content-type": "text/html" } }));
+    const result = await webFetchTools.webFetch({ url: "https://example.com" });
+    expect(result).toMatchObject({ success: false, requiresBrowser: true, suggestedTool: "browser_navigate" });
+    expect(result.immediateReminder).toContain("browser_get_content");
+    mockFetch.mockResolvedValueOnce(new Response('<article>Loaded timetable</article>', { headers: { "content-type": "text/html" } }));
+    expect((await webFetchTools.webFetch({ url: "https://example.com" })).success).toBe(true);
+  });
+
+  it("does not label an HTTP 200 verification page as successful source content", async () => {
+    mockFetch.mockResolvedValueOnce(new Response('<title>安全验证</title><p>请完成验证</p>', { headers: { "content-type": "text/html" } }));
+    const result = await webFetchTools.webFetch({ url: "https://example.com" });
+    expect(result).toMatchObject({ success: false, requiresBrowser: false });
+    expect(result.immediateReminder).toContain("Do not bypass");
+  });
+
   describe("getToolDefinitions", () => {
     it("should return web_fetch and http_request tool definitions", () => {
       const tools = WebFetchTools.getToolDefinitions();

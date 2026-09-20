@@ -9390,7 +9390,7 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "searchSettings.loading": "正在加载搜索设置...",
     "searchSettings.title": "配置搜索服务商",
     "searchSettings.description":
-      "添加 API 密钥以启用网页搜索。默认使用自动路由：优先使用已配置服务商，DuckDuckGo/Bing 仅作为无配置时的免费兜底。",
+      "添加 API 密钥以启用网页搜索。默认使用自动路由：优先使用已配置服务商，DuckDuckGo/Bing/360 仅作为无配置时的免费兜底。",
     "searchSettings.supports": "支持：{types}",
     "searchSettings.provider.notConfigured": "未配置",
     "searchSettings.getApiKeyFrom": "从这里获取 API 密钥：",
@@ -9406,10 +9406,10 @@ const translations: Record<SupportedLanguage, Record<string, string>> = {
     "searchSettings.empty.selectProvider": "选择一个服务商进行配置。",
     "searchSettings.primary.title": "主服务商",
     "searchSettings.primary.description":
-      "选择默认搜索服务商，或使用自动路由。自动路由优先使用已配置服务商；没有其它服务商时才使用 DuckDuckGo/Bing。",
+      "选择默认搜索服务商，或使用自动路由。自动路由优先使用已配置服务商；没有其它服务商时才使用 DuckDuckGo/Bing/360。",
     "searchSettings.primary.auto": "自动选择",
     "searchSettings.primary.autoDescription":
-      "优先使用已配置服务商；没有其它服务商时使用 DuckDuckGo/Bing 免费兜底。",
+      "优先使用已配置服务商；没有其它服务商时使用 DuckDuckGo/Bing/360 免费兜底。",
     "searchSettings.preference.saveFailed": "切换失败，请重试。",
     "searchSettings.fallback.title": "备用服务商",
     "searchSettings.fallback.description":

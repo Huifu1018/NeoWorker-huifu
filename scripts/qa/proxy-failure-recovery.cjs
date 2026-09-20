@@ -23,7 +23,17 @@ if (!process.versions.electron) {
   app.disableHardwareAcceleration();
   app.whenReady().then(async () => {
     let hits = 0;
-    const server = http.createServer((req, res) => { hits++; res.end("reachable"); });
+    let destinationHits = 0;
+    const server = http.createServer((req, res) => {
+      hits++;
+      if (req.url.startsWith("/redirect/")) {
+        res.writeHead(Number(req.url.split("/").pop()), { location: "/destination" }); res.end(); return;
+      }
+      if (req.url === "/destination") destinationHits++;
+      if (req.url === "/slow") return;
+      if (req.url === "/empty") { res.writeHead(204); res.end(); return; }
+      res.end("reachable");
+    });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     // Reserve and close a random port to represent a stopped local proxy.
     const proxy = http.createServer();
@@ -42,6 +52,22 @@ if (!process.versions.electron) {
       assert.equal(hits, 1);
       assert.equal(await (await fetchWithSystemProxy(url, { method: "POST", body: "q=test" }, { replaySafeSearch: true })).text(), "reachable");
       assert.equal(hits, 2);
+      for (const code of [301, 302, 303, 307, 308]) {
+        const redirect = await fetchWithSystemProxy(`${url}redirect/${code}`, { redirect: "manual" });
+        assert.equal(redirect.status, code);
+        assert.equal(redirect.headers.get("location"), "/destination");
+      }
+      assert.equal(destinationHits, 0, "manual redirect must not contact an unchecked destination");
+      const { WebFetchTools } = require("../../dist/electron/electron/agent/tools/web-fetch-tools.js");
+      const reader = new WebFetchTools({ path: app.getPath("userData") }, { logEvent() {} }, "redirect-qa");
+      const page = await reader.webFetch({ url: `${url}redirect/302` });
+      assert.equal(page.success, true, page.error);
+      assert.equal(page.content, "reachable");
+      assert.equal(destinationHits, 1);
+      assert.equal((await fetchWithSystemProxy(`${url}empty`, { redirect: "manual" })).status, 204);
+      assert.equal(await (await fetchWithSystemProxy(url, { method: "HEAD", redirect: "manual" })).text(), "");
+      await assert.rejects(fetchWithSystemProxy(`${url}slow`, { redirect: "manual", signal: AbortSignal.timeout(250) }));
+      console.log("PASS: real Electron manual redirects, policy-checked source reader, empty responses and cancellation.");
       console.log("PASS: real Electron broken-proxy recovery; original proxy unchanged; write requests not replayed.");
       server.close();
       app.exit(0);

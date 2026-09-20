@@ -7,19 +7,88 @@ export interface NetworkTransport {
 
 let directFetchPromise: Promise<Fetch> | undefined;
 
+function sessionFetch(electron: typeof import("electron"), session: Electron.Session): Fetch {
+  return (async (input: string | URL | Request, init: RequestInit = {}) => {
+    if (init.redirect !== "manual" || input instanceof Request) return session.fetch(input instanceof URL ? input.href : input, init);
+    // Electron net.fetch cancels manual redirects instead of returning their
+    // 3xx response (electron/electron#43715). Surface the redirect event so the
+    // caller can enforce its domain policy BEFORE making the next request.
+    const url = String(input);
+    const prepared = new Request(url, init);
+    const body = init.body == null ? null : Buffer.from(await prepared.arrayBuffer());
+    init.signal?.throwIfAborted();
+    const requestHeaders: Record<string, string> = {};
+    prepared.headers.forEach((value, key) => { requestHeaders[key] = value; });
+    return new Promise<Response>((resolve, reject) => {
+      const request = electron.net.request({
+        url, session, method: prepared.method, redirect: "manual",
+        headers: requestHeaders,
+        ...(init.credentials ? { credentials: init.credentials, origin: new URL(url).origin } : {}),
+        ...(init.cache ? { cache: init.cache } : {}),
+      });
+      let finished = false;
+      const cleanup = () => init.signal?.removeEventListener("abort", abort);
+      const fail = (error: unknown) => {
+        if (finished) return;
+        finished = true; cleanup(); reject(error);
+      };
+      const finish = (response: Response) => {
+        if (finished) return;
+        finished = true; cleanup(); resolve(response);
+      };
+      const abort = () => {
+        fail(init.signal?.reason || new DOMException("Request aborted", "AbortError"));
+        request.abort();
+      };
+      const headersFrom = (values: Record<string, string | string[]>) => {
+        const headers = new Headers();
+        for (const [key, value] of Object.entries(values)) {
+          for (const item of Array.isArray(value) ? value : [value]) headers.append(key, item);
+        }
+        return headers;
+      };
+      request.on("error", fail);
+      request.on("redirect", (status, _method, destination, values) => {
+        const headers = headersFrom(values);
+        if (!headers.has("location")) headers.set("location", destination);
+        finish(new Response(null, { status, headers }));
+        request.abort(); // Never follow an unchecked destination.
+      });
+      request.on("response", (incoming) => {
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("error", fail);
+        incoming.on("aborted", () => fail(new Error("Response aborted")));
+        incoming.on("end", () => {
+          try {
+            const status = incoming.statusCode;
+            const noBody = prepared.method === "HEAD" || [204, 205, 304].includes(status);
+            finish(new Response(noBody ? null : Buffer.concat(chunks), {
+              status, statusText: incoming.statusMessage, headers: headersFrom(incoming.headers),
+            }));
+          } catch (error) { fail(error); }
+        });
+      });
+      init.signal?.addEventListener("abort", abort, { once: true });
+      if (init.signal?.aborted) { abort(); return; }
+      request.end(body || undefined);
+    });
+  }) as Fetch;
+}
+
 function electronTransport(): NetworkTransport | null {
   try {
     const electron = require("electron") as typeof import("electron");
     if (typeof electron.net?.fetch !== "function") return null;
     return {
-      fetch: electron.net.fetch.bind(electron.net) as Fetch,
+      fetch: sessionFetch(electron, electron.session.defaultSession),
       directFetch: () => {
         // Never change the default session or the user's OS proxy settings.
         // A non-persistent session avoids sharing browser cookies or proxy auth.
         directFetchPromise ??= (async () => {
           const session = electron.session.fromPartition("neoworker-public-web-direct", { cache: false });
           await session.setProxy({ mode: "direct" });
-          return session.fetch.bind(session) as Fetch;
+          return sessionFetch(electron, session);
         })().catch((error) => {
           directFetchPromise = undefined;
           throw error;

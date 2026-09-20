@@ -1643,7 +1643,7 @@ export class ToolRegistry {
     ];
 
     // web_search is always available. Automatic routing prefers configured
-    // providers and uses DuckDuckGo/Bing only as the free route when none are
+    // providers and uses DuckDuckGo/Bing/360 only as the free route when none are
     // configured.
     allTools.push(...this.getSearchToolDefinitions());
 
@@ -3959,7 +3959,7 @@ Browser Automation:
 - browser_save_pdf: Save page as PDF
 - browser_close: Close the browser`;
 
-    // Web search is always available. DuckDuckGo/Bing are the free automatic
+    // Web search is always available. DuckDuckGo/Bing/360 are the free automatic
     // route only when no paid provider is configured.
     descriptions += `
 
@@ -7825,8 +7825,8 @@ ${skillDescriptions}`;
 
     const providerDesc =
       paidProviders.length > 0
-        ? `Configured providers: ${paidProviders.map((p) => p.name).join(", ")}. Automatic routing prefers these providers; DuckDuckGo/Bing are only used when no paid provider is configured or when explicitly requested.`
-        : `No paid search provider is configured. Automatic routing uses built-in DuckDuckGo with Bing fallback.`;
+        ? `Configured providers: ${paidProviders.map((p) => p.name).join(", ")}. Automatic routing prefers these providers; DuckDuckGo/Bing/360 are only used when no paid provider is configured or when explicitly requested.`
+        : `No paid search provider is configured. Automatic routing uses built-in search with DuckDuckGo, Bing and a mainland 360 fallback.`;
 
     return [
       {
@@ -7835,7 +7835,7 @@ ${skillDescriptions}`;
           `Search the web for information. This is the PRIMARY tool for research tasks - finding news, trends, discussions, and information on any topic. ` +
           `Use this FIRST for research, then use web_fetch if you need to read specific URLs from the results. ` +
           `For flight schedules or fares, search results are discovery evidence only: fetch at least two route/date-specific or official source pages before summarizing, never present snippet-only results as a complete schedule, and explicitly identify unverified gaps. ` +
-          `Do NOT use browser_navigate for research - web_search is faster and more efficient. ` +
+          `For JavaScript-rendered source pages or empty web_fetch results, use browser_navigate and browser_get_content to read the rendered page. Do not conclude the network is unavailable from a single engine or source failure, and do not repeatedly search the same failing route. ` +
           providerDesc,
         input_schema: {
           type: "object",

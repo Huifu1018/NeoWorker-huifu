@@ -250,8 +250,13 @@ export class WebFetchTools {
       }
       this.ensureNetworkAllowed(nextUrl.toString(), toolName);
 
-      currentUrl = nextUrl.toString();
       currentInit = this.buildRedirectInit(currentInit, response.status);
+      if (nextUrl.origin !== parsedUrl.origin) {
+        const headers = new Headers(currentInit.headers);
+        for (const name of ["authorization", "cookie", "proxy-authorization"]) headers.delete(name);
+        currentInit = { ...currentInit, headers };
+      }
+      currentUrl = nextUrl.toString();
     }
 
     throw new Error("Too many redirects");
@@ -448,6 +453,8 @@ export class WebFetchTools {
     recoverableFallback?: boolean;
     failureKind?: "source_unavailable";
     immediateReminder?: string;
+    requiresBrowser?: boolean;
+    suggestedTool?: string;
   }> {
     const { url, selector, includeLinks = true, maxLength = 50000 } = input;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -528,6 +535,22 @@ export class WebFetchTools {
         const result = this.htmlToMarkdown(html, selector, includeLinks);
         content = result.content;
         title = result.title;
+        const challenge = /(?:captcha|安全验证|人机验证|verify (?:you are|that you)|just a moment)/i.test(title || "");
+        const scriptShell = content.trim().length < 300 &&
+          (/<(?:div|main)\b[^>]*id=["'](?:root|app|__next)["'][^>]*>\s*</i.test(html) || /enable javascript|开启.*javascript/i.test(html));
+        if (challenge || scriptShell || !content.trim()) {
+          return {
+            success: false, url, title, content, contentLength: content.length,
+            requiresBrowser: !challenge,
+            suggestedTool: challenge ? undefined : "browser_navigate",
+            nonBlocking: true, recoverableFallback: true,
+            error: challenge ? "The source returned a verification page, not the requested content."
+              : "The HTTP response contains no readable source content; the page may require JavaScript.",
+            immediateReminder: challenge
+              ? "Use another source or request the user's help with the site's verification. Do not bypass the challenge or treat it as evidence that the whole network is down."
+              : "Open this URL with browser_navigate, then read browser_get_content or browser_snapshot after the page loads. Do not repeat static fetches or report the whole network unavailable. Search snippets alone do not verify live seats, prices or schedules.",
+          };
+        }
       }
 
       // Truncate if needed

@@ -537,7 +537,7 @@ export class SearchProviderFactory {
         const providerConfig = this.getProviderConfig(providerType);
         const provider = this.createProviderFromConfig(providerConfig);
         const scopedQuery: SearchQuery = { ...query, provider: providerType };
-        const response = await this.searchWithRetry(provider, scopedQuery);
+        const response = await this.searchWithRetry(provider, scopedQuery, providerType === "duckduckgo" ? 1 : 3);
         // An empty DDG response is not useful evidence for a flight lookup.
         // Continue to the configured provider chain instead of terminating
         // after a sparse or blocked HTML index.
