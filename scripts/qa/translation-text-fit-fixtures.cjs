@@ -61,7 +61,7 @@ app.on("window-all-closed", () => {});
   }
   // Both centered labels grow into the same gap; fitting each against only
   // the neighbor's old glyphs passes, then the final overlap check fails.
-  for (const distance of [1, 1.2]) {
+  for (const distance of [0.6, 1.2]) {
     const pptx = new PptxGenJS(); const slide = pptx.addSlide();
     slide.addText("甲", { x: 1, y: 1, w: 2, h: 0.3, fontSize: 14, margin: 0, align: "center" });
     slide.addText("乙", { x: 1 + distance, y: 1, w: 2, h: 0.3, fontSize: 14, margin: 0, align: "center" });
