@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 
 // Mock electron
 vi.mock("electron", () => ({
@@ -133,6 +134,22 @@ describe("WebFetchTools", () => {
   });
 
   describe("webFetch", () => {
+    it("returns complete dated rail evidence with actual final source identity and bounded coverage", async () => {
+      const listing = readFileSync(new URL("../../search/__tests__/fixtures/ctrip-rail-listing.txt", import.meta.url), "utf8");
+      const finalUrl = "https://trains.ctrip.com/TrainBooking/beijing-hangzhou/gaotie/";
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: finalUrl } }))
+        .mockResolvedValueOnce(new Response(listing, { headers: { "content-type": "text/plain" } }));
+      const result = await webFetchTools.webFetch({ url: "https://example.com/redirect" });
+      expect(result).toMatchObject({ success: true, finalUrl, truncated: false });
+      expect(result.railEvidence).toMatchObject({ sourceUrl: finalUrl, parsedRowCount: 29, liveFaresVerified: false });
+      expect(result.immediateReminder).toContain("Never describe third-party data as a verified 12306 API response");
+      expect(Number.isNaN(Date.parse(result.retrievedAt!))).toBe(false);
+      mockFetch.mockResolvedValueOnce(new Response(listing, { headers: { "content-type": "text/plain" } }));
+      const truncated = await webFetchTools.webFetch({ url: finalUrl, maxLength: 2000 });
+      expect(truncated).toMatchObject({ success: true, truncated: true, railEvidence: { extractionCoverage: "partial" } });
+      expect(truncated.railEvidence!.rows.length).toBeLessThan(29);
+    });
+
     describe("URL validation", () => {
       it("should reject non-HTTP URLs", async () => {
         const result = await webFetchTools.webFetch({

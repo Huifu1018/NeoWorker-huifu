@@ -85,6 +85,16 @@ describe("SearchTools", () => {
   });
 
   describe("webSearch", () => {
+    it("requires rail source evidence without adding queries or treating snippets as inventory", async () => {
+      const result = await searchTools.webSearch({ query: "帮我查一下明天北京到杭州的高铁信息" });
+      expect(SearchProviderFactory.searchWithFallback).toHaveBeenCalledTimes(1);
+      expect(result.metadata).toMatchObject({ railSourceFetchRequired: true, railScheduleCompleteness: "unverified" });
+      expect(result.metadata?.railEvidencePolicy).toContain("list all retrieved services");
+      expect(result.metadata?.railEvidencePolicy).toContain("reference fares");
+      const unrelated = await searchTools.webSearch({ query: "北京天气" });
+      expect(unrelated.metadata?.railEvidencePolicy).toBeUndefined();
+    });
+
     it("should return results from provider", async () => {
       vi.mocked(SearchProviderFactory.searchWithFallback).mockResolvedValue({
         query: "test query",

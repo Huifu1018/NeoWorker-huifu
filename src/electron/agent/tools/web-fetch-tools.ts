@@ -4,6 +4,7 @@ import { AgentDaemon } from "../daemon";
 import { LLMTool } from "../llm/types";
 import { evaluateNetworkPolicy } from "../../security/network-policy";
 import { isRecoverableWebSourceFailure } from "../../../shared/web-source-failure";
+import { extractRailPageEvidence, RAIL_EVIDENCE_POLICY, RailPageEvidence } from "../search/rail-evidence";
 
 const DEFAULT_TEXT_ENCODING = "utf-8";
 const CHINESE_LEGACY_TEXT_ENCODING = "gb18030";
@@ -106,6 +107,7 @@ export function decodeHttpResponseBody(
  */
 export class WebFetchTools {
   private readonly unavailableSourceHosts = new Map<string, string>();
+  private readonly responseUrls = new WeakMap<Response, string>();
 
   constructor(
     private workspace: Workspace,
@@ -236,11 +238,13 @@ export class WebFetchTools {
       }
 
       if (!followRedirects || !this.isRedirectResponse(response.status)) {
+        this.responseUrls.set(response, currentUrl);
         return response;
       }
 
       const location = response.headers.get("location");
       if (!location) {
+        this.responseUrls.set(response, currentUrl);
         return response;
       }
 
@@ -455,6 +459,10 @@ export class WebFetchTools {
     immediateReminder?: string;
     requiresBrowser?: boolean;
     suggestedTool?: string;
+    finalUrl?: string;
+    retrievedAt?: string;
+    truncated?: boolean;
+    railEvidence?: RailPageEvidence;
   }> {
     const { url, selector, includeLinks = true, maxLength = 50000 } = input;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -553,11 +561,15 @@ export class WebFetchTools {
         }
       }
 
-      // Truncate if needed
-      if (content.length > maxLength) {
+      // Preserve truncation and source identity as evidence, including manual redirects.
+      const finalUrl = this.responseUrls.get(response) || url;
+      const retrievedAt = new Date().toISOString();
+      const truncated = content.length > maxLength;
+      if (truncated) {
         content =
           content.substring(0, maxLength) + "\n\n... [Content truncated]";
       }
+      const railEvidence = extractRailPageEvidence(finalUrl, content, truncated);
 
       this.daemon.logEvent(this.taskId, "tool_result", {
         tool: "web_fetch",
@@ -565,7 +577,9 @@ export class WebFetchTools {
           url,
           title,
           contentLength: content.length,
-          truncated: content.length > maxLength,
+          truncated,
+          finalUrl,
+          retrievedAt,
         },
       });
 
@@ -575,6 +589,10 @@ export class WebFetchTools {
         title,
         content,
         contentLength: content.length,
+        finalUrl,
+        retrievedAt,
+        truncated,
+        ...(railEvidence ? { railEvidence, immediateReminder: RAIL_EVIDENCE_POLICY } : {}),
       };
     } catch (error: Any) {
       const errorMessage = this.formatFetchError(error);

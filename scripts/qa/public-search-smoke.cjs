@@ -36,8 +36,16 @@ if (!process.versions.electron) {
         assert(sources.every((r) => topic.test(`${r.title} ${r.snippet}`)), "Unrelated results returned");
         assert(sources.every((r) => !/duckduckgo.com\/y.js|bing.com\/ck\/a/.test(r.url)), "Ad/redirect leaked");
         const reads = [];
-        // Test two real sources, not merely a successful search status.
-        for (const source of sources.slice(0, 2)) {
+        // Try independent sources: two ranked URLs can be the same JS shell
+        // with different query parameters. Keep the real-content requirement.
+        const sourceHosts = new Set();
+        const independentSources = sources.filter(source => {
+          const host = new URL(source.url).hostname;
+          if (sourceHosts.has(host)) return false;
+          sourceHosts.add(host);
+          return true;
+        });
+        for (const source of independentSources.slice(0, 3)) {
           const page = await reader.webFetch({ url: source.url, maxLength: 20000 });
           const usable = page.success && page.contentLength > 300 && topic.test(page.content);
           reads.push({ url: source.url, success: page.success, usable, chars: page.contentLength, error: page.error, requiresBrowser: page.requiresBrowser });
@@ -48,6 +56,22 @@ if (!process.versions.electron) {
         console.log(JSON.stringify(entry));
         assert(reads.some((r) => r.usable), `No readable source body for ${query}`);
       }
+      // Verify data coverage and provenance, not just reachability. The public
+      // listing contains non-G trains and can list one train at multiple stops.
+      const railPage = await reader.webFetch({ url: "https://trains.ctrip.com/TrainBooking/beijing-hangzhou/gaotie/" });
+      const evidence = railPage.railEvidence;
+      assert(railPage.success && evidence, "No structured evidence from the public rail listing");
+      assert.equal(evidence.extractionCoverage, "matches_page_total");
+      assert(evidence.rows.length > 10, "Rail listing was reduced to a representative top ten");
+      assert.equal(evidence.rows.length, evidence.pageReportedTotal);
+      assert.equal(evidence.gPrefixRowCount, evidence.rows.filter(row => row.trainNumber.startsWith("G")).length);
+      assert.equal(evidence.uniqueGPrefixTrainCount, new Set(evidence.rows.filter(row => row.trainNumber.startsWith("G")).map(row => row.trainNumber)).size);
+      assert.equal(evidence.sourceKind, "third_party_listing");
+      assert.equal(evidence.liveFaresVerified, false);
+      assert.equal(evidence.liveAvailabilityVerified, false);
+      const { rows, ...railSummary } = evidence;
+      report.railEvidence = { ...railSummary, retrievedAt: railPage.retrievedAt, rowTrainNumbers: rows.map(row => row.trainNumber) };
+      console.log(JSON.stringify({ railEvidence: report.railEvidence }));
       // Repeat real public search with a stopped proxy: verifies recovery beyond
       // the localhost-only test. Only this disposable profile is changed.
       const proxy = http.createServer();

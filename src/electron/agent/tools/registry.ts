@@ -81,6 +81,7 @@ import type {
   LLMToolPromptRenderContext,
 } from "../llm/types";
 import { SearchProviderFactory } from "../search";
+import { RAIL_EVIDENCE_POLICY } from "../search/rail-evidence";
 import { MCPClientManager } from "../../mcp/client/MCPClientManager";
 import { MCPSettingsManager } from "../../mcp/settings";
 import { MCPRegistryManager } from "../../mcp/registry/MCPRegistryManager";
@@ -7834,6 +7835,7 @@ ${skillDescriptions}`;
         description:
           `Search the web for information. This is the PRIMARY tool for research tasks - finding news, trends, discussions, and information on any topic. ` +
           `Use this FIRST for research, then use web_fetch if you need to read specific URLs from the results. ` +
+          RAIL_EVIDENCE_POLICY + " " +
           `For flight schedules or fares, search results are discovery evidence only: fetch at least two route/date-specific or official source pages before summarizing, never present snippet-only results as a complete schedule, and explicitly identify unverified gaps. ` +
           `For JavaScript-rendered source pages or empty web_fetch results, use browser_navigate and browser_get_content to read the rendered page. Do not conclude the network is unavailable from a single engine or source failure, and do not repeatedly search the same failing route. ` +
           providerDesc,

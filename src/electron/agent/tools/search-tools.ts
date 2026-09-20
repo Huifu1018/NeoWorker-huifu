@@ -16,6 +16,7 @@ import {
   getFlightScheduleEvidenceScore,
   hasFlightScheduleDetails,
 } from "../search/flight-query";
+import { isRailQuery, RAIL_EVIDENCE_POLICY } from "../search/rail-evidence";
 
 /**
  * SearchTools implements web search operations for the agent
@@ -292,6 +293,11 @@ export class SearchTools {
         results: rankedResults.slice(0, searchQuery.maxResults),
         metadata: {
           ...firstResponse.metadata,
+          ...(isRailQuery(input.query) ? {
+            railSourceFetchRequired: true,
+            railScheduleCompleteness: "unverified",
+            railEvidencePolicy: RAIL_EVIDENCE_POLICY,
+          } : {}),
           ...(flightRoute
             ? {
                 flightRoute,
