@@ -64,13 +64,17 @@ jobs:
           path: ~/.cache/neoworker/numbat-build
           key: ${{ runner.os }}-numbat-${{ hashFiles('resources/numbat/source-manifest.json') }}
       - name: Install dependencies and Electron
+        shell: bash
         run: |
+          set -euo pipefail
           npm ci --no-audit --no-fund
           node node_modules/electron/install.js
       - name: PPT content-editing regressions
         run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/presentation-edit-policy.test.ts src/electron/agent/tools/__tests__/use-skill.test.ts src/electron/agent/tools/__tests__/skill-tools-artifact-registration.test.ts src/electron/agent/tools/__tests__/office-artifact-input-normalizer.test.ts --maxWorkers=1
       - name: Native PPT template regressions
+        shell: bash
         run: |
+          set -euo pipefail
           python scripts/qa/test_presentation_template_edit.py
           node scripts/qa/presentation-content-edit.mjs
           node scripts/qa/presentation-template-fill.mjs
@@ -85,7 +89,9 @@ jobs:
         run: npx vitest --config config/vitest.config.ts run src/electron/utils/__tests__/network-fetch.test.ts src/electron/agent/search/__tests__/duckduckgo-provider.test.ts src/electron/agent/tools/__tests__/web-fetch-tools.test.ts src/electron/agent/__tests__/executor-tool-timeouts.test.ts src/electron/agent/__tests__/executor-finalization-state.test.ts src/electron/agent/__tests__/daemon-complete-task.test.ts src/electron/agent/tools/__tests__/document-tools.test.ts --maxWorkers=1
       - name: Electron network and Office smoke checks
         if: runner.os == 'Windows'
+        shell: bash
         run: |
+          set -euo pipefail
           node scripts/qa/proxy-failure-recovery.cjs
           node scripts/qa/public-search-smoke.cjs
           node scripts/qa/office-render-smoke.cjs
