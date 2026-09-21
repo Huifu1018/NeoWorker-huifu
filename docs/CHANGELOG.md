@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Synchronize the tested Huifu development line into the upstream project.
-- Set package version to `0.2.0`; preserve the exact `V0.2.0` tag when manually
+- Set package version to `0.2.0`; preserve the exact `v0.2.0` tag when manually
   packaging this source release.
 
 ## [0.1.8] - 2026-09-04
