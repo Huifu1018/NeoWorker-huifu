@@ -146,9 +146,15 @@ function run(command, args, options = {}) {
 
 function tarPath(filePath) {
   const resolved = path.resolve(filePath);
-  // The Windows runner invokes this script from PowerShell. Its bundled tar
-  // accepts native drive-letter paths; converting to /c/... can address a
-  // different filesystem view and produce a false "archive not found" error.
+  // The Windows release job invokes this script from Git Bash. Its bundled
+  // tar treats a native drive-letter path such as C:\\... as a remote archive
+  // specifier ("C:"), so normalize it to the MSYS /c/... form first.
+  if (process.platform === "win32") {
+    const drivePath = resolved.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (drivePath) {
+      return `/${drivePath[1].toLowerCase()}/${drivePath[2].replaceAll("\\\\", "/")}`;
+    }
+  }
   return resolved;
 }
 

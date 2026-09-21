@@ -139,7 +139,21 @@ jobs:
 
       - name: Ensure Electron binary is installed
         if: runner.os != 'Windows'
-        run: node node_modules/electron/install.js
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if node node_modules/electron/install.js; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 5 ]; then
+              delay=$((attempt * 10))
+              echo "Electron download failed on attempt ${attempt}; retrying in ${delay}s."
+              sleep "${delay}"
+            fi
+          done
+          echo "Electron binary download failed after 5 attempts." >&2
+          exit 1
 
       - name: Resolve release metadata
         id: release_metadata
