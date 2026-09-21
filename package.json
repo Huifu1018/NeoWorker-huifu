@@ -347,6 +347,9 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "icon": "build/icon.icns",
       "extendInfo": {
+        "CFBundleIconName": "icon",
+        "LSUIElement": false,
+        "LSBackgroundOnly": false,
         "NSLocationWhenInUseUsageDescription": "NeoWorker uses your current location once to answer nearby places and walking route requests.",
         "NSLocationUsageDescription": "NeoWorker uses your current location once to answer nearby places and walking route requests.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "NeoWorker uses your current location once to answer nearby places and walking route requests."

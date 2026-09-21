@@ -5,6 +5,7 @@ import os from "os";
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import { randomUUID } from "crypto";
+import { execFile } from "node:child_process";
 import { pathToFileURL } from "url";
 import {
   app,
@@ -873,13 +874,48 @@ function installNativeApplicationMenu(): void {
         {
           label: "NeoWorker on GitHub",
           click: () =>
-            shell.openExternal("https://github.com/NeoWorker/NeoWorker"),
+            shell.openExternal("https://github.com/Yuan-lab-LLM/NeoWorker"),
         },
       ],
     },
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/**
+ * Finder normally registers applications with LaunchServices when they are
+ * copied into /Applications. Some macOS installs leave the app visible in
+ * Finder but missing from Launchpad until it has been registered explicitly.
+ * Register only packaged builds and keep the helper invocation best-effort.
+ */
+function registerPackagedMacApplicationWithLaunchServices(): void {
+  if (process.platform !== "darwin" || !app.isPackaged) {
+    return;
+  }
+
+  const launchServicesRegister =
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+  const bundlePath = path.resolve(process.resourcesPath, "..", "..");
+  if (
+    !fsSync.existsSync(launchServicesRegister) ||
+    !fsSync.existsSync(bundlePath)
+  ) {
+    return;
+  }
+
+  execFile(
+    launchServicesRegister,
+    ["-f", bundlePath],
+    { timeout: 5_000 },
+    (error) => {
+      if (error) {
+        logger.warn("Failed to register NeoWorker with LaunchServices:", error);
+        return;
+      }
+      logger.debug("NeoWorker registered with LaunchServices");
+    },
+  );
 }
 
 function installDevelopmentBranding(): void {
@@ -1599,6 +1635,7 @@ if (isCliDirectRunMode()) {
       }
       installDevelopmentBranding();
       installNativeApplicationMenu();
+      registerPackagedMacApplicationWithLaunchServices();
 
       // Set up Content Security Policy for production builds
       if (process.env.NODE_ENV !== "development") {
