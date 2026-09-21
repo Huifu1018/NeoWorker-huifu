@@ -152,7 +152,7 @@ function tarPath(filePath) {
   if (process.platform === "win32") {
     const drivePath = resolved.match(/^([A-Za-z]):[\\/](.*)$/);
     if (drivePath) {
-      return `/${drivePath[1].toLowerCase()}/${drivePath[2].replaceAll("\\\\", "/")}`;
+      return `/${drivePath[1].toLowerCase()}/${drivePath[2].replaceAll("\\", "/")}`;
     }
   }
   return resolved;

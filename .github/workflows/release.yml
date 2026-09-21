@@ -269,6 +269,9 @@ jobs:
           set -euo pipefail
           if [ "${RUNNER_OS}" = "macOS" ]; then
             npm run numbat:build -- --target=darwin-arm64
+            npm run setup:officecli -- --platform darwin --arch arm64
+            npm run build:hermes-runtime -- --target=darwin-arm64
+            npm run build
             NEOWORKER_MAC_UNSIGNED=1 node scripts/run_electron_builder.mjs --mac --publish never
           else
             npm run package:win:x64
