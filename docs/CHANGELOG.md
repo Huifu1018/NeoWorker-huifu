@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-21
+
+### Added
+
+- Embedded Hermes runtime with host-owned tool execution, persistent shell sessions,
+  checkpoint recovery, and runtime diagnostics.
+- File cards for Python and other source-code deliverables, and native document
+  previews with cross-platform rendering checks.
+
+### Fixed
+
+- Preserve original slide count, order, template, and untouched text when optimizing
+  PPT content; prevent repeated body copy in KPI frames and report layout defects.
+- Improve Office translation batching, text fitting, timeout recovery, PDF output
+  checks, and completion checks scoped to the current request.
+- Recover public web requests from broken system proxies; improve search fallbacks
+  and distinguish reference rail fares from verified live data.
+- Improve provider management, conversation continuity, history loading, and
+  collapsed tool-error details.
+
+### Changed
+
+- Synchronize the tested Huifu development line into the upstream project.
+- Set package version to `0.2.0`; preserve the exact `V0.2.0` tag when manually
+  packaging this source release.
+
 ## [0.1.8] - 2026-09-04
 
 ### Added
