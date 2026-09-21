@@ -10,7 +10,7 @@ on:
       release_tag:
         description: 'Existing release tag whose assets should be rebuilt'
         required: true
-        default: 'V0.2.0'
+        default: 'v0.2.1'
 
 permissions:
   contents: write

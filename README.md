@@ -40,15 +40,15 @@
 </p>
 
 <p align="center">
-  <strong>Download NeoWorker · v0.2.0</strong>
+  <strong>Download NeoWorker · v0.2.1</strong>
 </p>
 <p align="center">
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.0/NeoWorker-0.2.0-arm64.dmg"><img src="./assets/readme/download-macos.svg" alt="Download for macOS — Apple Silicon, DMG" width="248" height="72"></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.1/NeoWorker-0.2.1-arm64.dmg"><img src="./assets/readme/download-macos.svg" alt="Download for macOS — Apple Silicon, DMG" width="248" height="72"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.0/NeoWorker-0.2.0-windows-x64-setup.exe"><img src="./assets/readme/download-windows.svg" alt="Download for Windows — x64, EXE" width="248" height="72"></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.1/NeoWorker-0.2.1-windows-x64-setup.exe"><img src="./assets/readme/download-windows.svg" alt="Download for Windows — x64, EXE" width="248" height="72"></a>
 </p>
 <p align="center">
-  <sub><a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0">Release notes &amp; other platforms</a></sub>
+  <sub><a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.1">Release notes &amp; other platforms</a></sub>
 </p>
 
 ## What is NeoWorker?
@@ -99,7 +99,7 @@ NeoWorker focuses on turning AI from a conversational assistant into a personal 
 
 ## Current version
 
-The current release is **<code>v0.2.0</code>** (package version <code>0.2.0</code>). It includes cross-platform desktop packaging, reliable Office/PDF delivery, improved search recovery, and clearer task execution output.
+The current release is **<code>v0.2.1</code>** (package version <code>0.2.1</code>). It includes cross-platform desktop packaging, reliable Office/PDF delivery, improved search recovery, and clearer task execution output.
 
 The official GitHub Release includes:
 
@@ -113,22 +113,22 @@ See the [changelog](./docs/CHANGELOG.md) for version history.
 
 ### Download the desktop application
 
-For a prebuilt installer, use the official [NeoWorker v0.2.0 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0).
+For a prebuilt installer, use the official [NeoWorker v0.2.1 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.1).
 
 | Platform | Package | Installation |
 | --- | --- | --- |
-| **macOS (Apple Silicon)** | <code>NeoWorker-0.2.0-arm64.dmg</code> | Open the disk image and drag NeoWorker into Applications. |
-| **Windows (x64)** | <code>NeoWorker-0.2.0-windows-x64-setup.exe</code> | Run the installer and follow the setup prompts. |
+| **macOS (Apple Silicon)** | <code>NeoWorker-0.2.1-arm64.dmg</code> | Open the disk image and drag NeoWorker into Applications. |
+| **Windows (x64)** | <code>NeoWorker-0.2.1-windows-x64-setup.exe</code> | Run the installer and follow the setup prompts. |
 
 #### Verify the download
 
-For the desktop packages, `latest-mac.yml` and `latest.yml` are the Electron updater manifests. Confirm that their version and file names match `0.2.0` before opening the installer.
+For the desktop packages, `latest-mac.yml` and `latest.yml` are the Electron updater manifests. Confirm that their version and file names match `0.2.1` before opening the installer.
 
 #### Install on macOS
 
-NeoWorker v0.2.0 for macOS is an unsigned Apple Silicon build. The first launch may therefore need a one-time Gatekeeper approval for this app.
+NeoWorker v0.2.1 for macOS is an unsigned Apple Silicon build. The first launch may therefore need a one-time Gatekeeper approval for this app.
 
-1. Download <code>NeoWorker-0.2.0-arm64.dmg</code> from the official [NeoWorker v0.2.0 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0) page.
+1. Download <code>NeoWorker-0.2.1-arm64.dmg</code> from the official [NeoWorker v0.2.1 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.1) page.
 2. Open the downloaded disk image, then drag **NeoWorker** into **Applications**.
 
    <p align="left">
@@ -177,7 +177,7 @@ If macOS says NeoWorker **will damage your computer**, do not bypass that warnin
 
 #### Install on Windows
 
-1. Download <code>NeoWorker-0.2.0-windows-x64-setup.exe</code> from the official [NeoWorker v0.2.0 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0) page.
+1. Download <code>NeoWorker-0.2.1-windows-x64-setup.exe</code> from the official [NeoWorker v0.2.1 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.1) page.
 2. Double-click the installer and follow the setup prompts.
 3. If Windows SmartScreen displays **Windows protected your PC**, confirm that the file name is the NeoWorker installer from this Release, click **More info**, then click **Run anyway**.
 4. Finish setup and launch **NeoWorker** from the Start menu or desktop shortcut.

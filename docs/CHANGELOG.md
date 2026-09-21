@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-21
+
+### Added
+
+- Add automatic update checks after startup and a dedicated update panel for downloading new releases.
+
+### Fixed
+
+- Wire update availability into the sidebar so installed builds can visibly notify users about newer releases.
+- Add bounded update metadata requests so a blocked or slow network does not hang the application.
+- Register the packaged macOS application with Launch Services and point the Help link to the canonical GitHub repository.
+
+
 ## [0.2.0] - 2026-09-21
 
 ### Added
