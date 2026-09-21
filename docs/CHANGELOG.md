@@ -11,8 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Embedded Hermes runtime with host-owned tool execution, persistent shell sessions,
-  checkpoint recovery, and runtime diagnostics.
+- Persistent host-owned tool execution, shell session recovery, and runtime diagnostics.
 - File cards for Python and other source-code deliverables, and native document
   previews with cross-platform rendering checks.
 

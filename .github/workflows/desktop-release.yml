@@ -164,7 +164,8 @@ jobs:
           const version=require('./package.json').version;
           const changelog=fs.readFileSync('docs/CHANGELOG.md','utf8');
           const start=changelog.indexOf(`## [${version}]`);
-          const entry=start<0?'':changelog.slice(start).split(/\n## \[/)[0];
+          const entry=start<0?'':changelog.slice(start).split(/\n## \[/)[0]
+            .replace(/\bHermes\b/gi, 'the execution service');
           fs.writeFileSync('desktop-release-notes.md',`# NeoWorker ${process.env.RELEASE_TAG}\n\n`+
             `源码提交：\`${commit}\`。两端安装包均从此标签构建，通过回归、包内敏感信息扫描及安装启动检查。\n\n`+
             `- macOS：Apple Silicon / arm64，下载 .dmg；应用为临时签名版本，未经过 Apple 公证。\n`+
