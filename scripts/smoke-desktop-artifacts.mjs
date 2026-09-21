@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { stopSmokeProcessGroup } from "./desktop-smoke-process.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const DEFAULT_RELEASE_DIR = path.join(ROOT, "release");
@@ -462,6 +463,7 @@ async function smokeLaunchMac(executablePath) {
   let output = "";
   const smokeUserDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-mac-launch-"));
   const child = spawn(executablePath, ["--enable-logging=stderr"], {
+    detached: true,
     env: {
       ...process.env,
       NEOWORKER_DESKTOP_SMOKE: "1",
@@ -484,22 +486,6 @@ async function smokeLaunchMac(executablePath) {
     output += chunk;
   });
 
-  const waitForExit = (timeoutMs) =>
-    new Promise((resolve) => {
-      if (child.exitCode !== null) {
-        resolve();
-        return;
-      }
-      let timer;
-      const finish = () => {
-        if (timer) clearTimeout(timer);
-        child.removeListener("exit", finish);
-        resolve();
-      };
-      child.once("exit", finish);
-      timer = setTimeout(finish, timeoutMs);
-    });
-
   try {
     const deadline = Date.now() + MAC_LAUNCH_MS;
     while (Date.now() < deadline) {
@@ -507,7 +493,7 @@ async function smokeLaunchMac(executablePath) {
       if (/\[RendererErrorBoundary\]|Unhandled renderer error/.test(output)) {
         throw new Error(`macOS renderer entered its fatal error boundary:\n${output.trim()}`);
       }
-      if (child.exitCode !== null) {
+      if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(
           `macOS app exited during smoke launch with code ${child.exitCode}:\n${output.trim()}`,
         );
@@ -522,14 +508,7 @@ async function smokeLaunchMac(executablePath) {
       `macOS renderer did not report a successful mount within ${MAC_LAUNCH_MS} ms:\n${output.trim()}`,
     );
   } finally {
-    if (child.exitCode === null) {
-      child.kill("SIGTERM");
-      await waitForExit(2_000);
-    }
-    if (child.exitCode === null) {
-      child.kill("SIGKILL");
-      await waitForExit(2_000);
-    }
+    await stopSmokeProcessGroup(child);
     await fs.rm(smokeUserDataDir, {
       recursive: true,
       force: true,

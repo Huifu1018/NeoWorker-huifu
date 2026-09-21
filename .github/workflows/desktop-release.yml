@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing source tag to build and publish
         required: true
-        default: v0.2.0
+        default: v0.2.1
 
 permissions:
   contents: read
@@ -68,7 +68,17 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
-          node node_modules/electron/install.js
+          for attempt in 1 2 3 4 5; do
+            if node node_modules/electron/install.js; then break; fi
+            if [ "${attempt}" -eq 5 ]; then exit 1; fi
+            sleep "$((attempt * 10))"
+          done
+      - name: Update UI and smoke process regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx vitest --config config/vitest.config.ts run src/electron/updater/__tests__/update-manager-config.test.ts src/renderer/components/__tests__/Sidebar.test.ts --maxWorkers=1
+          node --test scripts/qa/desktop-smoke-process.test.mjs
       - name: PPT content-editing regressions
         run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/presentation-edit-policy.test.ts src/electron/agent/tools/__tests__/use-skill.test.ts src/electron/agent/tools/__tests__/skill-tools-artifact-registration.test.ts src/electron/agent/tools/__tests__/office-artifact-input-normalizer.test.ts --maxWorkers=1
       - name: Native PPT template regressions
@@ -83,6 +93,7 @@ jobs:
         run: npm run package:mac:unsigned
       - name: Build Windows installer
         if: runner.os == 'Windows'
+        shell: bash
         run: npm run package:win:x64
       - name: Network and translation regressions
         if: runner.os == 'Windows'
@@ -131,7 +142,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish V-tag release after both platforms pass
+    name: Publish tagged release after both platforms pass
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 20

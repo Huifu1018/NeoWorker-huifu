@@ -309,6 +309,7 @@ jobs:
           fi
 
       - name: Smoke desktop release artifacts
+        timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
