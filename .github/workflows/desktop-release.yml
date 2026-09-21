@@ -1,0 +1,176 @@
+name: Publish tagged desktop installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing source tag to build and publish
+        required: true
+        default: V0.2.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Verify tag, version and architecture
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const assert = require('node:assert/strict');
+          const version = require('./package.json').version;
+          assert.match(process.env.RELEASE_TAG, /^[vV]\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+          assert.equal(process.env.RELEASE_TAG.slice(1), version);
+          assert.equal(require('./package-lock.json').packages[''].version, version);
+          assert.equal(process.arch, process.platform === 'darwin' ? 'arm64' : 'x64');
+          console.log(`Building ${process.env.RELEASE_TAG} (${version}) for ${process.platform}-${process.arch}`);
+          NODE
+      - name: Force HTTPS for GitHub dependencies
+        shell: bash
+        run: |
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+      - name: Cache pinned Numbat toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/neoworker/numbat-build
+          key: ${{ runner.os }}-numbat-${{ hashFiles('resources/numbat/source-manifest.json') }}
+      - name: Install dependencies and Electron
+        run: |
+          npm ci --no-audit --no-fund
+          node node_modules/electron/install.js
+      - name: PPT content-editing regressions
+        run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/presentation-edit-policy.test.ts src/electron/agent/tools/__tests__/use-skill.test.ts src/electron/agent/tools/__tests__/skill-tools-artifact-registration.test.ts src/electron/agent/tools/__tests__/office-artifact-input-normalizer.test.ts --maxWorkers=1
+      - name: Native PPT template regressions
+        run: |
+          python scripts/qa/test_presentation_template_edit.py
+          node scripts/qa/presentation-content-edit.mjs
+          node scripts/qa/presentation-template-fill.mjs
+      - name: Build macOS installer and verify launch
+        if: runner.os == 'macOS'
+        run: npm run package:mac:unsigned
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        run: npm run package:win:x64
+      - name: Network and translation regressions
+        if: runner.os == 'Windows'
+        run: npx vitest --config config/vitest.config.ts run src/electron/utils/__tests__/network-fetch.test.ts src/electron/agent/search/__tests__/duckduckgo-provider.test.ts src/electron/agent/tools/__tests__/web-fetch-tools.test.ts src/electron/agent/__tests__/executor-tool-timeouts.test.ts src/electron/agent/__tests__/executor-finalization-state.test.ts src/electron/agent/__tests__/daemon-complete-task.test.ts src/electron/agent/tools/__tests__/document-tools.test.ts --maxWorkers=1
+      - name: Electron network and Office smoke checks
+        if: runner.os == 'Windows'
+        run: |
+          node scripts/qa/proxy-failure-recovery.cjs
+          node scripts/qa/public-search-smoke.cjs
+          node scripts/qa/office-render-smoke.cjs
+          node node_modules/electron/cli.js scripts/qa/translation-text-fit-fixtures.cjs
+      - name: Scan packaged app for secrets
+        run: npm run package:secrets:verify
+      - name: Install, launch and uninstall Windows app
+        if: runner.os == 'Windows'
+        shell: bash
+        run: npm run package:win:smoke -- --expected-version="${RELEASE_TAG:1}"
+      - name: Stage verified release assets with provenance and checksums
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+          const {execFileSync} = require('node:child_process');
+          const version = require('./package.json').version;
+          const platform = process.platform === 'darwin' ? 'macos-arm64' : 'windows-x64';
+          const expected = process.platform === 'darwin' ? `NeoWorker-${version}-arm64.dmg` : `NeoWorker-${version}-windows-x64-setup.exe`;
+          if (!fs.existsSync(path.join('release', expected))) throw Error(`Missing installer: ${expected}`);
+          fs.mkdirSync('desktop-release-assets', {recursive:true});
+          const hashes = [];
+          for (const name of fs.readdirSync('release')) {
+            if (!(name.startsWith(`NeoWorker-${version}-`) && /\.(dmg|exe|zip|blockmap)$/.test(name)) && !/^latest(?:-mac)?\.yml$/.test(name)) continue;
+            const data = fs.readFileSync(path.join('release',name));
+            fs.writeFileSync(path.join('desktop-release-assets',name),data);
+            hashes.push(crypto.createHash('sha256').update(data).digest('hex')+'  '+name);
+          }
+          fs.writeFileSync(`desktop-release-assets/SHA256SUMS-${platform}.txt`,hashes.join('\n')+'\n');
+          fs.writeFileSync(`desktop-release-assets/build-${platform}.json`,JSON.stringify({tag:process.env.RELEASE_TAG,version,commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),platform,run:process.env.GITHUB_RUN_ID},null,2)+'\n');
+          NODE
+      - uses: actions/upload-artifact@v6
+        with:
+          name: verified-desktop-${{ runner.os }}
+          path: desktop-release-assets/*
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    name: Publish V-tag release after both platforms pass
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_tag }}
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: verified-desktop-*
+          path: desktop-release-assets
+          merge-multiple: true
+      - name: Verify downloaded checksums and tagged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd desktop-release-assets && sha256sum --check SHA256SUMS-*.txt)
+          node - <<'NODE'
+          const fs=require('node:fs'),assert=require('node:assert/strict'),{execFileSync}=require('node:child_process');
+          const commit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+          for(const platform of ['macos-arm64','windows-x64']) {
+            const build=JSON.parse(fs.readFileSync(`desktop-release-assets/build-${platform}.json`));
+            assert.equal(build.commit,commit);assert.equal(build.tag,process.env.RELEASE_TAG);
+          }
+          const version=require('./package.json').version;
+          const changelog=fs.readFileSync('docs/CHANGELOG.md','utf8');
+          const start=changelog.indexOf(`## [${version}]`);
+          const entry=start<0?'':changelog.slice(start).split(/\n## \[/)[0];
+          fs.writeFileSync('desktop-release-notes.md',`# NeoWorker ${process.env.RELEASE_TAG}\n\n`+
+            `源码提交：\`${commit}\`。两端安装包均从此标签构建，通过回归、包内敏感信息扫描及安装启动检查。\n\n`+
+            `- macOS：Apple Silicon / arm64，下载 .dmg；应用为临时签名版本，未经过 Apple 公证。\n`+
+            `- Windows：x64，下载 -setup.exe。\n`+
+            `- SHA256SUMS 文件用于校验下载，build JSON 记录源码与构建来源。\n\n`+entry+'\n');
+          NODE
+      - name: Upload assets and publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "NeoWorker $RELEASE_TAG" --notes-file desktop-release-notes.md --draft
+          fi
+          gh release upload "$RELEASE_TAG" desktop-release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --title "NeoWorker $RELEASE_TAG" --notes-file desktop-release-notes.md --draft=false --latest
