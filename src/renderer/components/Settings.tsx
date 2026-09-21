@@ -60,6 +60,7 @@ import {
   Building2,
   KeyRound,
   Trash2,
+  Download,
 } from "lucide-react";
 import {
   LLMSettingsData,
@@ -288,6 +289,10 @@ const TaskTraceDebuggerPanel = lazySettingsPanel(
 const EverydayAgentSettingsPanel = lazySettingsPanel(
   () => import("./EverydayAgentPanel"),
   "EverydayAgentSettingsPanel",
+);
+const UpdateSettings = lazySettingsPanel(
+  () => import("./UpdateSettings"),
+  "UpdateSettings",
 );
 
 type SettingsTab =
@@ -1297,6 +1302,12 @@ const sidebarItems: SidebarItem[] = [
     group: "Settings",
     icon: <Wrench {...I} />,
   },
+  {
+    tab: "updates",
+    label: "Updates",
+    group: "Settings",
+    icon: <Download {...I} />,
+  },
 ];
 
 // Secondary channel configuration for "More Channels" tab
@@ -2239,9 +2250,7 @@ export function Settings({
                     "extensions",
                   ].includes(safeInitialTab as string)
                 ? "integrations"
-                : safeInitialTab === "health" ||
-                    safeInitialTab === "nodes" ||
-                    safeInitialTab === "updates"
+                : safeInitialTab === "health" || safeInitialTab === "nodes"
                   ? "appearance"
                   : safeInitialTab;
   const [activeTab, setActiveTab] = useState<SettingsTab>(normalizedInitialTab);
@@ -15180,6 +15189,8 @@ export function Settings({
                 />
               ) : activeTab === "briefing" ? (
                 <BriefingPanel workspaceId={workspaceId} />
+              ) : activeTab === "updates" ? (
+                <UpdateSettings />
               ) : loading ? (
                 <div className="settings-loading">
                   {translate("settings.loading", "Loading settings...")}

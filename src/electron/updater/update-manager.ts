@@ -158,15 +158,23 @@ export class UpdateManager {
 
     try {
       // Fetch latest release from GitHub
-      const response = await net.fetch(
-        `https://api.github.com/repos/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest`,
-        {
-          headers: {
-            Accept: "application/vnd.github.v3+json",
-            "User-Agent": "NeoWorker-Updater",
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15_000);
+      let response: Response;
+      try {
+        response = await net.fetch(
+          `https://api.github.com/repos/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest`,
+          {
+            headers: {
+              Accept: "application/vnd.github.v3+json",
+              "User-Agent": "NeoWorker-Updater",
+            },
+            signal: controller.signal,
           },
-        },
-      );
+        );
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -568,15 +576,23 @@ export class UpdateManager {
   }
 
   private async fetchLatestRelease(): Promise<GitHubRelease> {
-    const response = await net.fetch(
-      `https://api.github.com/repos/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest`,
-      {
-        headers: {
-          Accept: "application/vnd.github.v3+json",
-          "User-Agent": "NeoWorker-Updater",
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    let response: Response;
+    try {
+      response = await net.fetch(
+        `https://api.github.com/repos/${UPDATE_REPOSITORY_OWNER}/${UPDATE_REPOSITORY_NAME}/releases/latest`,
+        {
+          headers: {
+            Accept: "application/vnd.github.v3+json",
+            "User-Agent": "NeoWorker-Updater",
+          },
+          signal: controller.signal,
         },
-      },
-    );
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) throw new Error(`GitHub API error: ${response.status}`);
     const release = (await response.json()) as GitHubRelease;
     if (release.draft || release.prerelease) {

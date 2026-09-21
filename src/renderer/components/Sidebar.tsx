@@ -708,6 +708,7 @@ function areSidebarPropsEqual(prev: SidebarProps, next: SidebarProps): boolean {
     (prev.completionAttentionTaskIds || []).join(",") ===
       (next.completionAttentionTaskIds || []).join(",") &&
     prev.updateInfo?.latestVersion === next.updateInfo?.latestVersion &&
+    prev.updateInfo?.available === next.updateInfo?.available &&
     prev.onSelectTask === next.onSelectTask &&
     prev.onTasksChanged === next.onTasksChanged &&
     prev.onOpenSettings === next.onOpenSettings &&

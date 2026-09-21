@@ -74,6 +74,7 @@ import {
   TaskDomain,
   AgentConfig,
   LlmProfile,
+  UpdateInfo,
   PermissionMode,
   LLMProviderType,
   LLMReasoningEffort,
@@ -2558,6 +2559,40 @@ export function App() {
   const [browserWorkbenchRequest, setBrowserWorkbenchRequest] =
     useState<BrowserWorkbenchOpenRequest | null>(null);
   const [sideChat, setSideChat] = useState<SideChatState | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let initialCheckTimer: number | undefined;
+
+    const checkForAppUpdate = async (): Promise<void> => {
+      try {
+        const info = await window.electronAPI?.checkForUpdates?.();
+        if (active) {
+          setUpdateInfo(info?.available ? (info as UpdateInfo) : null);
+        }
+      } catch {
+        // Update checks are background work. Keep the main workspace usable
+        // when GitHub or the current network is unavailable.
+        if (active) setUpdateInfo(null);
+      }
+    };
+
+    initialCheckTimer = window.setTimeout(() => {
+      void checkForAppUpdate();
+    }, 8_000);
+    const periodicCheckTimer = window.setInterval(() => {
+      void checkForAppUpdate();
+    }, 6 * 60 * 60 * 1_000);
+
+    return () => {
+      active = false;
+      if (initialCheckTimer !== undefined) {
+        window.clearTimeout(initialCheckTimer);
+      }
+      window.clearInterval(periodicCheckTimer);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isInitialReleaseViewAvailable(currentView)) {
@@ -8167,7 +8202,7 @@ export function App() {
                 onLoadMoreTasks={loadMoreTasks}
                 hasMoreTasks={hasMoreTasks}
                 uiDensity={uiDensity}
-                updateInfo={null}
+                updateInfo={updateInfo}
                 onViewUpdate={() => {
                   setSettingsTab("updates");
                   setCurrentView("settings");
