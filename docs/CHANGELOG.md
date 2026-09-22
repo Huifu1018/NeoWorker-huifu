@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-22
+
+### Changed
+
+- Publish macOS and Windows installers as the next stable update for v0.2.1.
+- Retain startup update checks, sidebar notifications, and the update download panel so the v0.2.1 to v0.2.2 upgrade can be tested against a real release.
+- Synchronize package versions, download links, and release workflow defaults to 0.2.2.
+
 ## [0.2.1] - 2026-09-21
 
 ### Added
