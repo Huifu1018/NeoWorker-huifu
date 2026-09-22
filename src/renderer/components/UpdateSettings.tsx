@@ -1,7 +1,14 @@
 import { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Download, CheckCircle, XCircle } from "lucide-react";
+import {
+  ArrowUpRight,
+  CheckCircle,
+  Download,
+  RefreshCw,
+  Terminal,
+  XCircle,
+} from "lucide-react";
 import { transformReleaseNotesUrl } from "../utils/release-notes-markdown";
 import { translate, useLanguage } from "../i18n";
 
@@ -165,12 +172,40 @@ export function UpdateSettings({
 
   return (
     <div className="update-settings">
-      <div className="settings-section">
-        <h3>{t("updates.currentVersion", "Current Version")}</h3>
-        <div className="version-info">
-          <div className="version-number">
-            v{versionInfo?.version || t("updates.unknown", "Unknown")}
+      <header className="update-page-header">
+        <div className="update-page-header-icon" aria-hidden="true">
+          <RefreshCw size={18} strokeWidth={2} />
+        </div>
+        <div className="update-page-header-copy">
+          <span className="update-page-kicker">
+            {t("updates.kicker", "Software updates")}
+          </span>
+          <h2>{t("updates.pageTitle", "Keep NeoWorker up to date")}</h2>
+          <p>
+            {t(
+              "updates.pageDescription",
+              "Check for the latest improvements and install them when ready.",
+            )}
+          </p>
+        </div>
+      </header>
+
+      <div className="update-version-panel">
+        <div className="update-panel-heading">
+          <div>
+            <span className="update-panel-eyebrow">
+              {t("updates.currentVersion", "Current version")}
+            </span>
+            <div className="version-number">
+              v{versionInfo?.version || t("updates.unknown", "Unknown")}
+            </div>
           </div>
+          <div className="update-version-state">
+            <CheckCircle size={16} strokeWidth={2} />
+            <span>{t("updates.installed", "Installed locally")}</span>
+          </div>
+        </div>
+        <div className="version-info">
           {versionInfo?.isDev && (
             <span className="version-badge dev">
               {t("updates.developmentMode", "Development Mode")}
@@ -192,8 +227,12 @@ export function UpdateSettings({
         </div>
       </div>
 
-      <div className="settings-section">
-        <h3>{t("updates.check.title", "Check for Updates")}</h3>
+      <section className="update-check-panel">
+        <div className="update-panel-icon" aria-hidden="true">
+          <RefreshCw size={18} strokeWidth={2} />
+        </div>
+        <div className="update-panel-copy">
+          <h3>{t("updates.check.title", "Check for updates")}</h3>
         <p className="settings-description">
           {versionInfo?.isNpmGlobal
             ? t("updates.check.npm", "Updates will be installed via npm.")
@@ -208,9 +247,16 @@ export function UpdateSettings({
                 )}
         </p>
 
+          <p className="update-check-note">
+            {t(
+              "updates.check.note",
+              "The app checks the official release channel and keeps your files untouched.",
+            )}
+          </p>
+        </div>
         <div className="update-actions">
           <button
-            className="button-primary"
+            className="button-primary update-check-button"
             onClick={handleCheckForUpdates}
             disabled={checking || updating}
           >
@@ -337,10 +383,19 @@ export function UpdateSettings({
               : t("updates.restart", "Restart to Apply Update")}
           </button>
         )}
-      </div>
+      </section>
 
-      <div className="settings-section">
-        <h3>{t("updates.manual.title", "Manual Update")}</h3>
+      <section className="update-manual-panel">
+        <div className="update-manual-heading">
+          <div className="update-panel-icon update-panel-icon-muted" aria-hidden="true">
+            <Terminal size={17} strokeWidth={2} />
+          </div>
+          <div>
+            <h3>{t("updates.manual.title", "Manual update")}</h3>
+            <span>{t("updates.manual.advanced", "For advanced users")}</span>
+          </div>
+          <ArrowUpRight size={16} strokeWidth={2} aria-hidden="true" />
+        </div>
         <p className="settings-description">
           {t(
             versionInfo?.isNpmGlobal
@@ -369,7 +424,7 @@ export function UpdateSettings({
             "After updating, restart the application to apply changes.",
           )}
         </p>
-      </div>
+      </section>
     </div>
   );
 }
