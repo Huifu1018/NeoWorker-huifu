@@ -40,7 +40,7 @@ import {
 import { resolveTwinIcon } from "../utils/twin-icons";
 import { stripAllEmojis } from "../utils/emoji-replacer";
 import { Task, Workspace, UiDensity, UpdateInfo } from "../../shared/types";
-import { PRODUCT_DISPLAY_VERSION } from "../../shared/product-brand";
+import { useProductDisplayVersion } from "../utils/product-version";
 import { isAutomatedTaskLike } from "../../shared/automated-task-detection";
 import {
   deriveTaskAttentionState,
@@ -753,6 +753,7 @@ function SidebarComponent({
   onViewUpdate,
 }: SidebarProps) {
   useLanguage();
+  const productDisplayVersion = useProductDisplayVersion();
   const [menuOpenTaskId, setMenuOpenTaskId] = useState<string | null>(null);
   const [renameTaskId, setRenameTaskId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -2095,7 +2096,7 @@ function SidebarComponent({
       <div className="sidebar-brand-row">
         <div
           className="sidebar-brand-identity"
-          aria-label={`NeoWorker ${PRODUCT_DISPLAY_VERSION}`}
+          aria-label={`NeoWorker ${productDisplayVersion}`}
         >
           <img
             className="sidebar-brand-logo"
@@ -2108,7 +2109,7 @@ function SidebarComponent({
           />
           <span className="sidebar-brand-name">NeoWorker</span>
           <span className="sidebar-brand-version">
-            {PRODUCT_DISPLAY_VERSION}
+            {productDisplayVersion}
           </span>
         </div>
       </div>

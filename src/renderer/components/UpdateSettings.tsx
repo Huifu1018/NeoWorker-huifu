@@ -366,10 +366,10 @@ export function UpdateSettings({
                   {t("updates.method", "Update method")}:{" "}
                   <strong>
                     {updateInfo.updateMode === "npm"
-                      ? "npm update"
+                      ? t("updates.method.npm", "npm update")
                       : updateInfo.updateMode === "git"
-                        ? "Git Pull + Rebuild"
-                        : "Auto-download"}
+                        ? t("updates.method.git", "Git pull + rebuild")
+                        : t("updates.method.auto", "Automatic download")}
                   </strong>
                 </div>
               </>

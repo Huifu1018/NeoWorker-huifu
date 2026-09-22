@@ -249,7 +249,6 @@ import { rememberApprovedImportFiles } from "./security/file-import-approvals";
 import { healMovedDesktopWorkspacePaths } from "./utils/workspace-path-healer";
 import {
   APP_DISPLAY_NAME,
-  APP_DISPLAY_VERSION,
   applyApplicationIdentity,
   getDesktopIconImage,
   getDesktopIconPath,
@@ -792,7 +791,7 @@ function installNativeApplicationMenu(): void {
 
   app.setAboutPanelOptions({
     applicationName: APP_DISPLAY_NAME,
-    applicationVersion: APP_DISPLAY_VERSION,
+    applicationVersion: app.getVersion(),
     version: "",
     copyright: "NeoWorker by Allen",
   });

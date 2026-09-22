@@ -78,4 +78,28 @@ describe("English translation completeness", () => {
     expect(translate("sidebar.ideas")).toBe("Inspiration");
     expect(translate("sidebar.automations")).toBe("Automation");
   });
+
+  it("localizes the update settings surface", () => {
+    const updateKeys = [
+      "updates.kicker",
+      "updates.pageTitle",
+      "updates.pageDescription",
+      "updates.installed",
+      "updates.downloadLocation",
+      "updates.openInstaller",
+      "updates.method.auto",
+    ];
+
+    applyPersistedLanguage("en");
+    for (const key of updateKeys) {
+      expect(translate(key)).not.toBe(key);
+      expect(translate(key)).not.toMatch(/[一-龥]/);
+    }
+
+    applyPersistedLanguage("zh-CN");
+    expect(translate("updates.kicker")).toBe("软件更新");
+    expect(translate("updates.installed")).toBe("已安装");
+    expect(translate("updates.downloadLocation")).toBe("下载位置");
+    expect(translate("updates.method.auto")).toBe("自动下载");
+  });
 });

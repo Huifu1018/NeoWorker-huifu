@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { FolderIcon } from "./LineIcons";
 import { Workspace } from "../../shared/types";
-import { PRODUCT_DISPLAY_VERSION } from "../../shared/product-brand";
+import { useProductDisplayVersion } from "../utils/product-version";
 import { translate, useLanguage } from "../i18n";
 
 interface WorkspaceSelectorProps {
@@ -13,6 +13,7 @@ export function WorkspaceSelector({
 }: WorkspaceSelectorProps) {
   useLanguage();
   const t = translate;
+  const productDisplayVersion = useProductDisplayVersion();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
 
   useEffect(() => {
@@ -103,7 +104,7 @@ export function WorkspaceSelector({
  ╚██████╗╚██████╔╝╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗      ╚██████╔╝███████║
   ╚═════╝ ╚═════╝  ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝       ╚═════╝ ╚══════╝`}</pre>
           <div className="cli-version">
-            {PRODUCT_DISPLAY_VERSION}
+            {productDisplayVersion}
           </div>
           <div className="workspace-modern-title modern-only">
             {t("workspaceSelector.choose", "Choose a workspace")}

@@ -44,7 +44,7 @@ import {
   ApprovalRequest,
   OutcomeTemplate,
 } from "../../../shared/types";
-import { PRODUCT_DISPLAY_VERSION } from "../../../shared/product-brand";
+import { useProductDisplayVersion } from "../../utils/product-version";
 import { HISTORY_READING_EVENT, useHistoryPagination } from "./use-history-pagination";
 import type { ChatInlineFrame } from "../../../shared/mailbox";
 import { parseLeadingSkillSlashCommand } from "../../../shared/skill-slash-commands";
@@ -5012,6 +5012,7 @@ function MainContentComponent({
   remoteSession = null,
   replayControls,
 }: MainContentProps) {
+  const productDisplayVersion = useProductDisplayVersion();
   recordRendererRender(
     "MainContent",
     task?.id ? `task:${task.id}` : (selectedTaskId ?? "task:none"),
@@ -11619,7 +11620,7 @@ function MainContentComponent({
                     alt="NeoWorker"
                     className="modern-logo-text logo-for-light"
                   />
-                  <span className="modern-version">{PRODUCT_DISPLAY_VERSION}</span>
+                  <span className="modern-version">{productDisplayVersion}</span>
                 </div>
                 <p className="modern-subtitle">{agentContext.getMessage("welcomeSubtitle")}</p>
               </div>
@@ -11648,7 +11649,7 @@ function MainContentComponent({
  ██║     ██║   ██║██║███╗██║██║   ██║██╔══██╗██╔═██╗      ██║   ██║╚════██║
  ╚██████╗╚██████╔╝╚███╔███╔╝╚██████╔╝██║  ██║██║  ██╗     ╚██████╔╝███████║
   ╚═════╝ ╚═════╝  ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝      ╚═════╝ ╚══════╝`}</pre>
-                <div className="cli-version">{PRODUCT_DISPLAY_VERSION}</div>
+                <div className="cli-version">{productDisplayVersion}</div>
               </div>
 
               {/* Terminal Info */}
