@@ -83,8 +83,12 @@ if (!process.versions.electron) {
       console.log(JSON.stringify({ stage: "view-html", kind, bytes: source.length, ms: Date.now() - start,
         status: render.status, signal: render.signal, error: render.error?.message, stdout: render.stdout, stderr: render.stderr }));
       if (kind === "transparent-preset") {
-        assert.notEqual(render.status, 0, "Pinned renderer should reproduce transparent preset failure");
-        assert.match(render.stdout, /Could not find any recognizable digits/);
+        // The renderer now handles the transparent preset correctly. Keep
+        // this fixture as a regression check for a successful preview rather
+        // than preserving the old failure that caused the Windows release
+        // gate to reject a valid build.
+        assert.equal(render.status, 0, "OfficeCLI view html failed for transparent preset");
+        assert(fs.statSync(html).size > 0);
       } else {
         assert.equal(render.status, 0, "OfficeCLI view html failed");
         assert(fs.statSync(html).size > 0);
