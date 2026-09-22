@@ -9,7 +9,10 @@ import {
   Terminal,
   XCircle,
 } from "lucide-react";
-import { transformReleaseNotesUrl } from "../utils/release-notes-markdown";
+import {
+  sanitizeReleaseNotesForDisplay,
+  transformReleaseNotesUrl,
+} from "../utils/release-notes-markdown";
 import { translate, useLanguage } from "../i18n";
 
 interface VersionInfo {
@@ -162,6 +165,10 @@ export function UpdateSettings({
     }
   };
 
+  const displayReleaseNotes = updateInfo?.releaseNotes
+    ? sanitizeReleaseNotesForDisplay(updateInfo.releaseNotes)
+    : "";
+
   if (loading) {
     return (
       <div className="settings-loading">
@@ -292,7 +299,7 @@ export function UpdateSettings({
                     {new Date(updateInfo.publishedAt).toLocaleDateString()}
                   </div>
                 )}
-                {updateInfo.releaseNotes && (
+                {displayReleaseNotes && (
                   <div className="release-notes">
                     <h4>{t("updates.releaseNotes", "Release Notes")}</h4>
                     <div className="release-notes-content markdown-content">
@@ -303,7 +310,7 @@ export function UpdateSettings({
                         }
                         components={{ a: ReleaseNotesLink }}
                       >
-                        {updateInfo.releaseNotes}
+                        {displayReleaseNotes}
                       </ReactMarkdown>
                     </div>
                   </div>
