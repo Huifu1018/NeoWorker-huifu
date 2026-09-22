@@ -76,6 +76,7 @@ import {
   type MoaPreset,
   type ChannelData,
   type ChannelType,
+  type UpdateInfo,
 } from "../../shared/types";
 import { getCustomProviderDefinition } from "../../shared/llm-provider-catalog";
 import { getLlmModelReasoningEfforts } from "../../shared/llm-model-selection";
@@ -391,6 +392,7 @@ interface SettingsProps {
   devRunLoggingEnabled: boolean;
   onDevRunLoggingEnabledChange: (enabled: boolean) => void;
   initialTab?: SettingsTab;
+  initialUpdateInfo?: UpdateInfo | null;
   workspaceId?: string;
   onCreateTask?: (title: string, prompt: string) => void;
   onOpenTask?: (taskId: string) => void;
@@ -2192,6 +2194,7 @@ export function Settings({
   devRunLoggingEnabled,
   onDevRunLoggingEnabledChange,
   initialTab = "appearance",
+  initialUpdateInfo,
   workspaceId,
   onCreateTask,
   onOpenTask,
@@ -15190,7 +15193,7 @@ export function Settings({
               ) : activeTab === "briefing" ? (
                 <BriefingPanel workspaceId={workspaceId} />
               ) : activeTab === "updates" ? (
-                <UpdateSettings />
+                <UpdateSettings initialUpdateInfo={initialUpdateInfo} />
               ) : loading ? (
                 <div className="settings-loading">
                   {translate("settings.loading", "Loading settings...")}

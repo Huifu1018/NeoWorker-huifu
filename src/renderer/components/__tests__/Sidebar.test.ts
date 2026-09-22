@@ -244,7 +244,7 @@ describe("Sidebar top-level destinations", () => {
     expect(markup).toContain('aria-pressed="true"');
   });
 
-  it("renders available app updates as a single Update button", () => {
+  it("renders available app updates beside the setup guide", () => {
     const markup = renderToStaticMarkup(
       React.createElement(Sidebar, {
         workspace: { id: "ws-1", name: "Workspace", path: "/workspace" } as Any,
@@ -266,10 +266,10 @@ describe("Sidebar top-level destinations", () => {
       }),
     );
 
-    expect(markup).toMatch(/class="[^"]*\bupdate-banner\b[^"]*"/);
-    expect(markup).toContain(">更新</button>");
+    expect(markup).toMatch(/class="[^"]*\bcli-update-btn\b[^"]*"/);
+    expect(markup).toContain(">下载</span>");
     expect(markup).not.toContain("0.5.46");
-    expect(markup).toContain('aria-label="关闭更新提示"');
+    expect(markup).not.toContain("update-banner");
   });
 
   it("prioritizes the session title over time while a session is awaiting response", () => {

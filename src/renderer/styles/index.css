@@ -5936,6 +5936,26 @@ a,
   color: var(--color-brand-blue, var(--color-accent)) !important;
 }
 
+.cli-update-btn {
+  flex: 0 0 auto;
+  width: auto !important;
+  padding: 0 8px !important;
+  color: var(--color-brand-blue, var(--color-accent)) !important;
+}
+
+.cli-update-btn .modern-only {
+  gap: 6px;
+}
+
+.cli-update-btn:hover {
+  color: var(--color-brand-blue, var(--color-accent)) !important;
+  background: color-mix(
+    in srgb,
+    var(--color-brand-blue, var(--color-accent)) 8%,
+    transparent
+  ) !important;
+}
+
 .cli-onboarding-btn .modern-only {
   gap: 6px;
 }

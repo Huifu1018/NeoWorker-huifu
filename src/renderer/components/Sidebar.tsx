@@ -35,6 +35,7 @@ import {
   Lightbulb,
   Wrench,
   Clock3,
+  Download,
 } from "lucide-react";
 import { resolveTwinIcon } from "../utils/twin-icons";
 import { stripAllEmojis } from "../utils/emoji-replacer";
@@ -752,7 +753,6 @@ function SidebarComponent({
   onViewUpdate,
 }: SidebarProps) {
   useLanguage();
-  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [menuOpenTaskId, setMenuOpenTaskId] = useState<string | null>(null);
   const [renameTaskId, setRenameTaskId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -2092,57 +2092,6 @@ function SidebarComponent({
 
   return (
     <div className="sidebar cli-sidebar">
-      {updateInfo?.available && !updateDismissed && (
-        <div className="sidebar-update-slot">
-          <button
-            type="button"
-            className="update-banner"
-            aria-label={translate(
-              "sidebar.update.openSettings",
-              "Open update settings",
-            )}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
-            onClick={(event) => {
-              event.stopPropagation();
-              onViewUpdate?.();
-            }}
-          >
-            {translate("sidebar.update", "Update")}
-          </button>
-          <button
-            type="button"
-            className="update-banner-dismiss"
-            aria-label={translate(
-              "sidebar.update.dismiss",
-              "Dismiss update banner",
-            )}
-            onClick={(event) => {
-              event.stopPropagation();
-              setUpdateDismissed(true);
-            }}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 12 12"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M9 3L3 9M3 3L9 9"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
-      )}
-
       <div className="sidebar-brand-row">
         <div
           className="sidebar-brand-identity"
@@ -2885,6 +2834,23 @@ function SidebarComponent({
               {translate("sidebar.settings", "Settings")}
             </span>
           </button>
+          {updateInfo?.available && (
+            <button
+              className="settings-btn cli-settings-btn cli-update-btn"
+              onClick={onViewUpdate}
+              title={translate("sidebar.update.download", "Download update")}
+              aria-label={translate(
+                "sidebar.update.download",
+                "Download update",
+              )}
+            >
+              <span className="terminal-only">[download]</span>
+              <span className="modern-only">
+                <Download size={15} strokeWidth={2} />
+                {translate("sidebar.update.downloadAction", "下载")}
+              </span>
+            </button>
+          )}
           {onOpenSetupGuide && (
             <button
               className="settings-btn cli-settings-btn cli-onboarding-btn"

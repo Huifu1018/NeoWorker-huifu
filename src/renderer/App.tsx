@@ -8780,6 +8780,7 @@ export function App() {
             devRunLoggingEnabled={devRunLoggingEnabled}
             onDevRunLoggingEnabledChange={handleDevRunLoggingEnabledChange}
             initialTab={settingsTab}
+            initialUpdateInfo={updateInfo}
             workspaceId={currentWorkspace?.id}
             onCreateTask={(title, prompt) => {
               setCurrentView("main");

@@ -52,11 +52,17 @@ function ReleaseNotesLink({
   );
 }
 
-export function UpdateSettings() {
+export function UpdateSettings({
+  initialUpdateInfo,
+}: {
+  initialUpdateInfo?: UpdateInfo | null;
+}) {
   useLanguage();
   const t = translate;
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(
+    initialUpdateInfo ?? null,
+  );
   const [progress, setProgress] = useState<UpdateProgress | null>(null);
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
@@ -64,6 +70,13 @@ export function UpdateSettings() {
   const [error, setError] = useState<string | null>(null);
   const [updateReady, setUpdateReady] = useState(false);
   const [manualInstallerReady, setManualInstallerReady] = useState(false);
+
+  useEffect(() => {
+    if (initialUpdateInfo?.available) {
+      setUpdateInfo(initialUpdateInfo);
+      setError(null);
+    }
+  }, [initialUpdateInfo]);
 
   useEffect(() => {
     loadVersionInfo();
