@@ -37,6 +37,15 @@ describe("packaged updater configuration", () => {
     expect(source).toContain("shell.openPath(this.manualUpdatePath)");
   });
 
+  it("keeps download state across renderer page changes and retries closed connections", () => {
+    const source = readFileSync(sourcePath, "utf8");
+
+    expect(source).toContain("getDownloadStatus()");
+    expect(source).toContain("private lastUpdateProgress");
+    expect(source).toContain("const maxAttempts = 3");
+    expect(source).toContain("Download interrupted");
+  });
+
   it("keeps Linux server packaging commands wired to the release workflow", () => {
     const packageJson = readFileSync(
       fileURLToPath(new URL("../../../../package.json", import.meta.url)),

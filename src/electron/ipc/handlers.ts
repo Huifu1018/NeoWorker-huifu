@@ -8782,6 +8782,10 @@ export async function setupIpcHandlers(
     return updateManager.getVersionInfo();
   });
 
+  ipcMain.handle(IPC_CHANNELS.APP_UPDATE_STATUS, async () => {
+    return updateManager.getDownloadStatus();
+  });
+
   ipcMain.handle(IPC_CHANNELS.APP_CHECK_UPDATES, async () => {
     return updateManager.checkForUpdates();
   });

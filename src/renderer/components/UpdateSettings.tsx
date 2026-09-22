@@ -44,6 +44,8 @@ interface UpdateProgress {
     | "error";
   percent?: number;
   message: string;
+  bytesDownloaded?: number;
+  bytesTotal?: number;
 }
 
 function ReleaseNotesLink({
@@ -60,6 +62,13 @@ function ReleaseNotesLink({
       {children}
     </a>
   );
+}
+
+function normalizeUpdateError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*Error:\s*/i, "")
+    .replace(/^Error:\s*/i, "");
 }
 
 export function UpdateSettings({
@@ -80,6 +89,7 @@ export function UpdateSettings({
   const [error, setError] = useState<string | null>(null);
   const [updateReady, setUpdateReady] = useState(false);
   const [manualInstallerReady, setManualInstallerReady] = useState(false);
+  const [downloadPath, setDownloadPath] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialUpdateInfo?.available) {
@@ -90,6 +100,32 @@ export function UpdateSettings({
 
   useEffect(() => {
     loadVersionInfo();
+
+    const restoreUpdateStatus = async () => {
+      try {
+        const status = await window.electronAPI.getUpdateStatus?.();
+        if (status?.progress) {
+          setProgress(status.progress);
+          setUpdating(status.progress.phase === "downloading");
+          if (status.progress.phase === "error") {
+            setError(status.progress.message);
+          }
+        }
+        if (
+          status?.ready &&
+          (!initialUpdateInfo?.latestVersion ||
+            status.latestVersion === initialUpdateInfo.latestVersion)
+        ) {
+          setUpdateReady(true);
+          setManualInstallerReady(Boolean(status.manual));
+          setDownloadPath(status.path ?? null);
+          setUpdating(false);
+        }
+      } catch {
+        // Browser preview and older packaged builds may not expose status yet.
+      }
+    };
+    void restoreUpdateStatus();
 
     // Subscribe to update events
     const unsubProgress = window.electronAPI.onUpdateProgress((prog) => {
@@ -103,6 +139,7 @@ export function UpdateSettings({
     const unsubDownloaded = window.electronAPI.onUpdateDownloaded((info) => {
       setUpdateReady(true);
       setManualInstallerReady(Boolean(info?.manual));
+      setDownloadPath(info?.path ?? null);
       setUpdating(false);
     });
 
@@ -124,7 +161,7 @@ export function UpdateSettings({
       const info = await window.electronAPI.getAppVersion();
       setVersionInfo(info);
     } catch (err: Any) {
-      setError(err.message);
+      setError(normalizeUpdateError(err));
     } finally {
       setLoading(false);
     }
@@ -138,7 +175,7 @@ export function UpdateSettings({
       const info = await window.electronAPI.checkForUpdates();
       setUpdateInfo(info);
     } catch (err: Any) {
-      setError(err.message);
+      setError(normalizeUpdateError(err));
     } finally {
       setChecking(false);
     }
@@ -152,7 +189,7 @@ export function UpdateSettings({
       setError(null);
       await window.electronAPI.downloadUpdate(updateInfo);
     } catch (err: Any) {
-      setError(err.message);
+      setError(normalizeUpdateError(err));
       setUpdating(false);
     }
   };
@@ -161,7 +198,7 @@ export function UpdateSettings({
     try {
       await window.electronAPI.installUpdate();
     } catch (err: Any) {
-      setError(err.message);
+      setError(normalizeUpdateError(err));
     }
   };
 
@@ -356,6 +393,13 @@ export function UpdateSettings({
                 />
               </div>
             )}
+          </div>
+        )}
+
+        {downloadPath && updateReady && (
+          <div className="update-location">
+            <span>{t("updates.downloadLocation", "Downloaded to")}</span>
+            <code>{downloadPath}</code>
           </div>
         )}
 

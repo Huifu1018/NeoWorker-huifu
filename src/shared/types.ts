@@ -8347,6 +8347,7 @@ export const IPC_CHANNELS = {
   APP_UPDATE_PROGRESS: "app:updateProgress",
   APP_UPDATE_DOWNLOADED: "app:updateDownloaded",
   APP_UPDATE_ERROR: "app:updateError",
+  APP_UPDATE_STATUS: "app:updateStatus",
   SYSTEM_OPEN_SETTINGS: "system:openSettings",
 
   // Guardrails
@@ -10314,6 +10315,14 @@ export interface UpdateProgress {
   message: string;
   bytesDownloaded?: number;
   bytesTotal?: number;
+}
+
+export interface UpdateDownloadStatus {
+  progress: UpdateProgress | null;
+  ready: boolean;
+  latestVersion?: string;
+  manual: boolean;
+  path?: string;
 }
 
 export interface AppVersionInfo {

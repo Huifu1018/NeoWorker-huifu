@@ -191,6 +191,7 @@ import type {
   TaskEventDetailResult,
   TaskTimelinePageRequest,
   TaskTimelinePageResult,
+  UpdateDownloadStatus,
 } from "../shared/types";
 import type {
   SubconsciousBrainSummary,
@@ -3834,6 +3835,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // App Update APIs
   getAppVersion: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_VERSION),
+  getUpdateStatus: (): Promise<UpdateDownloadStatus> =>
+    ipcRenderer.invoke(IPC_CHANNELS.APP_UPDATE_STATUS),
   checkForUpdates: () => ipcRenderer.invoke(IPC_CHANNELS.APP_CHECK_UPDATES),
   downloadUpdate: (updateInfo: Any) =>
     ipcRenderer.invoke(IPC_CHANNELS.APP_DOWNLOAD_UPDATE, updateInfo),
@@ -7845,6 +7848,7 @@ export interface ElectronAPI {
     gitBranch?: string;
     gitCommit?: string;
   }>;
+  getUpdateStatus: () => Promise<UpdateDownloadStatus>;
   checkForUpdates: () => Promise<{
     available: boolean;
     currentVersion: string;

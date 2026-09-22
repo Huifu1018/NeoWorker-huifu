@@ -6208,6 +6208,26 @@ a,
   transition: width 0.3s ease;
 }
 
+.update-location {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 9px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.update-location code {
+  color: var(--color-text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .update-error {
   display: flex;
   align-items: center;
@@ -6411,6 +6431,7 @@ a,
 
 .update-check-panel > .update-status,
 .update-check-panel > .update-progress,
+.update-check-panel > .update-location,
 .update-check-panel > .update-error,
 .update-check-panel > .update-button {
   grid-column: 1 / -1;

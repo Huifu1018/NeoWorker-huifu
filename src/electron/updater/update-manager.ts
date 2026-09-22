@@ -4,7 +4,13 @@ import { promisify } from "util";
 import * as _path from "path";
 import * as _fs from "fs";
 import { createHash } from "crypto";
-import { UpdateInfo, UpdateProgress, AppVersionInfo, IPC_CHANNELS } from "../../shared/types";
+import {
+  UpdateInfo,
+  UpdateProgress,
+  UpdateDownloadStatus,
+  AppVersionInfo,
+  IPC_CHANNELS,
+} from "../../shared/types";
 
 const execAsync = promisify(exec);
 
@@ -75,15 +81,29 @@ export class UpdateManager {
   private isUpdating = false;
   private latestRelease: GitHubRelease | null = null;
   private manualUpdatePath: string | null = null;
+  private lastUpdateProgress: UpdateProgress | null = null;
+  private downloadedUpdateVersion: string | null = null;
+  private downloadedUpdateManual = false;
 
   setMainWindow(window: BrowserWindow): void {
     this.mainWindow = window;
   }
 
   private sendProgress(progress: UpdateProgress): void {
+    this.lastUpdateProgress = progress;
     if (this.mainWindow && !this.mainWindow.isDestroyed()) {
       this.mainWindow.webContents.send(IPC_CHANNELS.APP_UPDATE_PROGRESS, progress);
     }
+  }
+
+  getDownloadStatus(): UpdateDownloadStatus {
+    return {
+      progress: this.lastUpdateProgress,
+      ready: this.downloadedUpdateVersion !== null,
+      latestVersion: this.downloadedUpdateVersion ?? undefined,
+      manual: this.downloadedUpdateManual,
+      path: this.manualUpdatePath ?? undefined,
+    };
   }
 
   private sendError(error: string): void {
@@ -293,11 +313,19 @@ export class UpdateManager {
   }
 
   async downloadAndInstallUpdate(updateInfo: UpdateInfo): Promise<void> {
+    if (this.downloadedUpdateVersion === updateInfo.latestVersion) {
+      if (this.lastUpdateProgress) this.sendProgress(this.lastUpdateProgress);
+      return;
+    }
+
     if (this.isUpdating) {
       throw new Error("Update already in progress");
     }
 
     this.isUpdating = true;
+    this.downloadedUpdateVersion = null;
+    this.downloadedUpdateManual = false;
+    this.manualUpdatePath = null;
 
     try {
       if (updateInfo.updateMode === "npm") {
@@ -314,6 +342,8 @@ export class UpdateManager {
           throw error;
         }
       }
+      this.downloadedUpdateVersion = updateInfo.latestVersion;
+      this.downloadedUpdateManual = this.manualUpdatePath !== null;
     } finally {
       this.isUpdating = false;
     }
@@ -607,6 +637,32 @@ export class UpdateManager {
   }
 
   private async downloadPackagedUpdate(updateInfo: UpdateInfo): Promise<void> {
+    let lastError: unknown;
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        await this.downloadPackagedUpdateOnce(updateInfo);
+        return;
+      } catch (error: unknown) {
+        lastError = error;
+        if (attempt === maxAttempts) break;
+
+        const detail = error instanceof Error ? error.message : String(error);
+        this.sendProgress({
+          phase: "downloading",
+          message: `Download interrupted (${detail}). Retrying ${attempt + 1}/${maxAttempts}...`,
+        });
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1500));
+      }
+    }
+
+    throw new Error(
+      `Update download failed after ${maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+  }
+
+  private async downloadPackagedUpdateOnce(updateInfo: UpdateInfo): Promise<void> {
     const release =
       this.latestRelease?.tag_name.replace(/^v/, "") === updateInfo.latestVersion
         ? this.latestRelease
