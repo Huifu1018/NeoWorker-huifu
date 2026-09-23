@@ -68,6 +68,7 @@ async function main() {
     outputText += (await page.getTextContent()).items.map((item) => item.str || '').join('');
   }
   assert.equal(imageCount, 1);
+  console.log(JSON.stringify({ phase: 'pdf-text', outputText, imageCount }));
   assert(outputText.normalize('NFKC').replace(/\s/g, '').includes('中文图片交付验证'));
   fs.writeFileSync(path.join(directory, 'images', 'corrupt.png'), 'invalid image bytes');
   for (const name of ['missing', 'corrupt']) {

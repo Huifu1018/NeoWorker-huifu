@@ -1,0 +1,48 @@
+name: PDF export smoke
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pdf-export:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Compile PDF tools
+        run: npm run build:electron
+      - name: Exercise PDF export
+        env:
+          NEOWORKER_QA_ASAR: ${{ github.workspace }}
+        run: node node_modules/electron/cli.js scripts/qa/pdf-delivery-smoke.cjs
+      - name: Collect failure evidence
+        if: failure()
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs=require('fs'),os=require('os'),path=require('path');
+          fs.mkdirSync('pdf-smoke-evidence',{recursive:true});
+          for(const name of fs.readdirSync(os.tmpdir()).filter(n=>n.startsWith('neoworker-pdf-smoke-'))) {
+            const dir=path.join(os.tmpdir(),name);
+            for(const file of ['final.pdf','drafts/translation.md']) {
+              const p=path.join(dir,file);
+              if(fs.existsSync(p)) fs.copyFileSync(p,path.join('pdf-smoke-evidence',name+'-'+path.basename(file)));
+            }
+          }
+          NODE
+      - uses: actions/upload-artifact@v6
+        if: failure()
+        with:
+          name: pdf-smoke-evidence-${{ matrix.os }}
+          path: pdf-smoke-evidence/*
+          if-no-files-found: ignore
