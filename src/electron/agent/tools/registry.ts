@@ -5,6 +5,7 @@ import * as path from "path";
 import { isArtifactRevisionRequest } from "../artifact-output-intent";
 import {
   DOCUMENT_TRANSLATION_GUIDANCE,
+  PDF_TRANSLATION_REFLOW_GUIDANCE,
   buildDocumentTaskMessage,
   getDocumentTranslationToolError,
   resolveDocumentTranslationContract,
@@ -777,6 +778,7 @@ export class ToolRegistry {
   }
 
   getDocumentTranslationGuidance(): string {
+    if (this.documentTranslationContract?.pdfReflow) return PDF_TRANSLATION_REFLOW_GUIDANCE;
     return this.documentTranslationContract?.preserveSource ? DOCUMENT_TRANSLATION_GUIDANCE : "";
   }
 

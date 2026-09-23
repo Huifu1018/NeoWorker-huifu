@@ -10,7 +10,7 @@ describe("source-preserving translation contract", () => {
     expect(resolveDocumentTranslationContract(message).preserveSource).toBe(true);
     expect(message).not.toContain("Please redesign");
   });
-  it.each(["pptx", "pdf", "xlsx", "docx", "xls", "odt"])("locks translation of %s without an explicit preserve-layout instruction", (format) => {
+  it.each(["pptx", "xlsx", "docx", "xls", "odt"])("locks translation of %s without an explicit preserve-layout instruction", (format) => {
     const contract = resolveDocumentTranslationContract(attached(format));
     expect(contract.preserveSource).toBe(true);
     for (const tool of ["create_presentation", "generate_presentation", "generate_document", "create_document", "create_spreadsheet", "generate_spreadsheet"]) {
@@ -18,6 +18,45 @@ describe("source-preserving translation contract", () => {
     }
     expect(getDocumentTranslationToolError(contract, "office_translation")).toBeNull();
     expect(getDocumentTranslationToolError(contract, "read_file")).toBeNull();
+  });
+  it.each([
+    "翻译成英文，输出pdf",
+    "请将附件 PDF 全文翻译成简体中文，保留全部原始图片、图表和内容顺序，输出中文 PDF。",
+    "Translate the PDF to English, preserve images and tables, output PDF.",
+    "翻译 PDF，不要求保持原版式，保留图片",
+  ])("allows ordinary PDF translation without requiring a magic reflow phrase: %s", (instruction) => {
+    const contract = resolveDocumentTranslationContract(attached("pdf", instruction));
+    expect(contract.preserveSource).toBe(false);
+    expect(contract.pdfReflow).toBe(true);
+    expect(getDocumentTranslationToolError(contract, "generate_document")).toBeNull();
+    expect(getDocumentTranslationToolError(contract, "create_document", { format: "pdf" })).toBeNull();
+  });
+  it.each([
+    "翻译 PDF，保持原版式不变",
+    "翻译 PDF，不要重新排版",
+    "翻译 PDF，不允许调整排版",
+    "Translate the PDF and preserve the original layout",
+    "Translate the PDF, do not reflow",
+    "Translate the PDF, do not allow reflow",
+  ])("retains explicitly requested PDF layout constraints: %s", (instruction) => {
+    const contract = resolveDocumentTranslationContract(attached("pdf", instruction));
+    expect(contract.preserveSource).toBe(true);
+    expect(contract.pdfReflow).not.toBe(true);
+    expect(getDocumentTranslationToolError(contract, "generate_document")).not.toBeNull();
+  });
+  it("preserves PDF translation context across continuations and language changes", () => {
+    const first = resolveDocumentTranslationContract(attached("pdf"));
+    expect(resolveDocumentTranslationContract("继续翻译", first)).toEqual(first);
+    const next = resolveDocumentTranslationContract("再给一个韩语版本", first);
+    expect(next.pdfReflow).toBe(true);
+    expect(next.request).toContain(".neoworker/uploads/123/source.pdf");
+    expect(resolveDocumentTranslationContract("查询明天的天气", next).pdfReflow).not.toBe(true);
+  });
+  it("does not carry a previous strict layout requirement into a newly attached PDF", () => {
+    const first = resolveDocumentTranslationContract(attached("pdf", "翻译并保持原版式"));
+    const next = resolveDocumentTranslationContract(attached("pdf", "翻译成英文，输出pdf"), first);
+    expect(next.pdfReflow).toBe(true);
+    expect(next.preserveSource).toBe(false);
   });
   it.each([
     "翻译成德语，输出一份PPT。此外，再进行分析，输出一份PDF文档",

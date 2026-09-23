@@ -1236,6 +1236,22 @@ describe("TaskExecutor entrypoint guards", () => {
     );
   });
 
+  it("shows the actual PDF layout blocker instead of promising a retry", () => {
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = { id: "pdf-layout-failure", status: "executing" };
+    executor.daemon = { updateTask: vi.fn() };
+    executor.emitEvent = vi.fn();
+    executor.appendConversationHistory = vi.fn();
+    executor.saveConversationSnapshot = vi.fn();
+    const reason = "当前工具尚不能可靠完成 PDF 原版式翻译，无法保证目标语言文字、字体和图文位置均保持正确。";
+    executor.finalizeArtifactFollowUpFailure(reason, "failed", [".pdf"]);
+    expect(executor.emitEvent).toHaveBeenCalledWith("follow_up_failed", expect.objectContaining({
+      technicalError: reason,
+      userMessage: reason,
+    }));
+    expect(executor.emitEvent).toHaveBeenCalledWith("assistant_message", expect.objectContaining({ message: reason }));
+  });
+
   it("reports a detected incomplete HTML draft instead of claiming no file exists", () => {
     const executor = Object.create(TaskExecutor.prototype) as Any;
     executor.task = {

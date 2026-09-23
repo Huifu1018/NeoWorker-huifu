@@ -511,7 +511,7 @@ describe("Skill tool", () => {
       await expect(registry.executeToolWithRuntime(name, {}, { runtime: "hermes" })).rejects.toThrow("原模板");
     });
     it("keeps the lock on continue and removes it on a new query", async () => {
-      registry.setDocumentTaskContext("翻译原文件 PDF");
+      registry.setDocumentTaskContext("翻译原文件 PDF，保持原版式");
       registry.setDocumentTaskContext("继续");
       expect(registry.getDocumentTranslationGuidance()).toContain("SOURCE-PRESERVING");
       expect(registry.getDocumentTranslationToolError("create_spreadsheet")).toContain("mcp_neoworker_office_translation");
@@ -523,7 +523,7 @@ describe("Skill tool", () => {
       expect(registry.getDocumentTranslationDeliveryError(["old.pdf"])).toBeNull();
     });
     it("does not accept rebuilt shell outputs as successful translation evidence", () => {
-      registry.setDocumentTaskContext("翻译 PDF");
+      registry.setDocumentTaskContext("翻译 PDF，保持原版式");
       expect(registry.getDocumentTranslationDeliveryError(["rebuilt.pdf"])).toContain("保真校验");
     });
     it("rejects JSON-only completion even when the source came from workspace context", () => {
@@ -535,12 +535,23 @@ describe("Skill tool", () => {
       registry.setDocumentTaskContext("翻译成中文\n\nAttached files:\n- original.pptx (.neoworker/uploads/123/original.pptx)");
       await expect((registry as Any).runOfficeTranslation({ action: "inspect", sourcePath: "test_min.pptx" })).rejects.toThrow("本轮指定的原附件");
     });
+    it.each(["翻译成英文，输出pdf", "翻译成中文，保留原始图片，输出PDF文档"])("does not stop ordinary PDF translation: %s", (instruction) => {
+      registry.setDocumentTaskContext(`${instruction}\n\nAttached files:\n- original.pdf (.neoworker/uploads/123/original.pdf)`);
+      expect(registry.getDocumentTranslationCapabilityError()).toBeNull();
+      expect(registry.getDocumentTranslationToolError("generate_document")).toBeNull();
+      expect(registry.getDocumentTranslationDeliveryError(["translated.pdf"])).toBeNull();
+      expect(registry.getDocumentTranslationGuidance()).toContain("Read all source pages");
+      expect(registry.getDocumentTranslationGuidance()).toContain("Preserve all source content");
+      registry.setDocumentTaskContext("继续翻译");
+      expect(registry.getDocumentTranslationCapabilityError()).toBeNull();
+      expect(registry.getDocumentTranslationGuidance()).toContain("PDF TRANSLATION WITH TEXT REFLOW");
+    });
     it("requires a separately verified copy for every source and reports PDF limitations", () => {
       registry.setDocumentTaskContext("翻译附件\n\nAttached files:\n- one.pptx (.neoworker/uploads/1/one.pptx)\n- two.pptx (.neoworker/uploads/1/two.pptx)");
       expect(registry.getDocumentTranslationDeliveryError([])).toContain("还有原附件");
-      registry.setDocumentTaskContext("翻译 PDF 成阿拉伯语，保留图片");
+      registry.setDocumentTaskContext("翻译 PDF 成阿拉伯语，保持原版式");
       expect(registry.getDocumentTranslationCapabilityError()).toContain("尚不能可靠完成");
-      registry.setDocumentTaskContext("翻译 PDF 成韩文，保留图片");
+      registry.setDocumentTaskContext("翻译 PDF 成韩文，保持原版式");
       expect(registry.getDocumentTranslationCapabilityError()).not.toContain("阿拉伯");
       registry.setDocumentTaskContext("翻译并重新排版 PDF");
       expect(registry.getDocumentTranslationCapabilityError()).toBeNull();

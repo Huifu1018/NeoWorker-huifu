@@ -3,6 +3,8 @@ import { compactGeneratedAttachmentContent, extractOfficeAttachmentKinds, stripG
 export interface DocumentTranslationContract {
   request: string;
   preserveSource: boolean;
+  /** PDF translation may reflow text without dropping source content or figures. */
+  pdfReflow?: boolean;
   /**
    * The user explicitly requested an additional PDF report alongside the
    * source-preserving translation. This is deliberately separate from the
@@ -68,7 +70,7 @@ export function resolveDocumentTranslationContract(
   previous?: DocumentTranslationContract,
 ): DocumentTranslationContract {
   const instruction = stripGeneratedTaskContext(message);
-  if (/^(?:继续|继续处理|重试|再试一次|continue|retry|try again)[。.!！\s]*$/i.test(instruction)) {
+  if (/^(?:继续|继续处理|继续翻译|重试|再试一次|continue|continue translating|retry|try again)[。.!！\s]*$/i.test(instruction) && extractOfficeAttachmentKinds(message).length === 0) {
     return previous || { request: message, preserveSource: false };
   }
   // Only user-authored instructions can authorize redesign, never source text.
@@ -79,17 +81,40 @@ export function resolveDocumentTranslationContract(
   const redesign = /(?:重新设计|重新排版|重做|更换模板|换模板|使用新模板|新建模板)|\b(?:redesign|rebuild|retemplate|use a new template)\b/i.test(withoutNegations);
   const translate = /(?:翻译|汉化|本地化|译成|译为)|\b(?:translate|translation|locali[sz]e)\b/i.test(instruction)
     || /(?:中文|英文|日语|日文|韩语|韩文|阿拉伯语|俄语).{0,6}版本/.test(instruction);
-  const hasDocument = extractOfficeAttachmentKinds(message).length > 0
+  const sourceKinds = extractOfficeAttachmentKinds(message);
+  const previousTranslation = Boolean(previous?.preserveSource || previous?.pdfReflow);
+  const hasDocument = sourceKinds.length > 0
     || /\.(?:pptx?|potx|xlsx?|xlsm|docx?|pdf|od[pts]|csv|rtf)\b|(?:PPT|PDF|Excel|Word|文档|原文件|原稿|附件|幻灯片|工作簿)/i.test(instruction)
-    || (translate && previous?.preserveSource === true);
-  const preserveSource = Boolean(translate && hasDocument && !redesign);
-  const allowSeparatePdfReport = preserveSource && requestsSeparatePdfReport(message);
-  const carrySource = preserveSource && previous?.preserveSource
-    && extractOfficeAttachmentKinds(message).length === 0
+    || (translate && previousTranslation);
+  const carrySource = translate && previousTranslation
+    && sourceKinds.length === 0
     && !/(?:\.(?:pptx?|xlsx?|docx?|pdf)\b|\b(?:pptx?|xlsx?|docx?|pdf)\b)/i.test(instruction);
+  const request = carrySource ? buildDocumentTaskMessage({ rawPrompt: message, prompt: previous!.request }) : message;
+  const effectiveKinds = extractOfficeAttachmentKinds(request);
+  const pdfSource = effectiveKinds.length > 0
+    ? effectiveKinds.every((kind) => kind === "pdf")
+    : (/\bpdf\b/i.test(instruction) && !/\b(?:pptx?|docx?|xlsx?|word|excel)\b/i.test(instruction))
+      || Boolean(carrySource && previous?.pdfReflow);
+  // Keeping images/content does not demand identical text geometry. Only
+  // user-authored layout requirements opt a PDF into the strict path.
+  const layoutInstruction = instruction.replace(
+    /(?:不要求|无需|不用|不必)\s*(?:严格)?\s*(?:保留|保持|沿用|维持)[^。；;\n]{0,40}(?:版式|排版|布局|格式)|\b(?:do not|don't|no need to)\s+(?:preserve|keep|retain)\s+(?:the\s+)?(?:original\s+)?(?:layout|formatting|format)\b/gi,
+    "",
+  );
+  const explicitLayout = /(?:保留|保持|沿用|维持)[^。；;\n]{0,16}(?:版式|排版|布局|格式)|(?:版式|排版|布局|格式)[^。；;\n]{0,8}(?:不变|一致)|(?:不要|不能|禁止|不允许|不)[^。；;\n]{0,8}(?:重新排版|重新设计|更改布局|调整排版|调整布局)|\b(?:preserve|keep|retain)\s+(?:the\s+)?(?:original\s+|exact\s+)?(?:layout|formatting|format)\b|\b(?:do not|don't|never|cannot|can't)\s+(?:allow\s+)?(?:redesign|reflow|reformat)\b/i.test(layoutInstruction);
+  const reflowPermission = withoutNegations.replace(
+    /(?:不要|不能|禁止|不允许|不可以|不同意|不)[^。；;\n]{0,8}(?:调整排版|调整布局)|\b(?:do not|don't|never|cannot|can't)\s+(?:allow\s+)?(?:reflow|reformat)\b/gi,
+    "",
+  );
+  const allowsPdfReflow = redesign || /(?:允许|可以|同意)[^。；;\n]{0,8}(?:调整排版|调整布局)|\b(?:allow|may|can)\s+(?:reflow|reformat)\b/i.test(reflowPermission);
+  const strictPdfLayout = !allowsPdfReflow && (explicitLayout || Boolean(carrySource && previous?.preserveSource));
+  const pdfReflow = Boolean(translate && hasDocument && pdfSource && !strictPdfLayout);
+  const preserveSource = Boolean(translate && hasDocument && !redesign && !pdfReflow);
+  const allowSeparatePdfReport = preserveSource && requestsSeparatePdfReport(message);
   return {
-    request: carrySource ? buildDocumentTaskMessage({ rawPrompt: message, prompt: previous.request }) : message,
+    request,
     preserveSource,
+    ...(pdfReflow ? { pdfReflow: true } : {}),
     ...(carrySource && previous?.allowSeparatePdfReport
       ? { allowSeparatePdfReport: true }
       : allowSeparatePdfReport
@@ -97,6 +122,14 @@ export function resolveDocumentTranslationContract(
         : {}),
   };
 }
+
+export const PDF_TRANSLATION_REFLOW_GUIDANCE = [
+  "PDF TRANSLATION WITH TEXT REFLOW:",
+  "Translate the full source PDF into the requested language and create a separate PDF output. Text may reflow with suitable fonts, line breaks and pagination; do not impose an identical-layout requirement unless the user asks for it.",
+  "Preserve all source content, numbers, tables, figures, captions and reading order. Reflow does not authorize summarizing, omitting pages, replacing original figures, or overwriting the source. Keep figures near their translated captions and related text.",
+  "Read all source pages before claiming a complete translation. A fallback preview or truncated excerpt is not full-document extraction. If extraction is incomplete, obtain the missing pages using available PDF tools; if that fails, explain the concrete blocker and do not label a partial translation as complete.",
+  'Use available PDF extraction tools and create_document with format="pdf" (or another available PDF generation tool) to produce the actual deliverable. office_translation is for editable Office files, not PDF sources. Do not rely on installing system packages as the default path. Verify the generated PDF\'s text, figures and layout and state any limits of the checks performed.',
+].join("\n");
 
 export const DOCUMENT_TRANSLATION_GUIDANCE = [
   "SOURCE-PRESERVING DOCUMENT TRANSLATION (required):",

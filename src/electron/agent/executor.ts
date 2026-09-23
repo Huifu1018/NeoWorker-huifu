@@ -2037,7 +2037,7 @@ export class TaskExecutor {
       /artifact is incomplete|failed structural validation|completion guard rejected/i.test(
         errorMessage,
       );
-    const translationFailure = /翻译产物尚未通过原文件保真校验|PDF 原版式翻译尚不支持/.test(errorMessage);
+    const translationFailure = /翻译产物尚未通过原文件保真校验|PDF 原版式翻译尚不支持|当前工具尚不能可靠完成 PDF 原版式翻译/.test(errorMessage);
     const userFacingMessage = translationFailure
       ? errorMessage
       : detectedButIncomplete
