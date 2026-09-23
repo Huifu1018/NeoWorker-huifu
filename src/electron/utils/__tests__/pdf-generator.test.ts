@@ -114,7 +114,7 @@ it("embeds manuscript-relative images and rejects missing or escaping images bef
     fs.mkdirSync(path.join(root, "images"));
     const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
     fs.writeFileSync(path.join(root, "images", "中文 图.png"), bytes);
-    const options = { imageBasePath: path.join(root, "drafts"), imageRootPath: root };
+    const options = { imageBasePath: fs.realpathSync.native(path.join(root, "drafts")), imageRootPath: root };
     const html = buildPDFHTML({ ...options, markdown: "![原图](<../images/中文 图.png>)" });
     expect(html).toContain(`src="data:image/png;base64,${bytes.toString("base64")}"`);
     expect(html).not.toContain('src="../');

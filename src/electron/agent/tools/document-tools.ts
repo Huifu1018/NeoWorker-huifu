@@ -1136,7 +1136,7 @@ export class DocumentTools {
         : "text/html";
       this.registerArtifact(this.taskId, result.path, mime, {
         workspaceOutputPath: result.path,
-        manuscriptPath: manuscriptPath ? path.relative(fs.realpathSync(this.workspacePath), manuscriptPath) : undefined,
+        manuscriptPath: manuscriptPath ? path.relative(fs.realpathSync.native(this.workspacePath), manuscriptPath) : undefined,
         requestedOutputPath: path.join(this.workspacePath, filename),
       });
     }

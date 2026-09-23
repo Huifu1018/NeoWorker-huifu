@@ -791,8 +791,10 @@ function embedPdfImage(href: string, options: PDFOptions): string {
   if (!path.isAbsolute(href) && /^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href)) {
     throw new Error(`PDF image must be a local file: ${href}`);
   }
-  const root = fs.realpathSync(options.imageRootPath || options.imageBasePath!);
-  const source = fs.realpathSync(/^file:/i.test(href) ? fileURLToPath(href) : path.resolve(options.imageBasePath!, decodeURIComponent(href)));
+  // Use the native resolver for both paths: Windows temp roots may use 8.3 aliases
+  // while manuscript paths have already been expanded by promises.realpath.
+  const root = fs.realpathSync.native(options.imageRootPath || options.imageBasePath!);
+  const source = fs.realpathSync.native(/^file:/i.test(href) ? fileURLToPath(href) : path.resolve(options.imageBasePath!, decodeURIComponent(href)));
   const relative = path.relative(root, source);
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error(`PDF image is outside the workspace: ${href}`);
