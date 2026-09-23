@@ -178,10 +178,10 @@ jobs:
           const entry=start<0?'':changelog.slice(start).split(/\n## \[/)[0]
             .replace(/\bHermes\b/gi, 'the execution service');
           fs.writeFileSync('desktop-release-notes.md',`# NeoWorker ${process.env.RELEASE_TAG}\n\n`+
-            `源码提交：\`${commit}\`。两端安装包均从此标签构建，通过回归、包内敏感信息扫描及安装启动检查。\n\n`+
-            `- macOS：Apple Silicon / arm64，下载 .dmg；应用为临时签名版本，未经过 Apple 公证。\n`+
-            `- Windows：x64，下载 -setup.exe。\n`+
-            `- SHA256SUMS 文件用于校验下载，build JSON 记录源码与构建来源。\n\n`+entry+'\n');
+            `Source commit: \`${commit}\` Both platform installers were built from this tag and passed regression tests, packaged-secret scans, and installation and launch checks.\n\n`+
+            `- macOS: Apple Silicon / arm64. Download the .dmg installer. The app is ad-hoc signed and is not notarized by Apple.\n`+
+            `- Windows: x64. Download the -setup.exe installer.\n`+
+            `- SHA256SUMS files verify downloads; build JSON files record the source commit and build provenance.\n\n`+entry+'\n');
           NODE
       - name: Upload assets and publish release
         shell: bash
