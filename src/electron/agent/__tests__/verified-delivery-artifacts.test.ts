@@ -105,3 +105,21 @@ describe("verified delivery artifacts", () => {
     expect(recoverVerifiedDeliveryEvents([event], "task", root)[0]).toBe(event);
   });
 });
+
+it("repairs an existing draft-only completion after the final PDF was renamed", () => {
+  fs.writeFileSync(path.join(root, "final.pdf"), "final PDF");
+  fs.writeFileSync(path.join(root, "manuscript.md"), "draft");
+  const event = { id: "done", taskId: "task", type: "task_completed", timestamp: Date.now(), payload: {
+    resultSummary: "## 完成\n**交付文件：** `final.pdf`\n译文为 `manuscript.md`，随后导出。",
+    outputSummary: { created: ["manuscript.md"], modifiedFallback: ["final.pdf"], primaryOutputPath: "manuscript.md", outputCount: 1 },
+  } } as TaskEvent;
+  const [recovered] = recoverVerifiedDeliveryEvents([event], "task", root);
+  expect(recovered.payload.outputSummary).toMatchObject({ created: [], modifiedFallback: ["final.pdf"], primaryOutputPath: "final.pdf", outputCount: 1 });
+  expect(event.payload.outputSummary.primaryOutputPath).toBe("manuscript.md");
+});
+
+it("supports English final-file labels and multiline delivery lists", () => {
+  fs.writeFileSync(path.join(root, "final.pdf"), "PDF");
+  for (const text of ["Final file: `final.pdf`", "## 交付文件：\n`final.pdf`"])
+    expect(verifyDeliveredArtifactSummary(text, root)?.modifiedFallback).toEqual(["final.pdf"]);
+});

@@ -11,7 +11,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "url";
+import { pathToFileURL, fileURLToPath } from "url";
 import { marked, Renderer } from "marked";
 import type { OfficeQualityReport } from "../office-document-quality";
 import { isSuspiciousPdfText } from "../pdf-text";
@@ -42,6 +42,9 @@ export interface PDFOptions {
   templateId?: string;
   sections?: PDFSection[];
   markdown?: string;
+  /** Local image references are relative to the manuscript, confined to this root. */
+  imageBasePath?: string;
+  imageRootPath?: string;
   format?: "A4" | "Letter";
   landscape?: boolean;
 }
@@ -367,6 +370,7 @@ async function renderPdfWithElectron(
   try {
     await window.loadURL(pathToFileURL(tempHtmlPath).toString());
     await waitForFonts(window.webContents);
+    await window.webContents.executeJavaScript(PDF_IMAGE_VALIDATION_SCRIPT, true);
     const renderedText = String(
       await window.webContents.executeJavaScript(
         "document.body ? document.body.innerText : ''",
@@ -425,6 +429,7 @@ async function renderPdfWithPlaywright(
       };
       await browserGlobal.document.fonts.ready;
     });
+    await page.evaluate(PDF_IMAGE_VALIDATION_SCRIPT);
     await page.emulateMedia({ media: "screen" });
     const renderedText = await page.locator("body").innerText();
     const parsed = path.parse(outputPath);
@@ -455,7 +460,7 @@ export async function generatePDF(
   options: PDFOptions,
 ): Promise<PDFGenerationResult> {
   const startedAt = Date.now();
-  const html = buildPDFHTML(options);
+  const html = buildPDFHTML({ ...options, imageBasePath: options.imageBasePath || path.dirname(outputPath), imageRootPath: options.imageRootPath || path.dirname(outputPath) });
   const expectedText = plainTextFromOptions(options);
   const parsedOutput = path.parse(outputPath);
   const evidenceDirectory = path.join(
@@ -579,13 +584,13 @@ export function buildPDFHTML(options: PDFOptions): string {
   }
 
   if (options.markdown) {
-    body += markdownToHtml(stripMatchingLeadingMarkdownTitle(options.markdown, options.title));
+    body += markdownToHtml(stripMatchingLeadingMarkdownTitle(options.markdown, options.title), options);
   }
 
   if (options.sections) {
     for (const section of options.sections) {
       if (section.heading) body += `<h2>${escapeHtml(section.heading)}</h2>\n`;
-      body += markdownToHtml(section.content);
+      body += markdownToHtml(section.content, options);
     }
   }
 
@@ -779,9 +784,42 @@ export function buildPDFHTML(options: PDFOptions): string {
 </html>`;
 }
 
-function markdownToHtml(md: string): string {
+// Resolve before Chromium sees the HTML: temporary HTML files must never determine
+// the meaning of a manuscript's relative image paths.
+function embedPdfImage(href: string, options: PDFOptions): string {
+  if (/^data:image\/(?:png|jpeg|gif|webp|svg\+xml);base64,/i.test(href)) return href;
+  if (!path.isAbsolute(href) && /^[a-z][a-z\d+.-]*:/i.test(href) && !/^file:/i.test(href)) {
+    throw new Error(`PDF image must be a local file: ${href}`);
+  }
+  const root = fs.realpathSync(options.imageRootPath || options.imageBasePath!);
+  const source = fs.realpathSync(/^file:/i.test(href) ? fileURLToPath(href) : path.resolve(options.imageBasePath!, decodeURIComponent(href)));
+  const relative = path.relative(root, source);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`PDF image is outside the workspace: ${href}`);
+  }
+  const mime = ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" } as Record<string, string>)[path.extname(source).toLowerCase()];
+  const stat = fs.statSync(source);
+  if (!mime || !stat.isFile() || stat.size === 0 || stat.size > 20 * 1024 * 1024) throw new Error(`Invalid PDF image: ${href}`);
+  return `data:${mime};base64,${fs.readFileSync(source).toString("base64")}`;
+}
+
+export const PDF_IMAGE_VALIDATION_SCRIPT = `(async () => {
+  for (const image of document.images) {
+    try {
+      await Promise.race([image.decode(), new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 15000))]);
+      if (!image.naturalWidth || !image.naturalHeight) throw new Error('empty image');
+    } catch { throw new Error('PDF image failed to load: ' + (image.alt || 'unnamed image')); }
+  }
+  return document.images.length;
+})()`;
+
+function markdownToHtml(md: string, options: PDFOptions): string {
   const renderer = new Renderer();
   renderer.html = ({ text }) => escapeHtml(text);
+  if (options.imageBasePath) renderer.image = ({ href, text, title }) => {
+    const source = embedPdfImage(href, options);
+    return `<img src="${escapeHtml(source)}" alt="${escapeHtml(text)}"${title ? ` title="${escapeHtml(title)}"` : ""}>`;
+  };
   return marked(md, { async: false, gfm: true, breaks: false, renderer });
 }
 

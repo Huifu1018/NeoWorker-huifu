@@ -1111,8 +1111,9 @@ export class DocumentTools {
 
   async generateDocument(input: Any): Promise<Any> {
     if (input.markdown_path && input.markdown) throw new Error("Use markdown or markdown_path, not both.");
-    const markdown = input.markdown_path
-      ? await fs.promises.readFile(await this.resolveWorkspaceSourcePath(input.markdown_path), "utf8")
+    const manuscriptPath = input.markdown_path ? await this.resolveWorkspaceSourcePath(input.markdown_path) : undefined;
+    const markdown = manuscriptPath
+      ? await fs.promises.readFile(manuscriptPath, "utf8")
       : input.markdown;
     const filename = sanitizeFilename(input.filename || "document.pdf");
     const outputPath = resolveVersionedOutputPath(
@@ -1124,6 +1125,8 @@ export class DocumentTools {
       titleColor: input.titleColor,
       author: input.author,
       markdown,
+      imageBasePath: manuscriptPath ? path.dirname(manuscriptPath) : this.workspacePath,
+      imageRootPath: this.workspacePath,
       sections: input.sections,
     });
 
@@ -1131,7 +1134,11 @@ export class DocumentTools {
       const mime = result.path.endsWith(".pdf")
         ? "application/pdf"
         : "text/html";
-      this.registerArtifact(this.taskId, result.path, mime);
+      this.registerArtifact(this.taskId, result.path, mime, {
+        workspaceOutputPath: result.path,
+        manuscriptPath: manuscriptPath ? path.relative(fs.realpathSync(this.workspacePath), manuscriptPath) : undefined,
+        requestedOutputPath: path.join(this.workspacePath, filename),
+      });
     }
 
     return {

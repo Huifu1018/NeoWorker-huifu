@@ -257,9 +257,21 @@ export function scopeTaskOutputFilesToLatestTurn(options: {
       break;
     }
   }
-  if (latestUserMessageIndex < 0) return options.files;
+  // The initial task also has a final delivery contract. Previously only
+  // follow-up turns were scoped, leaving stale cached exports in this panel.
+  const hasCompletion = options.events.some((event) => getEffectiveTaskEventType(event) === "task_completed");
+  if (latestUserMessageIndex < 0 && !hasCompletion) return options.files;
 
   const latestTurnOutputKeys = new Set<string>();
+  const completion = [...options.events.slice(Math.max(0, latestUserMessageIndex))].reverse().find(
+    (event) => getEffectiveTaskEventType(event) === "task_completed",
+  );
+  const finalSummary = completion?.payload?.outputSummary;
+  if (latestUserMessageIndex < 0 && finalSummary && finalSummary.outputCount > 0) {
+    const finalPaths: string[] = finalSummary.created?.length ? finalSummary.created : finalSummary.modifiedFallback || [];
+    const finalKeys = new Set(finalPaths.map((p) => getArtifactPathIdentityKey(p, options.workspacePath)));
+    return options.files.filter((file) => finalKeys.has(getArtifactPathIdentityKey(file.path, options.workspacePath)));
+  }
   for (const stack of collectEndOfTaskArtifactCardStacks(options.events, 32)) {
     if (stack.anchorEventIndex < latestUserMessageIndex) continue;
     for (const artifact of stack.artifacts) {

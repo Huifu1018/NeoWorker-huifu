@@ -62,6 +62,11 @@ describe("AgentDaemon.registerArtifact", () => {
     );
     expect(fs.readFileSync(registered.path, "utf8")).toBe("docx-content");
 
+    const payload: Record<string, unknown> = { path: sourcePath };
+    (AgentDaemon.prototype as Any).normalizeArtifactEventPayload.call(daemonLike, "task-1", "artifact_created", payload);
+    expect(payload.path).toBe(registered.path);
+    expect(payload.workspaceOutputPath).toBe(sourcePath);
+
     fs.rmSync(workspacePath, { recursive: true, force: true });
     expect(fs.readFileSync(registered.path, "utf8")).toBe("docx-content");
   });

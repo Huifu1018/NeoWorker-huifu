@@ -7694,6 +7694,7 @@ export class AgentDaemon extends EventEmitter {
           artifactPath: normalizedPath,
         });
         if (durablePath && fs.existsSync(durablePath)) {
+          payload.workspaceOutputPath = normalizedPath;
           normalizedPath = durablePath;
         }
       }

@@ -1283,3 +1283,19 @@ describe("ProjectContextPanel", () => {
     ).toEqual([]);
   });
 });
+
+it("shows only the final PDF in both delivery surfaces after generation and shell rename", async () => {
+  const { collectEndOfTaskArtifactCardStacks } = await import("../MainContent/artifact-logic");
+  const files = ["manuscript.md", "report.pdf", "report-v2.pdf", "final.pdf"].map((p) => ({ path: p, action: "created" as const, timestamp: 10 }));
+  const events = files.slice(0, 3).map((file, i) => ({ id: String(i), taskId: "task", type: "artifact_created", timestamp: i + 1, payload: { path: file.path } })) as TaskEvent[];
+  events.push({ id: "done", taskId: "task", type: "task_completed", timestamp: 10, payload: {
+    resultSummary: "交付文件：`final.pdf`", outputSummary: { created: [], modifiedFallback: ["final.pdf"], primaryOutputPath: "final.pdf", outputCount: 1, folders: ["."] },
+  } } as TaskEvent);
+  const stacks = collectEndOfTaskArtifactCardStacks(events);
+  expect(stacks.flatMap((s) => s.artifacts.map((a) => a.path))).toEqual(["final.pdf"]);
+  expect(scopeTaskOutputFilesToLatestTurn({ files, events })).toEqual([files[3]]);
+  const derived = deriveSharedTaskEventUiState({ task: { id: "task", status: "completed" } as Task, rawEvents: events, workspacePath: "/workspace" } as Any);
+  // Both projections must work after event history rehydration too.
+  expect(scopeTaskOutputFilesToLatestTurn({ files: derived.files, events })).toHaveLength(1);
+  expect(scopeTaskOutputFilesToLatestTurn({ files: derived.files, events })[0].path).toBe("final.pdf");
+});

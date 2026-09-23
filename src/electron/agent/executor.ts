@@ -16874,6 +16874,8 @@ ${transcript}
     };
     const createdMap = new Map<string, number>();
     const modifiedMap = new Map<string, number>();
+    const manuscripts = new Set<string>();
+    const generatedOutputs = new Map<string, string>();
     const resolveRelativePath = (rawPath: unknown): string | null => {
       if (typeof rawPath !== "string" || rawPath.trim().length === 0)
         return null;
@@ -16919,7 +16921,13 @@ ${transcript}
         if (event.payload?.type === "directory") continue;
         addPath(createdMap, event.payload?.path, ts);
       } else if (eventType === "artifact_created") {
-        addPath(createdMap, event.payload?.path, ts);
+        const outputPath = event.payload?.workspaceOutputPath || event.payload?.path;
+        addPath(createdMap, outputPath, ts);
+        const manuscript = resolveRelativePath(event.payload?.manuscriptPath);
+        if (manuscript) manuscripts.add(manuscript);
+        const requested = resolveRelativePath(event.payload?.requestedOutputPath);
+        const actual = resolveRelativePath(outputPath);
+        if (requested && actual) generatedOutputs.set(requested, actual);
       } else if (eventType === "file_modified") {
         const fromPath = resolveRelativePath(event.payload?.from);
         const toPath = resolveRelativePath(
@@ -16988,8 +16996,27 @@ ${transcript}
         .sort((a, b) => b[1] - a[1])
         .map(([p]) => p);
 
+    // Source manuscripts are editable working files, not an alternative to the
+    // document exported from them (unless the user explicitly requests Markdown).
+    for (const manuscript of manuscripts) {
+      if (requestedArtifactExtensions.has(path.extname(manuscript).toLowerCase())) continue;
+      createdMap.delete(manuscript);
+      modifiedMap.delete(manuscript);
+    }
+    for (const [requested, latest] of generatedOutputs) {
+      if (!createdMap.has(latest)) continue;
+      for (const event of fileEvents) {
+        if (resolveRelativePath(event.payload?.requestedOutputPath) !== requested) continue;
+        const previous = resolveRelativePath(event.payload?.workspaceOutputPath || event.payload?.path);
+        if (previous && previous !== latest) { createdMap.delete(previous); modifiedMap.delete(previous); }
+      }
+    }
+    // Explicit final deliveries are verified on disk even when a shell rename
+    // bypassed file events. Never let a newly written draft hide that final PDF.
+    const delivered = deliverySummary ? verifyDeliveredArtifactSummary(deliverySummary, this.workspace.path) : undefined;
+    if (delivered && (delivered.modifiedFallback || []).every(isUserFacingOutputPath)) return delivered;
     const created = toSortedPaths(createdMap);
-    const modifiedFallback = toSortedPaths(modifiedMap);
+    const modifiedFallback = toSortedPaths(modifiedMap).filter((p) => !createdMap.has(p));
     const effective = created.length > 0 ? created : modifiedFallback;
     if (effective.length === 0) {
       return deliverySummary

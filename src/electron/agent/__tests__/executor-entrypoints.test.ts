@@ -1588,3 +1588,28 @@ describe("TaskExecutor entrypoint guards", () => {
     expect(guidance).toBe("");
   });
 });
+
+it("delivers the current exported PDF, not its manuscript or stale durable copies", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-final-summary-"));
+  try {
+    for (const file of ["manuscript.md", "report.pdf", "report-v2.pdf"]) fs.writeFileSync(path.join(root, file), "content");
+    const events = [
+      { type: "file_created", timestamp: 1, payload: { path: "manuscript.md" } },
+      ...["report.pdf", "report-v2.pdf"].map((file, i) => ({ type: "artifact_created", timestamp: i + 2, payload: {
+        path: `/durable/artifacts/${file}`, workspaceOutputPath: path.join(root, file), manuscriptPath: path.join(root, "manuscript.md"), requestedOutputPath: path.join(root, "report.pdf"),
+      } })),
+    ];
+    const executor = Object.create(TaskExecutor.prototype) as Any;
+    executor.task = { id: "task" }; executor.workspace = { path: root };
+    executor.activeFollowUpCompletionContract = { requiredArtifactExtensions: [] };
+    executor.fileOperationTracker = { getCreatedFiles: () => ["manuscript.md"] };
+    executor.resolveWorkspaceMutationPathCandidate = (p: string) => path.resolve(root, p);
+    executor.getReplayEventType = (e: Any) => e.type;
+    executor.daemon = { getTaskEvents: () => events };
+    expect(executor.buildTaskOutputSummary().created).toEqual(["report-v2.pdf"]);
+    fs.renameSync(path.join(root, "report-v2.pdf"), path.join(root, "final.pdf"));
+    fs.unlinkSync(path.join(root, "report.pdf"));
+    const summary = executor.buildTaskOutputSummary(undefined, "## 完成\n**交付文件：** `final.pdf`\n译文为 `manuscript.md`。");
+    expect(summary).toMatchObject({ created: [], modifiedFallback: ["final.pdf"], primaryOutputPath: "final.pdf", outputCount: 1 });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

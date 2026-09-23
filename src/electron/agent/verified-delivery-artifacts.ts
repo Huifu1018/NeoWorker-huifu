@@ -4,7 +4,7 @@ import type { TaskEvent, TaskOutputSummary } from "../../shared/types";
 import { extractArtifactPathCandidates } from "./step-contract";
 
 const DELIVERY =
-  /交付(?:文件|物)?|已完成|已(?:成功)?(?:生成|保存|导出|写入)|(?:delivered|deliverables|completed|saved|generated|exported)\b/i;
+  /交付(?:文件|物)?|已完成|已(?:成功)?(?:生成|保存|导出|写入)|(?:delivered|deliverables|completed|saved|generated|exported|final (?:file|deliverable))\b/i;
 const NOT_DELIVERY =
   /(?:原文件|源文件|参考文件|输入文件|附件|未完成|未生成|尚未|不存在|失败|计划|准备|将要|如果|若需|可以|可选)|\b(?:source|input|attachment|reference|missing|failed|planned|could|would|if)\b/i;
 const EXTENSIONS = new Set([
@@ -38,7 +38,9 @@ export function verifyDeliveredArtifactSummary(
   }
   const verified = new Set<string>();
   let deliverySection = false;
-  for (const line of summary.slice(0, 80_000).split(/\r?\n/)) {
+  const lines = summary.slice(0, 80_000).split(/\r?\n/);
+  const explicitDeliveries = lines.filter((line) => /(?:交付文件|最终(?:成品|文件)|final (?:file|deliverable))\s*[:：*]/i.test(line) && !NOT_DELIVERY.test(line) && extractArtifactPathCandidates(line).length > 0);
+  for (const line of explicitDeliveries.length ? explicitDeliveries : lines) {
     const heading = /^\s*#{1,6}\s/.test(line);
     if (heading)
       deliverySection = DELIVERY.test(line) && !NOT_DELIVERY.test(line);
@@ -114,7 +116,10 @@ export function recoverVerifiedDeliveryEvents(
     )
       return event;
     const payload = event.payload;
-    if (payload?.outputSummary?.outputCount > 0) return event;
+    // A draft can be the old summary's only "created" file even when a final
+    // PDF was exported and renamed through the shell. Recheck explicit delivery.
+    if (payload?.outputSummary?.outputCount > 0 &&
+        !/(?:交付文件|最终(?:成品|文件)|final (?:file|deliverable))\s*[:：*]/i.test(String(payload.resultSummary || ""))) return event;
     if (
       payload?.terminalStatus &&
       !["ok", "partial_success"].includes(payload.terminalStatus)

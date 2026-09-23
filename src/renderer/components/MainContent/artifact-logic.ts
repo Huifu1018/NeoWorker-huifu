@@ -905,7 +905,18 @@ export function collectLatestEndOfTaskArtifactCards(
 
   const byKey = new Map<string, EndOfTaskArtifactCard>();
   eventStream.forEach((event, index) => {
-    for (const artifactPath of getTaskEventArtifactPaths(event, eventStream)) {
+    const eventPaths = getTaskEventArtifactPaths(event, eventStream);
+    if (getEffectiveTaskEventType(event) === "task_completed" && event.payload?.outputSummary) {
+      const { segmentStart } = getEventTurnBounds(eventStream, index);
+      const finalKeys = new Set(eventPaths.map((p) => {
+        const kind = getInlinePreviewKindForGeneratedFile({ path: p });
+        return kind ? getArtifactCardDisplayKey(p, kind) : "";
+      }));
+      for (const [key, card] of byKey) {
+        if (card.lastReferenceIndex >= segmentStart && !finalKeys.has(key)) byKey.delete(key);
+      }
+    }
+    for (const artifactPath of eventPaths) {
       const kind = getInlinePreviewKindForGeneratedFile({ path: artifactPath });
       if (!kind || !END_OF_TASK_ARTIFACT_KINDS.has(kind)) continue;
       if (!isEventInCompletedTurn(eventStream, index)) continue;

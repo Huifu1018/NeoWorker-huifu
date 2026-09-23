@@ -103,3 +103,24 @@ describe("PDF generator HTML", () => {
     expect(assessPdfTextIntegrity(text, text).passed).toBe(true);
   });
 });
+
+it("embeds manuscript-relative images and rejects missing or escaping images before rendering", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-images-"));
+  try {
+    fs.mkdirSync(path.join(root, "drafts"));
+    fs.mkdirSync(path.join(root, "images"));
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+    fs.writeFileSync(path.join(root, "images", "中文 图.png"), bytes);
+    const options = { imageBasePath: path.join(root, "drafts"), imageRootPath: root };
+    const html = buildPDFHTML({ ...options, markdown: "![原图](<../images/中文 图.png>)" });
+    expect(html).toContain(`src="data:image/png;base64,${bytes.toString("base64")}"`);
+    expect(html).not.toContain('src="../');
+    expect(() => buildPDFHTML({ ...options, markdown: "![missing](gone.png)" })).toThrow();
+    fs.symlinkSync(os.tmpdir(), path.join(root, "escape"));
+    expect(() => buildPDFHTML({ ...options, markdown: "![escape](../../outside.png)" })).toThrow();
+    expect(() => buildPDFHTML({ ...options, markdown: "![remote](https://example.com/image.png)" })).toThrow("local file");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
