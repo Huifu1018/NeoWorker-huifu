@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-24
+
+### Fixed
+
+- Restore PDF translation completion and reject incomplete test documents as final deliveries.
+- Extract complete PDF text and render original figures with the bundled renderer on macOS and Windows.
+- Embed manuscript-relative images in generated PDFs and stop delivery when a required image is missing or cannot be decoded.
+- Show the final PDF consistently in answer cards and the output panel, including after renaming; exclude intermediate manuscripts and superseded exports.
+- Recover verified final-file cards when reopening affected task history.
+
+### Changed
+
+- Align application metadata, visible version labels, installer names, update manifests, and download documentation with v0.2.3.
+
 ## [0.2.2] - 2026-09-22
 
 ### Changed

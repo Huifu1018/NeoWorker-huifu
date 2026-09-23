@@ -667,7 +667,7 @@ describe("DocumentTools", () => {
       "task-1",
       "/workspace/report.pdf",
       "application/pdf",
-      expect.objectContaining({ workspaceOutputPath: "/workspace/report.pdf", requestedOutputPath: "/workspace/report.pdf" }),
+      expect.objectContaining({ workspaceOutputPath: "/workspace/report.pdf", requestedOutputPath: path.join("/workspace", "report.pdf") }),
     );
   });
 

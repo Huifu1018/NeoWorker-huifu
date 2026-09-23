@@ -40,15 +40,15 @@
 </p>
 
 <p align="center">
-  <strong>下载 NeoWorker · v0.2.0</strong>
+  <strong>下载 NeoWorker · v0.2.3</strong>
 </p>
 <p align="center">
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.0/NeoWorker-0.2.0-arm64.dmg"><img src="../assets/readme/download-macos.svg" alt="下载 macOS 版 — Apple 芯片，DMG" width="248" height="72"></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.3/NeoWorker-0.2.3-arm64.dmg"><img src="../assets/readme/download-macos.svg" alt="下载 macOS 版 — Apple 芯片，DMG" width="248" height="72"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.0/NeoWorker-0.2.0-windows-x64-setup.exe"><img src="../assets/readme/download-windows.svg" alt="下载 Windows 版 — x64，EXE" width="248" height="72"></a>
+  <a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/download/v0.2.3/NeoWorker-0.2.3-windows-x64-setup.exe"><img src="../assets/readme/download-windows.svg" alt="下载 Windows 版 — x64，EXE" width="248" height="72"></a>
 </p>
 <p align="center">
-  <sub><a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0">更新说明与其他平台</a></sub>
+  <sub><a href="https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.3">更新说明与其他平台</a></sub>
 </p>
 
 ## NeoWorker 是什么？
@@ -99,7 +99,7 @@ NeoWorker 聚焦把 AI 从对话助手升级为能够持续理解上下文、执
 
 ## 当前版本
 
-当前公开版本为 **`v0.2.0`**（安装包语义版本为 `0.2.0`），与 NeoWorker 应用内显示一致。GitHub Release 提供：
+当前公开版本为 **`v0.2.3`**（安装包语义版本为 `0.2.3`），与 NeoWorker 应用内显示一致。本次更新改进 PDF 翻译与交付：完整提取正文、内置原图渲染、校验图片嵌入，并统一最终 PDF 卡片。中间稿和旧版导出文件不再混入最终交付列表。GitHub Release 提供：
 
 - macOS Apple Silicon `.dmg`
 - Windows `.exe` 安装程序
@@ -115,18 +115,18 @@ NeoWorker 聚焦把 AI 从对话助手升级为能够持续理解上下文、执
 
 | 平台 | 安装包 | 安装方式 |
 | --- | --- | --- |
-| **macOS（Apple Silicon）** | `NeoWorker-0.2.0-arm64.dmg` | 打开磁盘映像，将 NeoWorker 拖入“应用程序”。 |
-| **Windows（x64）** | `NeoWorker-0.2.0-windows-x64-setup.exe` | 运行安装程序并按提示完成安装。 |
+| **macOS（Apple Silicon）** | `NeoWorker-0.2.3-arm64.dmg` | 打开磁盘映像，将 NeoWorker 拖入“应用程序”。 |
+| **Windows（x64）** | `NeoWorker-0.2.3-windows-x64-setup.exe` | 运行安装程序并按提示完成安装。 |
 
 #### 校验下载文件
 
-桌面安装包使用 Electron 更新清单 `latest-mac.yml` 和 `latest.yml`。打开安装包前，请确认清单中的版本和文件名均为 `0.2.0`。
+桌面安装包使用 Electron 更新清单 `latest-mac.yml` 和 `latest.yml`。打开安装包前，请确认清单中的版本和文件名均为 `0.2.3`。
 
 #### macOS 安装须知
 
-NeoWorker v0.2.0 的 macOS 安装包适用于 Apple Silicon，当前为未签名构建，因此首次启动时可能需要针对 NeoWorker 完成一次 Gatekeeper 放行。
+NeoWorker v0.2.3 的 macOS 安装包适用于 Apple Silicon，当前为未签名构建，因此首次启动时可能需要针对 NeoWorker 完成一次 Gatekeeper 放行。
 
-1. 从官方 [NeoWorker v0.2.0 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0) 页面下载 `NeoWorker-0.2.0-arm64.dmg`。
+1. 从官方 [NeoWorker v0.2.3 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.3) 页面下载 `NeoWorker-0.2.3-arm64.dmg`。
 2. 双击打开下载的磁盘映像，将 **NeoWorker** 拖到 **应用程序（Applications）** 文件夹。
 
    <p align="left">
@@ -175,7 +175,7 @@ open "/Applications/NeoWorker.app"
 
 #### Windows 安装须知
 
-1. 从官方 [NeoWorker v0.2.0 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.0) 页面下载 `NeoWorker-0.2.0-windows-x64-setup.exe`。
+1. 从官方 [NeoWorker v0.2.3 Release](https://github.com/Yuan-lab-LLM/NeoWorker/releases/tag/v0.2.3) 页面下载 `NeoWorker-0.2.3-windows-x64-setup.exe`。
 2. 双击安装程序，按界面提示完成安装。
 3. 如果 Windows SmartScreen 显示**“Windows 已保护你的电脑”**，先确认文件名是本 Release 提供的 NeoWorker 安装程序，再点击**“更多信息” → “仍要运行”**。
 4. 安装完成后，从开始菜单或桌面快捷方式启动 **NeoWorker**。

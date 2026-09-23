@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing source tag to build and publish
         required: true
-        default: v0.2.2
+        default: v0.2.3
 
 permissions:
   contents: read
@@ -79,6 +79,8 @@ jobs:
           set -euo pipefail
           npx vitest --config config/vitest.config.ts run src/electron/updater/__tests__/update-manager-config.test.ts src/renderer/components/__tests__/Sidebar.test.ts --maxWorkers=1
           node --test scripts/qa/desktop-smoke-process.test.mjs
+      - name: PDF delivery regressions
+        run: npx vitest --config config/vitest.config.ts run src/electron/utils/__tests__/pdf-generator.test.ts src/electron/agent/__tests__/verified-delivery-artifacts.test.ts src/renderer/components/__tests__/ProjectContextPanel.test.ts src/renderer/components/__tests__/main-content-working-state.test.ts --maxWorkers=1
       - name: PPT content-editing regressions
         run: npx vitest --config config/vitest.config.ts run src/electron/agent/__tests__/presentation-edit-policy.test.ts src/electron/agent/tools/__tests__/use-skill.test.ts src/electron/agent/tools/__tests__/skill-tools-artifact-registration.test.ts src/electron/agent/tools/__tests__/office-artifact-input-normalizer.test.ts --maxWorkers=1
       - name: Native PPT template regressions
@@ -107,6 +109,9 @@ jobs:
           node scripts/qa/public-search-smoke.cjs
           node scripts/qa/office-render-smoke.cjs
           node node_modules/electron/cli.js scripts/qa/translation-text-fit-fixtures.cjs
+      - name: Packaged PDF image delivery smoke
+        shell: bash
+        run: node node_modules/electron/cli.js scripts/qa/pdf-delivery-smoke.cjs
       - name: Scan packaged app for secrets
         run: npm run package:secrets:verify
       - name: Install, launch and uninstall Windows app
