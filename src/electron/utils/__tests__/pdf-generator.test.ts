@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assessPdfTextIntegrity,
+  assertPdfHeadingsPresent,
   buildPDFHTML,
   contentBlocksToMarkdown,
 } from "../document-generators/pdf-generator";
@@ -123,4 +124,11 @@ it("embeds manuscript-relative images and rejects missing or escaping images bef
     expect(() => buildPDFHTML({ ...options, markdown: "![escape](../../outside.png)" })).toThrow();
     expect(() => buildPDFHTML({ ...options, markdown: "![remote](https://example.com/image.png)" })).toThrow("local file");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+it("rejects missing final PDF headings even when the body remains readable", () => {
+  expect(() => assertPdfHeadingsPresent(["中文图片交付验证"], "这是一份包含原始图片的中文文档。"))
+    .toThrow("missing a heading");
+  expect(() => assertPdfHeadingsPresent(["中文图片交付验证"], "中⽂ 图⽚ 交付 验证\n正文内容"))
+    .not.toThrow();
 });

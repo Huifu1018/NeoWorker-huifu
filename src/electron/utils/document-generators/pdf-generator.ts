@@ -69,6 +69,7 @@ export interface PdfTextIntegrityResult {
 interface PdfRenderResult {
   previewPath: string;
   renderedText: string;
+  headings: string[];
 }
 
 function normalizeHeadingColor(value?: string): string | undefined {
@@ -259,8 +260,8 @@ export function assessPdfTextIntegrity(
   expectedText: string,
   extractedText: string,
 ): PdfTextIntegrityResult {
-  const expected = expectedText.replace(/\s+/g, " ").trim();
-  const extracted = extractedText.replace(/\s+/g, " ").trim();
+  const expected = expectedText.normalize("NFKC").replace(/\s+/g, " ").trim();
+  const extracted = extractedText.normalize("NFKC").replace(/\s+/g, " ").trim();
   const expectedCjkCharacters = countCjk(expected);
   const extractedCjkCharacters = countCjk(extracted);
   const expectedCjkSet = new Set(
@@ -311,6 +312,17 @@ export function assessPdfTextIntegrity(
     extractedCjkCharacters,
     cjkUniqueCoverage,
   };
+}
+
+/** A mostly intact body must not hide headings lost by the print renderer. */
+export function assertPdfHeadingsPresent(headings: string[], finalText: string): void {
+  const normalize = (value: string) => value.normalize("NFKC").replace(/\s/g, "");
+  const text = normalize(finalText);
+  for (const heading of headings) {
+    if (normalize(heading) && !text.includes(normalize(heading))) {
+      throw new Error(`Final PDF is missing a heading: ${heading.slice(0, 120)}`);
+    }
+  }
 }
 
 async function waitForFonts(webContents: {
@@ -395,7 +407,10 @@ async function renderPdfWithElectron(
       preferCSSPageSize: true,
     });
     fs.writeFileSync(outputPath, pdfBuffer);
-    return { previewPath, renderedText };
+    const headings: string[] = await window.webContents.executeJavaScript(
+      "Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'), node => node.innerText)", true,
+    );
+    return { previewPath, renderedText, headings };
   } finally {
     if (!window.isDestroyed()) window.destroy();
     fs.rmSync(tempHtmlPath, { force: true });
@@ -445,7 +460,8 @@ async function renderPdfWithPlaywright(
       margin: { top: "1cm", right: "1.5cm", bottom: "1cm", left: "1.5cm" },
       preferCSSPageSize: true,
     });
-    return { previewPath, renderedText };
+    const headings: string[] = await page.locator("h1,h2,h3,h4,h5,h6").allInnerTexts();
+    return { previewPath, renderedText, headings };
   } finally {
     await browser.close();
   }
@@ -512,6 +528,9 @@ export async function generatePDF(
           "Final PDF layout review did not pass.",
       );
     }
+    const finalIntegrity = assessPdfTextIntegrity(expectedText, layoutReview.text);
+    if (!finalIntegrity.passed) throw new Error(finalIntegrity.message);
+    assertPdfHeadingsPresent(renderResult.headings, layoutReview.text);
     const finalPageEvidence = renderFinalPdfPages(outputPath, evidenceDirectory);
     const visualPreviewPath = finalPageEvidence?.previewPath || renderResult.previewPath;
     if (finalPageEvidence && finalPageEvidence.pagePaths.length !== pageCount) {
@@ -635,13 +654,10 @@ export function buildPDFHTML(options: PDFOptions): string {
     @font-face {
       font-family: "NeoWorker CJK";
       src: local("PingFang SC"), local("Hiragino Sans GB"), local("Microsoft YaHei"), local("Noto Sans CJK SC"), local("Noto Sans SC"), local("Source Han Sans SC"), local("Arial Unicode MS");
-      font-style: normal; font-weight: 400; font-display: block;
+      font-style: normal; font-weight: 400; font-display: swap;
     }
-    @font-face {
-      font-family: "NeoWorker CJK";
-      src: local("PingFang SC Semibold"), local("Hiragino Sans GB W6"), local("Microsoft YaHei Bold"), local("Noto Sans CJK SC Bold"), local("Noto Sans SC Bold"), local("Source Han Sans SC Bold"), local("Arial Unicode MS");
-      font-style: normal; font-weight: 600 900; font-display: block;
-    }
+    /* Synthesize bold from the available face instead of loading optional system
+       bold fonts, which can remain invisible when macOS has not downloaded them. */
     :root { font-family: "NeoWorker CJK", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Arial Unicode MS", sans-serif; }
     * { box-sizing: border-box; }
     html, body { background: #fff; }

@@ -15,6 +15,8 @@ app.setPath('userData', path.join(directory, 'profile'));
 process.env.NEOWORKER_USER_DATA_DIR = path.join(directory, 'profile');
 app.on('window-all-closed', () => {});
 
+const timeout = setTimeout(() => { console.error('PDF smoke timed out'); app.exit(1); }, 180_000);
+
 async function main() {
   await app.whenReady();
   assert.equal(require(asar + '/package.json').version, require(root + '/package.json').version);
@@ -34,6 +36,7 @@ async function main() {
     doc.end();
     stream.on('finish', resolve).on('error', reject);
   });
+  console.log('PDF smoke: render original figure');
   await renderPdfPages(source, path.join(directory, 'images'), {
     firstPage: 1, lastPage: 1, crop: { x: 0.1, y: 0.1, width: 1 / 3, height: 0.1875 },
   });
@@ -53,7 +56,9 @@ async function main() {
   fs.writeFileSync(path.join(directory, 'drafts', 'translation.md'), text);
   const artifacts = [];
   const tools = new DocumentTools(directory, 'pdf-release-smoke', (...args) => artifacts.push(args));
+  console.log('PDF smoke: export translated PDF');
   const exported = await tools.generateDocument({ filename: 'final.pdf', markdown_path: 'drafts/translation.md' });
+  console.log('PDF smoke: validate final PDF');
   assert.equal(exported.success, true);
   assert.equal(artifacts.length, 1);
   assert.equal(artifacts[0][3].manuscriptPath, path.join('drafts', 'translation.md'));
@@ -81,9 +86,11 @@ async function main() {
 }
 
 main().then(() => {
+  clearTimeout(timeout);
   fs.rmSync(directory, { recursive: true, force: true });
   app.exit(0);
 }, (error) => {
+  clearTimeout(timeout);
   console.error(error);
   console.error('PDF smoke evidence retained at ' + directory);
   app.exit(1);
