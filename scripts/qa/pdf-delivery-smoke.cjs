@@ -87,9 +87,14 @@ async function main() {
 
 main().then(() => {
   clearTimeout(timeout);
-  fs.rmSync(directory, { recursive: true, force: true });
+  // Chromium can hold its temporary profile open until process exit on Windows.
+  try { fs.rmSync(directory, { recursive: true, force: true }); }
+  catch (error) {
+    if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(error.code)) throw error;
+    console.log('Temporary browser profile will be removed by runner cleanup.');
+  }
   app.exit(0);
-}, (error) => {
+}).catch((error) => {
   clearTimeout(timeout);
   console.error(error);
   console.error('PDF smoke evidence retained at ' + directory);
