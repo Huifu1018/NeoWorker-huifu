@@ -99,7 +99,7 @@ NeoWorker focuses on turning AI from a conversational assistant into a personal 
 
 ## Current version
 
-The current release is **<code>v0.2.3</code>** (package version <code>0.2.3</code>). This release improves PDF translation and delivery: complete text extraction, built-in original-figure rendering, validated image embedding, and consistent final PDF cards. Intermediate manuscripts and superseded exports stay out of the final deliverables list.
+The current release is **<code>v0.2.3</code>** (package version <code>0.2.3</code>). This release improves PDF translation and delivery: complete text extraction, built-in original-figure rendering, validated image embedding on both desktop platforms, readable Chinese headings, and consistent final PDF cards. Intermediate manuscripts and superseded exports stay out of the final deliverables list.
 
 The official GitHub Release includes:
 

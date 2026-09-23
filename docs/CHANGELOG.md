@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Restore PDF translation completion and reject incomplete test documents as final deliveries.
 - Extract complete PDF text and render original figures with the bundled renderer on macOS and Windows.
-- Embed manuscript-relative images in generated PDFs and stop delivery when a required image is missing or cannot be decoded.
+- Embed manuscript-relative images in generated PDFs, including Windows temporary-directory aliases, and stop delivery when a required image is missing or cannot be decoded.
+- Keep Chinese PDF headings visible when optional system bold fonts are unavailable, and check headings against the final printed text.
 - Show the final PDF consistently in answer cards and the output panel, including after renaming; exclude intermediate manuscripts and superseded exports.
 - Recover verified final-file cards when reopening affected task history.
 
