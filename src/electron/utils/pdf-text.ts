@@ -98,9 +98,12 @@ export function isSuspiciousPdfText(text: string): boolean {
   }
 
   const tokens = normalized.split(/\s+/).filter(Boolean);
+  // Vocabulary diversity naturally falls with document length. Applying a
+  // whole-document ratio rejects valid books/reports and loses their text.
   if (tokens.length >= 10) {
     const uniqueTokens = new Set(tokens).size;
-    if (uniqueTokens / tokens.length < 0.5) {
+    if ((tokens.length <= 200 && uniqueTokens / tokens.length < 0.5)
+      || (tokens.length > 200 && uniqueTokens < 10)) {
       return true;
     }
   }
@@ -227,7 +230,7 @@ export async function extractPdfText(
     reviewText = extractTextFromReview(review);
     reviewPageCount = Math.max(1, Math.floor(review.pageCount || reviewPageCount || 1));
     reviewMode = review.extractionMode || "fallback";
-    reviewPreviewLimited = Boolean(review.truncatedPages);
+    reviewPreviewLimited = Boolean(review.truncatedPages || review.pages.some((page) => page.truncated));
   } catch {
     reviewText = "";
     reviewPreviewLimited = false;
@@ -254,7 +257,7 @@ export async function extractPdfText(
         : "complete",
       extractionNote: usingFallback
         ? reviewPreviewLimited
-          ? "partial preview extracted from fallback reader; later pages were omitted"
+          ? "partial preview extracted from fallback reader; some source text was omitted"
           : reviewMode === "ocrmypdf"
             ? "complete via document OCR fallback"
             : reviewMode === "page-ocr"

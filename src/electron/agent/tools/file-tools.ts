@@ -1142,7 +1142,7 @@ export class FileTools {
       return {
         content,
         size,
-        truncated: sliced.truncated,
+        truncated: sliced.truncated || extractedPdf.previewLimited,
         format: "pdf",
         window: sliced.window,
         pdf_extraction: {

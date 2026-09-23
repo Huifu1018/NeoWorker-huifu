@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile as execFileCallback } from "child_process";
 import { promisify } from "util";
+import { pathToFileURL } from "node:url";
 import { parsePdfBuffer } from "./pdf-parser";
 import {
   OCR_TIMEOUT_MS,
@@ -17,13 +18,6 @@ import type {
 } from "../../shared/types";
 
 const execFile = promisify(execFileCallback);
-
-type ExtractedTextItem = {
-  str?: unknown;
-  transform: number[];
-  width?: number;
-  height?: number;
-};
 
 type PdfReviewOptions = {
   maxPages?: number;
@@ -84,26 +78,6 @@ function normalizeWhitespace(value: string): string {
     .trim();
 }
 
-function groupTextLines(items: Array<{ str: string; x: number; y: number }>): string {
-  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x);
-  const lines: Array<{ text: string; y: number }> = [];
-  const lineTolerance = 8;
-
-  for (const item of sorted) {
-    const existing = lines[lines.length - 1];
-    if (!existing || Math.abs(existing.y - item.y) > lineTolerance) {
-      lines.push({ text: item.str, y: item.y });
-    } else {
-      existing.text = `${existing.text} ${item.str}`;
-    }
-  }
-
-  return lines
-    .map((line) => normalizeWhitespace(line.text))
-    .filter(Boolean)
-    .join("\n");
-}
-
 function truncateText(value: string, maxChars: number): { text: string; truncated: boolean } {
   if (value.length <= maxChars) {
     return { text: value, truncated: false };
@@ -114,8 +88,11 @@ function truncateText(value: string, maxChars: number): { text: string; truncate
   };
 }
 
+// Preserve native ESM loading in the CommonJS Electron build.
+const importPdfJs = new Function("specifier", "return import(specifier)") as
+  (specifier: string) => Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")>;
 async function loadPdfJs() {
-  return import("pdfjs-dist/legacy/build/pdf.mjs");
+  return importPdfJs(pathToFileURL(require.resolve("pdfjs-dist/legacy/build/pdf.mjs")).href);
 }
 
 async function isOcrmypdfInstalled(): Promise<boolean> {
@@ -211,20 +188,13 @@ async function runPdfPageOcr(imagePath: string): Promise<string | null> {
 }
 
 async function extractPageText(page: Any): Promise<string> {
-  const viewport = page.getViewport({ scale: 1 });
   const textContent = await page.getTextContent();
-  const textItems = textContent.items as ExtractedTextItem[];
-  const lines = textItems
-    .filter((item) => typeof item.str === "string" && String(item.str).trim().length > 0)
-    .map((item) => {
-      const [x, y] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
-      return {
-        str: String(item.str),
-        x,
-        y,
-      };
-    });
-  return groupTextLines(lines);
+  // Preserve PDF.js content-stream order and its line breaks. Sorting all
+  // glyphs by page Y interleaves separate columns in papers and reports.
+  return normalizeWhitespace(textContent.items
+    .filter((item: { str?: unknown }) => typeof item.str === "string")
+    .map((item: { str: string; hasEOL?: boolean }) => `${item.str}${item.hasEOL ? "\n" : " "}`)
+    .join(""));
 }
 
 function buildReviewBlock(pageIndex: number, text: string, usedOcr: boolean): string {
@@ -432,7 +402,7 @@ async function extractPdfReviewDataImpl(
 
   try {
     const pdfjs = await loadPdfJs();
-    const loadingTask = pdfjs.getDocument({ data: buffer });
+    const loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false });
     const document = await loadingTask.promise;
 
     const pageLimit = Math.min(document.numPages, maxPages);
@@ -476,7 +446,8 @@ async function extractPdfReviewDataImpl(
       decision.extractionMode,
       decision.forcePageOcr,
     );
-  } catch {
+  } catch (error) {
+    console.warn("[PdfReview] Native reader failed; trying compatibility reader:", error instanceof Error ? error.message : String(error));
     try {
       const legacy = await parsePdfBuffer(buffer);
       const fallbackText = normalizeWhitespace(legacy.text || "");

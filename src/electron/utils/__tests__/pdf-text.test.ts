@@ -16,7 +16,7 @@ vi.mock("../pdf-review", () => ({
   extractPdfReviewData: extractPdfReviewDataMock,
 }));
 
-import { extractPdfText } from "../pdf-text";
+import { extractPdfText, isSuspiciousPdfText } from "../pdf-text";
 
 describe("extractPdfText", () => {
   let tmpDir: string;
@@ -85,7 +85,7 @@ describe("extractPdfText", () => {
       usedFallback: true,
       previewLimited: true,
       extractionStatus: "preview",
-      extractionNote: "partial preview extracted from fallback reader; later pages were omitted",
+      extractionNote: "partial preview extracted from fallback reader; some source text was omitted",
     });
     expect(extractPdfReviewDataMock).toHaveBeenCalledOnce();
   });
@@ -150,5 +150,35 @@ describe("extractPdfText", () => {
 
     expect(result.extractionStatus).toBe("empty");
     expect(result.extractionNote).toContain("corrupted or mojibake");
+  });
+
+  it("accepts long documents with repeated normal vocabulary", async () => {
+    const pdfPath = path.join(tmpDir, "long-report.pdf");
+    await fs.writeFile(pdfPath, Buffer.from("%PDF-1.7"));
+    const text = Array.from({ length: 80 }, (_, i) =>
+      `Section ${i}: The agent reads the document and checks each result before delivering the translated report to the user. Detail${i} explains scenario${i}.`,
+    ).join("\n");
+    parsePdfBufferMock.mockResolvedValue({ text, numpages: 12 });
+    const result = await extractPdfText(pdfPath);
+    expect(result.text).toBe(text);
+    expect(result.extractionStatus).toBe("complete");
+    expect(extractPdfReviewDataMock).not.toHaveBeenCalled();
+  });
+
+  it("marks extraction incomplete when text within a page was cut", async () => {
+    const pdfPath = path.join(tmpDir, "dense.pdf");
+    await fs.writeFile(pdfPath, Buffer.from("%PDF-1.7"));
+    parsePdfBufferMock.mockRejectedValue(new Error("primary reader unavailable"));
+    extractPdfReviewDataMock.mockResolvedValue({
+      pageCount: 1, truncatedPages: false, extractionMode: "native",
+      pages: [{ pageIndex: 0, text: "Only the start of this long page was extracted.", truncated: true }],
+    });
+    const result = await extractPdfText(pdfPath);
+    expect(result.previewLimited).toBe(true);
+    expect(result.extractionStatus).toBe("preview");
+  });
+
+  it("still rejects long repetitive garbage", () => {
+    expect(isSuspiciousPdfText("garbled text ".repeat(300))).toBe(true);
   });
 });

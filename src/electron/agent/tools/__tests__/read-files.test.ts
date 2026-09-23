@@ -105,6 +105,18 @@ describe("readFilesByPatterns", () => {
     expect(extractPdfTextMock).toHaveBeenCalledOnce();
   });
 
+  it("marks partial PDF extraction as truncated even when it fits the read window", async () => {
+    writeFile(path.join(tmpDir, "partial.pdf"), "%PDF-1.7");
+    extractPdfTextMock.mockResolvedValue({
+      text: "Only page one", pageCount: 12, extractionMode: "fallback",
+      usedFallback: true, previewLimited: true, extractionStatus: "preview",
+      extractionNote: "Partial extraction",
+    });
+    const out = await fileTools.readFile("partial.pdf");
+    expect(out.truncated).toBe(true);
+    expect(out.pdf_extraction?.preview_limited).toBe(true);
+  });
+
   it("supports exclusion patterns with leading !", async () => {
     writeFile(path.join(tmpDir, "src", "a.ts"), "export const a = 1;\n");
     writeFile(path.join(tmpDir, "src", "b.ts"), "export const b = 2;\n");

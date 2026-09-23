@@ -41,7 +41,7 @@ export interface ParseDocumentResult {
   format: string;
   /** File extension that was detected */
   detected_type: string;
-  /** True if the output was truncated to max_chars */
+  /** True if output or PDF extraction is incomplete. Check pdf_extraction and next_start_char. */
   truncated: boolean;
   char_count: number;
   total_char_count: number;
@@ -59,8 +59,8 @@ export interface ParseDocumentResult {
 }
 
 const DEFAULT_MAX_CHARS = 50_000;
-const PDF_MAX_PAGES = 16;
-const PDF_MAX_CHARS_PER_PAGE = 1_600;
+const PDF_MAX_PAGES = 200;
+const PDF_MAX_CHARS_PER_PAGE = 50_000;
 const PDF_MAX_OCR_PAGES = 4;
 
 export function calculateDocumentWindow(input: {
@@ -180,7 +180,7 @@ export class DocumentParserTools {
       prefixLength: contentPrefix.length,
     });
     const end = window.end;
-    const truncated = end < totalCharCount;
+    const truncated = end < totalCharCount || Boolean(pdfExtraction?.preview_limited);
     const finalContent = `${contentPrefix}${content.slice(start, end)}${window.note}`;
 
     return {
@@ -366,7 +366,9 @@ export class DocumentParserTools {
         description:
           "Read and extract text from a local document file. Supports PDF, DOCX, XLSX, PPTX, CSV, JSON, and Markdown. " +
           "Output is capped at max_chars (default 50,000). Use format='structured' for tabular data (CSV/XLSX) " +
-          "to receive markdown tables. Prefer read_file for plain text files.",
+          "to receive markdown tables. Follow next_start_char to read remaining text. For PDFs, check pdf_extraction: " +
+          "preview_limited means the source extraction itself is incomplete, not just the output window; never treat that preview as the full document. " +
+          "Prefer read_file for plain text files.",
         input_schema: {
           type: "object" as const,
           properties: {

@@ -76,10 +76,23 @@ describe("DocumentParserTools", () => {
     });
     expect(extractPdfTextMock).toHaveBeenCalledWith(fs.realpathSync(pdfPath), {
       includeOcr: true,
-      maxFallbackPages: 16,
-      maxFallbackCharsPerPage: 1600,
+      maxFallbackPages: 200,
+      maxFallbackCharsPerPage: 50_000,
       maxFallbackOcrPages: 4,
     });
+  });
+
+  it("does not label a partial PDF extraction as an untruncated document", async () => {
+    fs.writeFileSync(path.join(tmpDir, "partial.pdf"), "%PDF-1.7");
+    extractPdfTextMock.mockResolvedValue({ text: "Only part of the source", pageCount: 12,
+      extractionMode: "fallback", usedFallback: true, previewLimited: true,
+      extractionStatus: "preview", extractionNote: "partial extraction" });
+    const tools = new DocumentParserTools({ id: "ws", path: tmpDir,
+      permissions: { read: true } } as Any);
+    const result = await tools.parseDocument({ path: "partial.pdf" });
+    expect(result.truncated).toBe(true);
+    expect(result.pdf_extraction?.status).toBe("preview");
+    expect(result.next_start_char).toBeUndefined();
   });
 
   it("rejects missing documents with a clear error", async () => {
