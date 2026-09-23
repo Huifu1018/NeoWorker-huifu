@@ -1,6 +1,7 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
+import { renderPdfPages } from "../../utils/pdf-page-render";
 import { createHash } from "crypto";
 import { execFile } from "child_process";
 import { promisify } from "util";
@@ -389,7 +390,8 @@ export class VisionTools {
           "Visually analyze a PDF document's layout, design, and content using a vision-capable LLM. " +
           "Converts PDF pages to images and analyzes them in one step. Use this only when you need to understand " +
           "a PDF's visual layout, design, formatting, colors, scanned/image-based content, or page appearance — not just its text content. " +
-          "For ordinary text PDFs, use read_file or parse_document instead.",
+          "For ordinary text PDFs, use read_file or parse_document instead. Rendering is bundled; never install Poppler. " +
+          "Use render_only=true to save original page PNGs without a vision request; optional crop extracts a figure for embedding in generate_document. Coordinates are fractions of the full page from top-left.",
         input_schema: {
           type: "object",
           properties: {
@@ -402,6 +404,10 @@ export class VisionTools {
               description:
                 'What to analyze about the PDF (default: "Describe the layout, design, content, and visual structure of this document in detail.").',
             },
+            render_only: { type: "boolean", description: "Save page images and positioned source text without model analysis (default false). Returned image paths can be embedded in PDFs." },
+            crop: { type: "object", description: "Optional original figure region, as fractions 0–1 of the full page from top-left. Verify the crop before embedding.", properties: {
+              x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" },
+            }, required: ["x", "y", "width", "height"] },
             pages: {
               type: "string",
               description:
@@ -1156,6 +1162,8 @@ export class VisionTools {
   }
 
   async readPdfVisual(input: {
+    render_only?: boolean;
+    crop?: { x: number; y: number; width: number; height: number };
     path: unknown;
     prompt?: unknown;
     pages?: unknown;
@@ -1163,7 +1171,7 @@ export class VisionTools {
   }): Promise<
     | {
         success: true;
-        pages: Array<{ page: number; analysis: string }>;
+        pages: Array<{ page: number; analysis: string; imagePath?: string; text?: unknown[] }>;
         pageCount: number;
         source_path: string;
         provenance: SensitiveSourceRef;
@@ -1176,7 +1184,8 @@ export class VisionTools {
         ? input.prompt.trim()
         : "Describe the layout, design, content, and visual structure of this document page in detail.";
     const pagesSpec =
-      typeof input?.pages === "string" ? input.pages.trim() : "1-2";
+      typeof input?.pages === "string" ? input.pages.trim() :
+        Array.isArray(input?.pages) && input.pages.length === 1 ? String(input.pages[0]) : "1-2";
     const providerOverride =
       typeof input?.provider === "string"
         ? input.provider.trim().toLowerCase()
@@ -1210,6 +1219,9 @@ export class VisionTools {
     let pdfStat;
     try {
       pdfStat = await fs.stat(absPath);
+      const realRoot = await fs.realpath(this.workspace.path);
+      const realInput = await fs.realpath(absPath);
+      if (!realInput.startsWith(realRoot + path.sep)) return { success: false, error: "PDF path resolves outside the workspace." };
     } catch {
       return { success: false, error: `PDF not found: ${relPath}` };
     }
@@ -1227,6 +1239,7 @@ export class VisionTools {
       mtimeMs: pdfStat.mtimeMs,
       ctimeMs: pdfStat.ctimeMs,
       pages: normalizedPages,
+      renderOnly: input.render_only === true, crop: input.crop || null,
       prompt,
       provider: providerOverride || null,
     });
@@ -1238,59 +1251,26 @@ export class VisionTools {
       return cached;
     }
 
-    // Check pdftoppm availability
-    let hasPdftoppm = false;
+    // Persist source images inside the workspace so document generation can
+    // reuse them. These hidden assets are not user deliverables.
+    const tmpDir = safeResolveWithinWorkspace(this.workspace.path, `.neoworker/pdf-assets/${cacheKey}`);
+    if (!tmpDir) return { success: false, error: "PDF asset directory must remain inside the workspace." };
     try {
-      await execFileAsync("which", ["pdftoppm"]);
-      hasPdftoppm = true;
-    } catch {
-      // pdftoppm not available
-    }
-
-    if (!hasPdftoppm) {
-      return {
-        success: false,
-        error:
-          "pdftoppm is not installed. Install poppler (brew install poppler) for PDF visual analysis. " +
-          "As an alternative, use read_file to extract text content from the PDF.",
-      };
-    }
-
-    // Convert PDF pages to images at 72 DPI (sufficient for layout analysis, keeps images small)
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "neoworker-pdf-"));
-    const outputPrefix = path.join(tmpDir, "page");
-
-    try {
-      const args = [
-        "-png",
-        "-r",
-        "72",
-        "-f",
-        String(firstPage),
-        "-l",
-        String(lastPage),
-        absPath,
-        outputPrefix,
-      ];
-
-      await execFileAsync("pdftoppm", args, { timeout: 30_000 });
-
-      // Find generated page images
-      const files = await fs.readdir(tmpDir);
-      const pageFiles = files
-        .filter((f) => f.startsWith("page-") && f.endsWith(".png"))
-        .sort();
-
-      if (pageFiles.length === 0) {
-        return {
-          success: false,
-          error:
-            "PDF conversion produced no images. The PDF may be empty or corrupt.",
-        };
+      // Reject redirected asset directories before mkdir/write follows them.
+      for (const directory of [path.join(this.workspace.path, ".neoworker"), path.dirname(tmpDir), tmpDir]) {
+        try { if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error("PDF asset directories cannot be symbolic links."); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
+      const rendered = await renderPdfPages(absPath, tmpDir, { firstPage, lastPage, crop: input.crop });
+      if (input.render_only === true) {
+        const result = { success: true as const, pages: rendered.pages.map((page) => ({ ...page, analysis: "Original PDF pixels rendered by the bundled renderer; visual content has not been model-verified." })),
+          pageCount: rendered.totalPages, source_path: relPath, provenance };
+        return result;
+      }
+      const pageFiles = rendered.pages.map((page) => path.basename(page.imagePath));
 
       // Analyze each page
-      const results: Array<{ page: number; analysis: string }> = [];
+      const results: Array<{ page: number; analysis: string; imagePath: string }> = [];
       const pageFailures: Array<{ page: number; error: string }> = [];
 
       for (let i = 0; i < pageFiles.length; i++) {
@@ -1346,7 +1326,7 @@ export class VisionTools {
         }
 
         if (analysisResult.success) {
-          results.push({ page: pageNum, analysis: analysisResult.text });
+          results.push({ page: pageNum, analysis: analysisResult.text, imagePath: pagePath });
         } else {
           pageFailures.push({ page: pageNum, error: analysisResult.error });
         }
@@ -1393,12 +1373,6 @@ export class VisionTools {
         success: false,
         error: `PDF conversion failed: ${errorMessage}`,
       };
-    } finally {
-      try {
-        await fs.rm(tmpDir, { recursive: true, force: true });
-      } catch {
-        // Ignore cleanup errors
-      }
     }
   }
 

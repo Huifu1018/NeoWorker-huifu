@@ -759,6 +759,17 @@ describe("Executor Hermes recovery", () => {
     );
   });
 
+  it("keeps export tools available when an artifact task reaches the completion pass", () => {
+    const instance = executor([]) as Any;
+    instance.buildCompletionContract = () => ({ requiresArtifactEvidence: true, requiredArtifactExtensions: [".pdf"] });
+    const prompt = instance.buildHermesCompletionContinuationPrompt("", "initial", "cancelled");
+    expect(prompt).toContain("tool-enabled delivery pass");
+    expect(prompt).not.toContain("Do not call any more tools");
+    expect(instance.hasExplicitMissingDeliverable("最终的中文 PDF 文件尚未生成，只保存了测试文件。" )).toBe(true);
+    expect(instance.hasExplicitMissingDeliverable("最终的中文 PDF 文件已生成。" )).toBe(false);
+    expect(instance.hasExplicitMissingDeliverable("The final PDF has not been generated." )).toBe(true);
+  });
+
   it("finishes from existing tool evidence when Hermes unexpectedly cancels without a final answer", async () => {
     const checkpoint = {
       schema: "neoworker_hermes_acp_v1",

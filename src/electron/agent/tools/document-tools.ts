@@ -260,6 +260,7 @@ export class DocumentTools {
               type: "string",
               description: "Full document content in markdown format",
             },
+            markdown_path: { type: "string", description: "Read the complete UTF-8 markdown manuscript from this workspace instead of repeating it in the tool call. Use either markdown or markdown_path." },
             sections: {
               type: "array",
               description: "Alternative: structured sections with headings",
@@ -1109,6 +1110,10 @@ export class DocumentTools {
   }
 
   async generateDocument(input: Any): Promise<Any> {
+    if (input.markdown_path && input.markdown) throw new Error("Use markdown or markdown_path, not both.");
+    const markdown = input.markdown_path
+      ? await fs.promises.readFile(await this.resolveWorkspaceSourcePath(input.markdown_path), "utf8")
+      : input.markdown;
     const filename = sanitizeFilename(input.filename || "document.pdf");
     const outputPath = resolveVersionedOutputPath(
       path.join(this.workspacePath, filename),
@@ -1118,7 +1123,7 @@ export class DocumentTools {
       title: input.title,
       titleColor: input.titleColor,
       author: input.author,
-      markdown: input.markdown,
+      markdown,
       sections: input.sections,
     });
 

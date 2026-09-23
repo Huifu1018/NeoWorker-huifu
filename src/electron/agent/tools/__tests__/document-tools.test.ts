@@ -670,6 +670,24 @@ describe("DocumentTools", () => {
     );
   });
 
+  it("exports a persisted manuscript and rejects paths outside the workspace", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-manuscript-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-outside-"));
+    try {
+      fs.writeFileSync(path.join(dir, "translation.md"), "# 全文译文\n\n正文与图注。", "utf8");
+      fs.writeFileSync(path.join(outside, "private.md"), "private");
+      fs.symlinkSync(path.join(outside, "private.md"), path.join(dir, "escape.md"));
+      const tools = new DocumentTools(dir, "manuscript");
+      await tools.generateDocument({ filename: "translated.pdf", markdown_path: "translation.md" });
+      expect(generatePDF).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ markdown: "# 全文译文\n\n正文与图注。" }));
+      await expect(tools.generateDocument({ markdown_path: "escape.md" })).rejects.toThrow("outside the workspace");
+      await expect(tools.generateDocument({ markdown_path: "translation.md", markdown: "conflicting input" })).rejects.toThrow("not both");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it("generateDocument sanitizes filenames", async () => {
     const tools = new DocumentTools("/workspace", "task-1");
 

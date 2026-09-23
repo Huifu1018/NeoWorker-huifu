@@ -2704,7 +2704,8 @@ export class TaskExecutor {
     return candidatePaths.filter((candidatePath) => {
       const extension = path.extname(String(candidatePath || "")).toLowerCase();
       if (!requiredExtensions.has(extension)) return true;
-      return this.isUsableArtifactEvidencePath(candidatePath);
+      return this.isUsableArtifactEvidencePath(candidatePath) &&
+        !(extension === ".pdf" && this.pdfDeliveryReviewer?.isRejected(this.workspace.path, candidatePath));
     });
   }
 
@@ -2894,7 +2895,7 @@ export class TaskExecutor {
       this.buildArtifactFormatToolInstructions(contract);
     return (
       `The follow-up explicitly requests a ${requested} artifact, but no matching file has been created or updated during this turn. ` +
-      `Do not claim completion. Create the requested artifact now, verify that the tool succeeded, and only then provide the final response.${formatInstructions}`
+      `This is a new tool-enabled delivery pass; earlier instructions to finalize without tools no longer apply. Reuse saved source text and manuscript. Test/probe PDFs do not satisfy the request. Do not claim completion. Create the requested artifact now, verify that the tool succeeded, and only then provide the final response.${formatInstructions}`
     );
   }
 
@@ -5281,6 +5282,11 @@ export class TaskExecutor {
     );
   }
 
+  private hasExplicitMissingDeliverable(text: string): boolean {
+    const normalized = String(text || "").replace(/[*_`]/g, "");
+    return /(?:最终|完整|交付)(?:的)?[^。\n]{0,35}(?:尚未|还未|没有|未能)(?:成功)?(?:生成|导出|完成)|(?:最终|完整|交付)[^。\n]{0,35}(?:不存在)|(?:final|requested|complete)\s+(?:translated\s+)?(?:PDF|document|file|deliverable)[^.!\n]{0,50}(?:not (?:been )?(?:generated|created|exported)|missing)/i.test(normalized);
+  }
+
   private buildHermesCompletionContinuationPrompt(
     previousText: string,
     turnKind: "initial" | "follow_up" | "resume",
@@ -5289,6 +5295,7 @@ export class TaskExecutor {
     const excerpt = String(previousText || "")
       .trim()
       .slice(0, 2_000);
+    const needsArtifact = (this.activeFollowUpCompletionContract || this.buildCompletionContract()).requiresArtifactEvidence;
     const interruptedWithoutAnswer =
       !excerpt || String(stopReason || "").trim() === "cancelled";
     return [
@@ -5298,7 +5305,9 @@ export class TaskExecutor {
         : `The previous ${turnKind} response looked like an in-progress note, not a final answer.`,
       excerpt ? `Previous response:\n${excerpt}` : "",
       "Continue the same user request now. Do not start a different task and do not answer with another plan.",
-      interruptedWithoutAnswer
+      needsArtifact
+        ? "This is a new tool-enabled delivery pass. Earlier turn-finalization instructions no longer apply. Reuse saved progress, finish the actual requested document and export it with tools. Diagnostic PDFs are not deliverables. Do not ask the user to send another continue message."
+        : interruptedWithoutAnswer
         ? "Do not call any more tools in this completion pass. Use the successful tool results already present in this session and give the user a concise best-effort answer now. If those results are insufficient, state the exact blocker instead of ending silently."
         : "Use the available tools only if essential. Finish with the requested final answer, or state a concrete blocker for the current request.",
       "</neoworker_completion_guard_v1>",
@@ -5428,7 +5437,7 @@ export class TaskExecutor {
     const candidates = () => this.getFollowUpArtifactEvidencePaths(startedAt, new Set(), [".pdf"]);
     let reviews: Awaited<ReturnType<PdfDeliveryReviewer["review"]>>;
     try {
-      reviews = await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal);
+      reviews = await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal, resolveDocumentTranslationContract(request).pdfReflow === true);
     } catch (error) {
       this.emitEvent("log", { metric: "pdf_delivery_layout_review_unavailable", error: String((error as Error)?.message || error).slice(0, 300) });
       return result;
@@ -5441,7 +5450,7 @@ export class TaskExecutor {
       if (this.cancelled || this.paused || this.abortController?.signal.aborted) return repaired;
       if (repaired.stopReason === "end_turn" && repaired.assistantText.trim()) result = repaired;
       // Re-read the actual output after the one allowed repair pass.
-      await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal);
+      await this.pdfDeliveryReviewer.review(this.workspace.path, candidates(), extractWorkspaceUploadPaths(request), this.abortController?.signal, resolveDocumentTranslationContract(request).pdfReflow === true);
     } catch (error) {
       this.emitEvent("log", { metric: "pdf_delivery_layout_repair_failed", error: String((error as Error)?.message || error).slice(0, 300) });
     }
@@ -5633,11 +5642,11 @@ export class TaskExecutor {
         !this.cancelled &&
         !this.paused &&
         !this.toolRegistry?.getDocumentTranslationCapabilityError?.() &&
-        this.getFollowUpArtifactGuardError(
+        (this.hasExplicitMissingDeliverable(assistantText) || this.getFollowUpArtifactGuardError(
           completionContract,
           artifactEvidenceStartedAt,
           createdFilesBefore,
-        )
+        ))
       ) {
         this.emitEvent("progress_update", {
           phase: "hermes_runtime",
@@ -18727,6 +18736,9 @@ ${transcript}
     if (capabilityError) return capabilityError;
     const contract = this.buildCompletionContract();
     const bestCandidate = this.getBestFinalResponseCandidate();
+    if (contract.requiresArtifactEvidence && this.hasExplicitMissingDeliverable(bestCandidate)) {
+      return "Requested artifact is incomplete: the response explicitly reports that the final deliverable was not generated. Test files cannot satisfy this request.";
+    }
     const artifactEvidenceFiles = this.getAllArtifactEvidencePaths();
     const usableArtifactEvidenceFiles = this.getUsableArtifactEvidencePaths(
       contract,
