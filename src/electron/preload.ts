@@ -1,4 +1,4 @@
-import type { PaperNewsConfig, PaperNewsSnapshot, PaperNewsSource } from "../shared/paper-news";
+import type { PaperNewsCover, PaperNewsConfig, PaperNewsSnapshot, PaperNewsSource } from "../shared/paper-news";
 import * as path from "path";
 import { contextBridge, ipcRenderer } from "electron";
 import * as fs from "fs";
@@ -6129,6 +6129,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
       triggerId,
     }),
 
+  getPaperNewsCover: (id: string): Promise<PaperNewsCover | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_COVER, id),
   getPaperNews: (): Promise<PaperNewsSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_GET),
   refreshPaperNews: (source?: PaperNewsSource): Promise<PaperNewsSnapshot> =>
@@ -6404,6 +6406,7 @@ export type {
 };
 
 export interface ElectronAPI {
+  getPaperNewsCover: (id: string) => Promise<PaperNewsCover | null>;
   getPaperNews: () => Promise<PaperNewsSnapshot>;
   refreshPaperNews: (source?: PaperNewsSource) => Promise<PaperNewsSnapshot>;
   savePaperNewsConfig: (config: PaperNewsConfig) => Promise<PaperNewsSnapshot>;

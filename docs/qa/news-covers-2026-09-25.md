@@ -20,10 +20,10 @@ A small-card inspection identified that the full three-line text-cover treatment
 
 ## Evidence
 
-- [Desktop, Chinese/light](docs/qa/news-covers-2026-09-25/desktop.png)
-- [Desktop, English/dark](docs/qa/news-covers-2026-09-25/dark-en.png)
-- [Narrow layout](docs/qa/news-covers-2026-09-25/mobile.png)
-- [Narrow text-cover detail after fix](docs/qa/news-covers-2026-09-25/text-narrow.png)
+- [Desktop, Chinese/light](news-covers-2026-09-25/desktop.png)
+- [Desktop, English/dark](news-covers-2026-09-25/dark-en.png)
+- [Narrow layout](news-covers-2026-09-25/mobile.png)
+- [Narrow text-cover detail after fix](news-covers-2026-09-25/text-narrow.png)
 
 ## Engineering validation
 

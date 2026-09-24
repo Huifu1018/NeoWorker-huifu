@@ -1,3 +1,4 @@
+import { newsImageUrl } from "./covers";
 import { DOMParser } from "@xmldom/xmldom";
 import type {
   PaperNewsConfig,
@@ -173,6 +174,7 @@ export function parsePaperNews(source: PaperNewsSource, raw: string): PaperNewsI
               .filter(Boolean)
               .slice(0, 8),
             popularity: count(paper.upvotes),
+            imageUrl: newsImageUrl(row.thumbnail) || newsImageUrl(paper.thumbnail),
           },
         ];
       }),

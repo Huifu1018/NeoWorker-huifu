@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Editorial News Feed cards with content-specific paper/repository covers, first-page PDF rendering, readable text covers when images are unavailable, and a lazy persistent thumbnail cache. Preserve official source marks, independent settings, and responsive three-column browsing.
+
 - Independent source settings: arXiv topics/category, GitHub topics/language/minimum stars, and Hugging Face interests/matching-only, each with its own time window. Preserve other sources and bookmarks when saving, and migrate legacy shared preferences.
 - Renamed the feed to News Feed (资讯动态) to accommodate papers, projects, and future content types.
 - Redesigned News Feed with official arXiv, Hugging Face, and GitHub brand assets, compact source panels, a responsive three-column feed, topic chips, and a single blue action accent.

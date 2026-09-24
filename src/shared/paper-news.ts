@@ -10,6 +10,11 @@ export interface PaperNewsConfig {
   huggingface: PaperNewsTopicConfig & { matchedOnly: boolean };
   github: PaperNewsTopicConfig & { language: string; minStars: number };
 }
+export interface PaperNewsCover {
+  dataUrl: string;
+  kind: "source-image" | "pdf-page";
+  sourceUrl: string;
+}
 export interface PaperNewsItem {
   id: string;
   source: PaperNewsSource;
@@ -18,6 +23,7 @@ export interface PaperNewsItem {
   authors: string[];
   url: string;
   pdfUrl?: string;
+  imageUrl?: string;
   date: string;
   tags: string[];
   popularity?: number;
@@ -27,7 +33,12 @@ export interface PaperNewsItem {
 export interface PaperNewsSourceState {
   updatedAt?: string;
   attemptedAt?: string;
-  error?: "network" | "rateLimit" | "accessDenied" | "unavailable" | "invalidResponse";
+  error?:
+    | "network"
+    | "rateLimit"
+    | "accessDenied"
+    | "unavailable"
+    | "invalidResponse";
   httpStatus?: number;
   nextRetryAt?: string;
 }
@@ -39,20 +50,30 @@ export interface PaperNewsSnapshot {
   refreshing: boolean;
 }
 /** Successful results stay fresh for 30 minutes; failures use their own retry deadline. */
-export function paperNewsNeedsRefresh(snapshot: PaperNewsSnapshot, now: number): boolean {
+export function paperNewsNeedsRefresh(
+  snapshot: PaperNewsSnapshot,
+  now: number,
+): boolean {
   return (
     snapshot.refreshing ||
     PAPER_NEWS_SOURCES.some((source) => {
       const state = snapshot.sources[source];
-      if (state.nextRetryAt && Date.parse(state.nextRetryAt) > now) return false;
+      if (state.nextRetryAt && Date.parse(state.nextRetryAt) > now)
+        return false;
       if (state.error) return true;
-      return !state.updatedAt || now - Date.parse(state.updatedAt) >= 30 * 60_000;
+      return (
+        !state.updatedAt || now - Date.parse(state.updatedAt) >= 30 * 60_000
+      );
     })
   );
 }
 
 export const DEFAULT_PAPER_NEWS_CONFIG: PaperNewsConfig = {
-  arxiv: { topics: ["large language models", "agents", "multimodal"], days: 14, category: "" },
+  arxiv: {
+    topics: ["large language models", "agents", "multimodal"],
+    days: 14,
+    category: "",
+  },
   huggingface: {
     topics: ["large language models", "agents", "multimodal"],
     days: 14,

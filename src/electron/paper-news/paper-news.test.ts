@@ -84,6 +84,13 @@ describe("paper news adapters", () => {
     });
     expect(() => parsePaperNews("huggingface", '{"error":"rate limit"}')).toThrow();
   });
+  it("keeps publisher thumbnails and rejects unrelated image hosts", () => {
+    const rows = JSON.parse(hf);
+    rows[0].thumbnail = "https://cdn-thumbnails.huggingface.co/social-thumbnails/papers/2609.12345.png";
+    expect(parsePaperNews("huggingface", JSON.stringify(rows))[0].imageUrl).toBe(rows[0].thumbnail);
+    rows[0].thumbnail = "https://unrelated.example/image.png";
+    expect(parsePaperNews("huggingface", JSON.stringify(rows))[0].imageUrl).toBeUndefined();
+  });
   it("keeps repositories distinct from PDFs and rejects hostile repository paths", () => {
     const item = parsePaperNews("github", github)[0];
     expect(item.url).toBe("https://github.com/lab/agents");

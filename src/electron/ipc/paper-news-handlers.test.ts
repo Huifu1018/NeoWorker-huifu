@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   config: vi.fn(),
   save: vi.fn(),
+  find: vi.fn(),
+  cover: vi.fn(),
 }));
 vi.mock("electron", () => ({
   app: { getPath: () => "/test-profile" },
@@ -16,9 +18,12 @@ vi.mock("../paper-news/service", () => ({
     refresh = mocks.refresh;
     saveConfig = mocks.config;
     setSaved = mocks.save;
+    findItem = mocks.find;
   },
 }));
 vi.mock("../utils/network-fetch", () => ({ fetchWithSystemProxy: vi.fn() }));
+vi.mock("../paper-news/covers", () => ({ PaperNewsCovers: class { get = mocks.cover; } }));
+vi.mock("../paper-news/cover-renderer", () => ({ resizeNewsCover: vi.fn(), renderNewsPdfCover: vi.fn() }));
 import { setupPaperNewsHandlers } from "./paper-news-handlers";
 import { IPC_CHANNELS } from "../../shared/types";
 
@@ -27,7 +32,7 @@ describe("Paper News IPC boundary", () => {
     const mainFrame = {},
       sender = { mainFrame };
     setupPaperNewsHandlers((event) => event.sender === sender);
-    expect(mocks.handlers.size).toBe(4);
+    expect(mocks.handlers.size).toBe(5);
     for (const handler of mocks.handlers.values()) {
       expect(() => handler({ sender: {}, senderFrame: mainFrame })).toThrow("restricted");
       expect(() => handler({ sender, senderFrame: {} })).toThrow("restricted");
@@ -37,6 +42,8 @@ describe("Paper News IPC boundary", () => {
       "arxiv:123",
       true,
     );
+    expect(mocks.handlers.get(IPC_CHANNELS.PAPER_NEWS_COVER)!({ sender, senderFrame: mainFrame }, "https://127.0.0.1/private")).toBeNull();
+    expect(mocks.cover).not.toHaveBeenCalled();
     expect(mocks.save).toHaveBeenCalledWith("arxiv:123", true);
     mocks.handlers.get(IPC_CHANNELS.PAPER_NEWS_REFRESH)!({ sender, senderFrame: mainFrame });
     expect(mocks.refresh).toHaveBeenCalledOnce();

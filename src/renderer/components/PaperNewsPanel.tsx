@@ -8,6 +8,7 @@ import {
   Info,
   Star,
   TrendingUp,
+  ArrowRight,
   BookOpen,
   ExternalLink,
   FileText,
@@ -38,8 +39,13 @@ import huggingFaceBrand from "../assets/paper-news/huggingface.svg";
 import githubBrand from "../assets/paper-news/github-black.svg";
 import githubWhiteBrand from "../assets/paper-news/github-white.svg";
 import "./paper-news.css";
+import { PaperNewsCover } from "./PaperNewsCover";
 
-const brandAssets = { arxiv: arxivBrand, huggingface: huggingFaceBrand, github: githubBrand };
+const brandAssets = {
+  arxiv: arxivBrand,
+  huggingface: huggingFaceBrand,
+  github: githubBrand,
+};
 const darkBrandAssets = { arxiv: arxivWhiteBrand, github: githubWhiteBrand };
 
 const names = { arxiv: "arXiv", huggingface: "Hugging Face", github: "GitHub" };
@@ -62,15 +68,20 @@ export function PaperNewsPanel({
   const language = useLanguage();
   const t = (zh: string, en: string) => (language === "zh-CN" ? zh : en);
   const [snapshot, setSnapshot] = useState<PaperNewsSnapshot | null>(null);
-  const [source, setSource] = useState<PaperNewsSource | "all" | "saved">("all");
+  const [source, setSource] = useState<PaperNewsSource | "all" | "saved">(
+    "all",
+  );
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState("recommended");
   const [settings, setSettings] = useState(false);
-  const [settingsSource, setSettingsSource] = useState<PaperNewsSource>("arxiv");
+  const [settingsSource, setSettingsSource] =
+    useState<PaperNewsSource>("arxiv");
   const [draftConfig, setDraftConfig] = useState<PaperNewsConfig>(() =>
     structuredClone(DEFAULT_PAPER_NEWS_CONFIG),
   );
-  const [topicInputs, setTopicInputs] = useState<Record<PaperNewsSource, string>>({
+  const [topicInputs, setTopicInputs] = useState<
+    Record<PaperNewsSource, string>
+  >({
     arxiv: "",
     github: "",
     huggingface: "",
@@ -108,7 +119,8 @@ export function PaperNewsPanel({
     snapshot &&
     PAPER_NEWS_SOURCES.every(
       (s) =>
-        snapshot.sources[s].nextRetryAt && Date.parse(snapshot.sources[s].nextRetryAt!) > clock,
+        snapshot.sources[s].nextRetryAt &&
+        Date.parse(snapshot.sources[s].nextRetryAt!) > clock,
     ),
   );
   const [opening, setOpening] = useState(false);
@@ -161,7 +173,15 @@ export function PaperNewsPanel({
     }
   }
   useEffect(() => {
-    if (!snapshot || busy || busyRef.current || settings || failure || document.hidden) return;
+    if (
+      !snapshot ||
+      busy ||
+      busyRef.current ||
+      settings ||
+      failure ||
+      document.hidden
+    )
+      return;
     const retryDue = PAPER_NEWS_SOURCES.some((s) => {
       const state = snapshot.sources[s];
       return (
@@ -194,13 +214,17 @@ export function PaperNewsPanel({
       const state = await window.electronAPI.savePaperNewsConfig(config);
       if (!mounted.current) return;
       setSnapshot(state);
-      setDraftConfig((draft) => ({ ...draft, [settingsSource]: state.config[settingsSource] }));
+      setDraftConfig((draft) => ({
+        ...draft,
+        [settingsSource]: state.config[settingsSource],
+      }));
       setTopicInputs((draft) => ({
         ...draft,
         [settingsSource]: state.config[settingsSource].topics.join(", "),
       }));
       setSavedSource(settingsSource);
-      const refreshed = await window.electronAPI.refreshPaperNews(settingsSource);
+      const refreshed =
+        await window.electronAPI.refreshPaperNews(settingsSource);
       if (mounted.current) setSnapshot(refreshed);
     } catch {
       if (mounted.current) setFailure("save");
@@ -244,7 +268,9 @@ export function PaperNewsPanel({
       .filter(
         (i) =>
           (source === "all" || source === "saved" || i.source === source) &&
-          `${i.title} ${i.summary} ${i.tags.join(" ")}`.toLowerCase().includes(query.toLowerCase()),
+          `${i.title} ${i.summary} ${i.tags.join(" ")}`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
       )
       .sort((a, b) =>
         sort === "newest"
@@ -282,7 +308,10 @@ export function PaperNewsPanel({
               aria-expanded={settings}
               onClick={() => {
                 if (settings) setSettings(false);
-                else openSettings(source === "all" || source === "saved" ? "arxiv" : source);
+                else
+                  openSettings(
+                    source === "all" || source === "saved" ? "arxiv" : source,
+                  );
               }}
             >
               <SlidersHorizontal size={16} />
@@ -345,7 +374,9 @@ export function PaperNewsPanel({
                   }}
                 >
                   <SourceBrand source={s} />
-                  <span className={s === "arxiv" ? "pn-visually-hidden" : undefined}>
+                  <span
+                    className={s === "arxiv" ? "pn-visually-hidden" : undefined}
+                  >
                     {names[s]}
                   </span>
                 </button>
@@ -361,7 +392,8 @@ export function PaperNewsPanel({
             </div>
             <fieldset className="pn-settings-fields" disabled={busy}>
               <legend>
-                {names[settingsSource]} · {t("独立设置", "Independent settings")}
+                {names[settingsSource]} ·{" "}
+                {t("独立设置", "Independent settings")}
               </legend>
               <p>
                 {settingsSource === "huggingface"
@@ -386,7 +418,10 @@ export function PaperNewsPanel({
                 value={topicInputs[settingsSource]}
                 onChange={(e) => {
                   setSavedSource(null);
-                  setTopicInputs({ ...topicInputs, [settingsSource]: e.target.value });
+                  setTopicInputs({
+                    ...topicInputs,
+                    [settingsSource]: e.target.value,
+                  });
                 }}
                 placeholder="large language models, agents, multimodal"
               />
@@ -406,7 +441,9 @@ export function PaperNewsPanel({
                   <select
                     id="pn-days"
                     value={currentDraft.days}
-                    onChange={(e) => updateDraft({ days: Number(e.target.value) })}
+                    onChange={(e) =>
+                      updateDraft({ days: Number(e.target.value) })
+                    }
                   >
                     {[7, 14, 30].map((d) => (
                       <option key={d} value={d}>
@@ -424,7 +461,9 @@ export function PaperNewsPanel({
                       pattern={"[a-z]+(-[a-z]+)*(\\.[A-Z]{2})?"}
                       placeholder="cs.AI"
                       value={draftConfig.arxiv.category}
-                      onChange={(e) => updateDraft({ category: e.target.value })}
+                      onChange={(e) =>
+                        updateDraft({ category: e.target.value })
+                      }
                     />
                   </label>
                 )}
@@ -437,7 +476,9 @@ export function PaperNewsPanel({
                         maxLength={32}
                         placeholder="Python"
                         value={draftConfig.github.language}
-                        onChange={(e) => updateDraft({ language: e.target.value })}
+                        onChange={(e) =>
+                          updateDraft({ language: e.target.value })
+                        }
                       />
                     </label>
                     <label htmlFor="pn-stars">
@@ -454,7 +495,9 @@ export function PaperNewsPanel({
                             ? draftConfig.github.minStars
                             : ""
                         }
-                        onChange={(e) => updateDraft({ minStars: e.target.valueAsNumber })}
+                        onChange={(e) =>
+                          updateDraft({ minStars: e.target.valueAsNumber })
+                        }
                       />
                     </label>
                   </>
@@ -465,7 +508,9 @@ export function PaperNewsPanel({
                   <input
                     type="checkbox"
                     checked={draftConfig.huggingface.matchedOnly}
-                    onChange={(e) => updateDraft({ matchedOnly: e.target.checked })}
+                    onChange={(e) =>
+                      updateDraft({ matchedOnly: e.target.checked })
+                    }
                   />
                   {t(
                     "只显示匹配兴趣词的精选论文",
@@ -511,23 +556,36 @@ export function PaperNewsPanel({
                   <span className="pn-source-heading">
                     <span className="pn-source-identity">
                       <SourceBrand source={s} />
-                      <strong className={s === "arxiv" ? "pn-visually-hidden" : undefined}>
+                      <strong
+                        className={
+                          s === "arxiv" ? "pn-visually-hidden" : undefined
+                        }
+                      >
                         {names[s]}
                       </strong>
                     </span>
                     <span className="pn-count">
                       {state?.error && !state.updatedAt
                         ? "—"
-                        : snapshot?.items.filter((i) => i.source === s).length || 0}
+                        : snapshot?.items.filter((i) => i.source === s)
+                            .length || 0}
                     </span>
                   </span>
-                  <span className="pn-source-description">{sourceDescription(s)}</span>
+                  <span className="pn-source-description">
+                    {sourceDescription(s)}
+                  </span>
                   {state?.error && !busy && (
                     <small className="pn-source-error">
                       {state.error === "rateLimit"
-                        ? t("请求受限，请稍后刷新", "Request limited; retry later")
+                        ? t(
+                            "请求受限，请稍后刷新",
+                            "Request limited; retry later",
+                          )
                         : state.error === "accessDenied"
-                          ? t("来源拒绝访问，请稍后重试", "Source denied access; try again later")
+                          ? t(
+                              "来源拒绝访问，请稍后重试",
+                              "Source denied access; try again later",
+                            )
                           : state.error === "unavailable"
                             ? t(
                                 "来源服务暂时不可用，将稍后重试",
@@ -558,14 +616,15 @@ export function PaperNewsPanel({
                           ? t("尚无缓存内容", "No cached results yet")
                           : t("等待获取", "Not fetched yet")}
                   </small>
-                  {state?.nextRetryAt && Date.parse(state.nextRetryAt) > clock && (
-                    <small>
-                      {t(
-                        `可在 ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} 分钟后刷新`,
-                        `Refresh available in ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} min`,
-                      )}
-                    </small>
-                  )}
+                  {state?.nextRetryAt &&
+                    Date.parse(state.nextRetryAt) > clock && (
+                      <small>
+                        {t(
+                          `可在 ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} 分钟后刷新`,
+                          `Refresh available in ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} min`,
+                        )}
+                      </small>
+                    )}
                 </button>
                 <button
                   className="pn-icon pn-source-settings"
@@ -603,7 +662,10 @@ export function PaperNewsPanel({
             <Search size={16} />
             <input
               aria-label={t("搜索已获取的内容", "Search fetched results")}
-              placeholder={t("搜索标题、摘要或标签", "Search titles, abstracts or tags")}
+              placeholder={t(
+                "搜索标题、摘要或标签",
+                "Search titles, abstracts or tags",
+              )}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -620,7 +682,9 @@ export function PaperNewsPanel({
         <div className="pn-context">
           <span aria-live="polite">
             {items.length} {t("条内容", "results")}
-            {source !== "all" && source !== "saved" ? ` · ${names[source]}` : ""}
+            {source !== "all" && source !== "saved"
+              ? ` · ${names[source]}`
+              : ""}
           </span>
           <div className="pn-following">
             <span>{t("关注", "Following")}</span>
@@ -660,7 +724,10 @@ export function PaperNewsPanel({
               {busy
                 ? t("正在寻找值得读的内容", "Finding your next read")
                 : source === "saved"
-                  ? t("把想深入读的内容留在这里", "Keep your next deep read here")
+                  ? t(
+                      "把想深入读的内容留在这里",
+                      "Keep your next deep read here",
+                    )
                   : t("还没有匹配的内容", "No matching results yet")}
             </h2>
             <p>
@@ -685,11 +752,25 @@ export function PaperNewsPanel({
             {items.map((item) => {
               const saved = snapshot?.saved.some((i) => i.id === item.id);
               return (
-                <article className={`pn-card pn-source-${item.source}`} key={item.id}>
+                <article
+                  className={`pn-card pn-source-${item.source}`}
+                  key={item.id}
+                >
+                  <PaperNewsCover
+                    item={item}
+                    language={language}
+                    onOpen={() => void open(item.url)}
+                  />
                   <div className="pn-card-meta">
                     <span className="pn-source-badge">
                       <SourceBrand source={item.source} />
-                      <span className={item.source === "arxiv" ? "pn-visually-hidden" : undefined}>
+                      <span
+                        className={
+                          item.source === "arxiv"
+                            ? "pn-visually-hidden"
+                            : undefined
+                        }
+                      >
                         {names[item.source]}
                       </span>
                     </span>
@@ -699,28 +780,44 @@ export function PaperNewsPanel({
                     </span>
                     <button
                       className={`pn-icon ${saved ? "is-saved" : ""}`}
-                      aria-label={saved ? t("取消收藏", "Remove bookmark") : t("收藏", "Bookmark")}
+                      aria-label={
+                        saved
+                          ? t("取消收藏", "Remove bookmark")
+                          : t("收藏", "Bookmark")
+                      }
                       aria-pressed={Boolean(saved)}
                       onClick={() => void bookmark(item)}
                     >
-                      <Bookmark size={17} fill={saved ? "currentColor" : "none"} />
+                      <Bookmark
+                        size={17}
+                        fill={saved ? "currentColor" : "none"}
+                      />
                     </button>
                   </div>
                   <h2>
-                    <button onClick={() => void open(item.url)}>{item.title}</button>
+                    <button onClick={() => void open(item.url)}>
+                      {item.title}
+                    </button>
                   </h2>
                   <p className="pn-authors" title={item.authors.join(", ")}>
                     {item.authors.slice(0, 4).join(", ")}
                     {item.authors.length > 4 ? " …" : ""}
                   </p>
                   <p className="pn-summary">
-                    {item.summary || t("打开来源查看项目说明。", "Open the source for details.")}
+                    {item.summary ||
+                      t(
+                        "打开来源查看项目说明。",
+                        "Open the source for details.",
+                      )}
                   </p>
                   <details className="pn-abstract">
                     <summary>{t("摘要与详情", "Abstract and details")}</summary>
                     <p>
                       {item.summary ||
-                        t("来源没有提供摘要。", "No abstract provided by the source.")}
+                        t(
+                          "来源没有提供摘要。",
+                          "No abstract provided by the source.",
+                        )}
                     </p>
                   </details>
                   <div className="pn-tags">
@@ -731,14 +828,18 @@ export function PaperNewsPanel({
                       <small>
                         <Star size={12} aria-hidden="true" />
                         {item.popularity.toLocaleString(language)}{" "}
-                        {item.source === "github" ? t("星标", "stars") : t("点赞", "upvotes")}
+                        {item.source === "github"
+                          ? t("星标", "stars")
+                          : t("点赞", "upvotes")}
                       </small>
                     )}
                   </div>
                   <div className="pn-links">
                     <button onClick={() => void open(item.url)}>
                       <ExternalLink size={13} />
-                      {item.source === "github" ? t("仓库", "Repository") : t("原文", "Source")}
+                      {item.source === "github"
+                        ? t("仓库", "Repository")
+                        : t("原文", "Source")}
                     </button>
                     {item.pdfUrl && (
                       <button onClick={() => void open(item.pdfUrl!)}>
@@ -763,8 +864,8 @@ export function PaperNewsPanel({
                       disabled={opening}
                       onClick={() => void start(item, "read")}
                     >
-                      <BookOpen size={15} />
                       {t("阅读", "Read")}
+                      <ArrowRight size={15} />
                     </button>
                     <button
                       className="pn-action-translate"
@@ -772,9 +873,7 @@ export function PaperNewsPanel({
                       onClick={() => void start(item, "translate")}
                     >
                       <Languages size={15} />
-                      {item.source === "github"
-                        ? t("翻译说明", "Translate README")
-                        : t("翻译论文", "Translate")}
+                      {t("翻译", "Translate")}
                     </button>
                     <button
                       className="pn-action-research"
@@ -782,7 +881,7 @@ export function PaperNewsPanel({
                       onClick={() => void start(item, "research")}
                     >
                       <FlaskConical size={15} />
-                      {t("深入研究", "Research")}
+                      {t("研究", "Research")}
                     </button>
                   </div>
                 </article>

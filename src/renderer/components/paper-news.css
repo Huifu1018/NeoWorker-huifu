@@ -66,9 +66,14 @@
   flex-direction: column;
   gap: 7px;
   padding: 17px 20px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 18%, var(--color-border));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent) 18%, var(--color-border));
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 8%,
+    var(--color-bg-primary)
+  );
   text-align: left;
   color: var(--color-text-primary);
   transition:
@@ -79,7 +84,11 @@
   border-color: var(--color-accent);
 }
 .pn-source.is-active {
-  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-bg-primary));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 12%,
+    var(--color-bg-primary)
+  );
   box-shadow: inset 0 0 0 1px var(--color-accent);
   border-color: var(--color-accent);
 }
@@ -270,24 +279,17 @@
 .pn-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
+  gap: 28px 24px;
 }
 .pn-card {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 20px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
+  padding: 0 0 24px;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
   background: var(--color-bg-primary);
-  box-shadow: 0 2px 5px #14335804;
-  transition:
-    box-shadow 140ms ease,
-    border-color 140ms ease;
-}
-.pn-card:hover {
-  border-color: color-mix(in srgb, var(--pn-blue) 25%, var(--color-border));
-  box-shadow: 0 5px 20px #1433580b;
 }
 .pn-card-meta {
   display: flex;
@@ -340,8 +342,8 @@
   color: var(--pn-blue);
 }
 .pn-card h2 {
-  margin: 16px 0 8px;
-  font-size: 16px;
+  margin: 12px 0 8px;
+  font-size: 18px;
   line-height: 1.5;
   font-weight: 650;
   letter-spacing: -0.2px;
@@ -361,7 +363,7 @@
 .pn-authors {
   margin: 0 0 12px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -373,8 +375,8 @@
   overflow: hidden;
   overflow-wrap: anywhere;
   margin: 0 0 8px;
-  font-size: 12px;
-  line-height: 1.8;
+  font-size: 14px;
+  line-height: 1.75;
   color: var(--color-text-secondary);
 }
 .pn-card:has(.pn-abstract[open]) .pn-summary {
@@ -450,32 +452,32 @@
 }
 .pn-card-actions {
   display: grid;
-  grid-template-columns: 0.8fr 1.4fr 1.05fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
-  border-top: 1px solid var(--color-border);
-  padding-top: 14px;
+  padding-top: 6px;
 }
 .pn-card-actions button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 9px 4px;
-  border: none;
+  padding: 9px 8px;
+  border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 13px;
   white-space: nowrap;
 }
 .pn-card-actions svg {
   flex-shrink: 0;
 }
-.pn-action-read {
-  background: var(--color-accent);
-  color: #fff;
+.pn-card-actions .pn-action-read {
+  background: var(--color-bg-primary);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 .pn-action-translate,
 .pn-action-research {
-  background: var(--color-bg-secondary);
+  background: transparent;
   color: var(--color-text-primary);
 }
 .pn-card-actions button:hover {
@@ -645,8 +647,16 @@
   color: var(--color-text-primary);
 }
 .pn-settings-tabs > button[aria-pressed="true"] {
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
-  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 8%,
+    var(--color-bg-primary)
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 25%,
+    var(--color-border)
+  );
 }
 .pn-settings-tabs .pn-brand {
   width: 22px;
@@ -694,4 +704,107 @@
 .pn-settings-footer > span {
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+
+/* Editorial covers: original source imagery or an honest per-item text treatment. */
+.pn-cover {
+  container-type: inline-size;
+  container-name: news-cover;
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 8;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent) 12%, var(--color-border));
+  border-radius: 4px;
+  margin: 0 0 16px;
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 8%,
+    var(--color-bg-primary)
+  );
+  text-align: left;
+  color: var(--color-text-primary);
+}
+.pn-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+}
+.pn-cover.is-pdf img {
+  object-position: center top;
+}
+.pn-cover-text {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px 22px 28px;
+  gap: 12px;
+}
+.pn-cover-source {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--color-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+.pn-cover-source > span {
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+.pn-cover-text strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: clamp(16px, 5cqi, 23px);
+  line-height: 1.35;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.pn-cover-subtitle {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+.pn-cover-caption {
+  position: absolute;
+  right: 7px;
+  bottom: 6px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 3px 5px;
+  border-radius: 3px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+}
+.pn-card h2 button {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.pn-card-actions button:hover {
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 8%,
+    var(--color-bg-primary)
+  );
+}
+
+@container news-cover (max-width: 340px) {
+  .pn-cover-text { padding: 14px 16px 26px; gap: 7px; }
+  .pn-cover-text strong { -webkit-line-clamp: 2; }
+  .pn-cover-subtitle { display: none; }
 }

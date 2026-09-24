@@ -168,6 +168,11 @@ export class PaperNewsService {
     }
     return this.snapshot();
   }
+  findItem(id: unknown): PaperNewsItem | undefined {
+    if (typeof id !== "string" || id.length > 240) return undefined;
+    const item = [...this.state.items, ...this.state.saved].find(item => item.id === id);
+    return item ? structuredClone(item) : undefined;
+  }
   setSaved(id: unknown, saved: unknown): PaperNewsSnapshot {
     if (typeof id !== "string" || typeof saved !== "boolean") throw new Error("Invalid bookmark");
     const item = [...this.state.items, ...this.state.saved].find((i) => i.id === id);
