@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark,
-  BookOpenText,
   CalendarDays,
   CheckCircle2,
   Clock3,
   Compass,
-  Github,
   Info,
-  Smile,
   Star,
   TrendingUp,
   BookOpen,
@@ -33,10 +30,27 @@ import {
 } from "../../shared/paper-news";
 import { useLanguage } from "../i18n";
 import { NeoWorkerPageHeader } from "./NeoWorkerPageHeader";
+import arxivBrand from "../assets/paper-news/arxiv.svg";
+import arxivWhiteBrand from "../assets/paper-news/arxiv-white.svg";
+import huggingFaceBrand from "../assets/paper-news/huggingface.svg";
+import githubBrand from "../assets/paper-news/github-black.svg";
+import githubWhiteBrand from "../assets/paper-news/github-white.svg";
 import "./paper-news.css";
 
+const brandAssets = { arxiv: arxivBrand, huggingface: huggingFaceBrand, github: githubBrand };
+const darkBrandAssets = { arxiv: arxivWhiteBrand, github: githubWhiteBrand };
+
 const names = { arxiv: "arXiv", huggingface: "Hugging Face", github: "GitHub" };
-const sourceIcons = { arxiv: BookOpenText, huggingface: Smile, github: Github };
+function SourceBrand({ source }: { source: PaperNewsSource }) {
+  return (
+    <span className={`pn-brand pn-brand-${source}`} aria-hidden="true">
+      <img className="pn-brand-light" src={brandAssets[source]} alt="" />
+      {source !== "huggingface" && (
+        <img className="pn-brand-dark" src={darkBrandAssets[source]} alt="" />
+      )}
+    </span>
+  );
+}
 
 export function PaperNewsPanel({
   onUsePrompt,
@@ -308,7 +322,6 @@ export function PaperNewsPanel({
         <div className="pn-sources">
           {PAPER_NEWS_SOURCES.map((s) => {
             const state = snapshot?.sources[s];
-            const SourceIcon = sourceIcons[s];
             return (
               <button
                 key={s}
@@ -318,10 +331,10 @@ export function PaperNewsPanel({
               >
                 <span className="pn-source-heading">
                   <span className="pn-source-identity">
-                    <span className="pn-source-symbol">
-                      <SourceIcon size={24} aria-hidden="true" />
-                    </span>
-                    <strong>{names[s]}</strong>
+                    <SourceBrand source={s} />
+                    <strong className={s === "arxiv" ? "pn-visually-hidden" : undefined}>
+                      {names[s]}
+                    </strong>
                   </span>
                   <span className="pn-count">
                     {state?.error && !state.updatedAt
@@ -420,7 +433,14 @@ export function PaperNewsPanel({
             {items.length} {t("条内容", "results")}
             {source !== "all" && source !== "saved" ? ` · ${names[source]}` : ""}
           </span>
-          <span>{snapshot?.config.topics.join(" · ")}</span>
+          <div className="pn-following">
+            <span>{t("关注", "Following")}</span>
+            {snapshot?.config.topics.map((topic) => (
+              <span className="pn-topic" key={topic}>
+                {topic}
+              </span>
+            ))}
+          </div>
         </div>
         <details className="pn-explainer">
           <summary>
@@ -465,13 +485,14 @@ export function PaperNewsPanel({
           <div className="pn-grid">
             {items.map((item) => {
               const saved = snapshot?.saved.some((i) => i.id === item.id);
-              const SourceIcon = sourceIcons[item.source];
               return (
                 <article className={`pn-card pn-source-${item.source}`} key={item.id}>
                   <div className="pn-card-meta">
                     <span className="pn-source-badge">
-                      <SourceIcon size={13} aria-hidden="true" />
-                      {names[item.source]}
+                      <SourceBrand source={item.source} />
+                      <span className={item.source === "arxiv" ? "pn-visually-hidden" : undefined}>
+                        {names[item.source]}
+                      </span>
                     </span>
                     <span className="pn-date">
                       <CalendarDays size={12} aria-hidden="true" />
@@ -493,6 +514,9 @@ export function PaperNewsPanel({
                     {item.authors.slice(0, 4).join(", ")}
                     {item.authors.length > 4 ? " …" : ""}
                   </p>
+                  <p className="pn-summary">
+                    {item.summary || t("打开来源查看项目说明。", "Open the source for details.")}
+                  </p>
                   <details className="pn-abstract">
                     <summary>{t("摘要与详情", "Abstract and details")}</summary>
                     <p>
@@ -500,9 +524,6 @@ export function PaperNewsPanel({
                         t("来源没有提供摘要。", "No abstract provided by the source.")}
                     </p>
                   </details>
-                  <p className="pn-summary">
-                    {item.summary || t("打开来源查看项目说明。", "Open the source for details.")}
-                  </p>
                   <div className="pn-tags">
                     {item.matchedTopics.map((tag) => (
                       <span key={tag}>{tag}</span>
@@ -546,13 +567,21 @@ export function PaperNewsPanel({
                       <BookOpen size={15} />
                       {t("阅读", "Read")}
                     </button>
-                    <button disabled={opening} onClick={() => void start(item, "translate")}>
+                    <button
+                      className="pn-action-translate"
+                      disabled={opening}
+                      onClick={() => void start(item, "translate")}
+                    >
                       <Languages size={15} />
                       {item.source === "github"
                         ? t("翻译说明", "Translate README")
                         : t("翻译论文", "Translate")}
                     </button>
-                    <button disabled={opening} onClick={() => void start(item, "research")}>
+                    <button
+                      className="pn-action-research"
+                      disabled={opening}
+                      onClick={() => void start(item, "research")}
+                    >
                       <FlaskConical size={15} />
                       {t("深入研究", "Research")}
                     </button>

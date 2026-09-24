@@ -1,17 +1,18 @@
-# Paper News visual refresh — 2026-09-24
+# Paper News redesign — 2026-09-24
 
 ## Design scope
 
-Targeted evolution of the existing research feed: preserve navigation, source data, settings, bookmarks and task actions. The prior surface used neutral source tiles and a two-column feed. Retain NeoWorker typography, blue actions, rounded controls, theme tokens and Lucide icons. Add rose, amber and green source identities, consistently repeated in overview tiles and card badges. Design variance 3, motion intensity 2, visual density 6: organized, compact browsing with only hover feedback.
+Research browsing for NeoWorker users, with a compact editorial layout and authentic source branding. Design variance 5, motion intensity 2, density 6. The initial generic source icons and colored card-top borders were rejected; this revision replaces them with official, unmodified brand assets, compact source panels, topic chips, and distinct blue Read, purple Translate, and teal Research actions. Titles flow naturally rather than reserving a fixed-height blank area. Short abstracts appear before their disclosure controls. The application header and business behavior are retained.
 
-## Verified
+## Verification
 
-- Browser QA used the real component with cached public feed metadata and an isolated in-memory IPC bridge. The installed profile was not modified.
-- At a 1270px panel width, computed card columns were 390px / 390px / 390px. At 930px: two 432px columns. At 550px: one 514px column. None overflowed horizontally.
-- Light and dark modes visually inspected. Source identity uses text and icons as well as color. Existing focus states and reduced-motion support preserved.
-- Chinese and English inspected; English repository action buttons had no clipped labels at the wide layout.
-- Source filtering and the reading task draft action worked. No browser error logs were recorded.
-- Renderer production build and targeted lint passed. Renderer type-check comparison retained 169 pre-existing diagnostic identities, with no new diagnostics.
-- Existing Chinese/English navigation tests passed (2 tests).
+- Browser QA used the real component, cached public feed metadata, and isolated in-memory IPC. No installed profile data was changed.
+- Wide panel: three equal columns (approximately 387–390px, depending on scrollbar visibility). At 930px: two 432px columns. At 550px: one 514px column. No horizontal panel overflow.
+- Chinese and English inspected. English repository action labels did not clip in the wide or medium layout.
+- Light and dark screenshots inspected; official GitHub/arXiv white variants are selected for dark surfaces, while the Hugging Face mark retains its original colors. No missing brand images.
+- Source filtering, search (PackLab), bookmark count update, and the reading draft callback verified. Browser error log was empty.
+- Official SVG assets checked for scripts, event handlers, foreign objects, and external image references. Provenance is recorded next to the assets.
+- Renderer type check reports 163 diagnostic identities, all contained in the 169-error pre-existing baseline; no new diagnostics remain. The SVG URL declaration also resolves existing SVG import diagnostics.
+- Targeted navigation tests: 2 passed. Renderer lint and production build passed.
 
-No installer or public release was produced for this visual-only change.
+No installer or public release is produced for this visual-only revision. Browser QA verifies the renderer and its interactions against a stubbed IPC bridge, not live fetch or installed-app task execution.

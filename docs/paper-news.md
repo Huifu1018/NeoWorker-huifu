@@ -18,7 +18,7 @@ The recommendation score uses literal, case-insensitive topic matches (70%) and 
 
 Search filters the results already fetched. Bookmark up to 200 items to retain them independently of subsequent refreshes or topic changes. Source titles and abstracts remain in their original language; controls follow the application's Chinese/English setting.
 
-The feed uses three cards per row on wide panels, two on medium panels, and one on narrow panels. Each source has a consistent color and icon in its overview and paper cards. Ranking details are available under **About ranking and sources**.
+The feed uses three cards per row on wide panels, two on medium panels, and one on narrow panels. Each source uses its official brand mark in the compact source panel and paper cards. The unmodified SVGs are bundled locally, with suitable light/dark variants. Topic chips and colored Read, Translate, and Research actions separate scanning from task creation. See [brand asset provenance](../src/renderer/assets/paper-news/README.md). Ranking details are available under **About ranking and sources**.
 
 ## Read, translate, research
 
