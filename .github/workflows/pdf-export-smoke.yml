@@ -32,7 +32,7 @@ jobs:
           NEOWORKER_QA_ASAR: ${{ github.workspace }}
           NEOWORKER_MATH_OUTPUT: ${{ github.workspace }}/pdf-math-evidence/equations.pdf
         run: node node_modules/electron/cli.js scripts/qa/pdf-math-smoke.cjs
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: pdf-math-evidence-${{ matrix.os }}
@@ -53,7 +53,7 @@ jobs:
             }
           }
           NODE
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: pdf-smoke-evidence-${{ matrix.os }}
