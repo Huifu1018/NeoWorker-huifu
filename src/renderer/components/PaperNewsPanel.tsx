@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bookmark,
+  BookOpenText,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  Compass,
+  Github,
+  Info,
+  Smile,
+  Star,
+  TrendingUp,
   BookOpen,
   ExternalLink,
   FileText,
@@ -26,6 +36,7 @@ import { NeoWorkerPageHeader } from "./NeoWorkerPageHeader";
 import "./paper-news.css";
 
 const names = { arxiv: "arXiv", huggingface: "Hugging Face", github: "GitHub" };
+const sourceIcons = { arxiv: BookOpenText, huggingface: Smile, github: Github };
 
 export function PaperNewsPanel({
   onUsePrompt,
@@ -297,22 +308,28 @@ export function PaperNewsPanel({
         <div className="pn-sources">
           {PAPER_NEWS_SOURCES.map((s) => {
             const state = snapshot?.sources[s];
+            const SourceIcon = sourceIcons[s];
             return (
               <button
                 key={s}
-                className={`pn-source ${source === s ? "is-active" : ""}`}
+                className={`pn-source pn-source-${s} ${source === s ? "is-active" : ""}`}
                 aria-pressed={source === s}
                 onClick={() => setSource(source === s ? "all" : s)}
               >
                 <span className="pn-source-heading">
-                  <strong>{names[s]}</strong>
+                  <span className="pn-source-identity">
+                    <span className="pn-source-symbol">
+                      <SourceIcon size={24} aria-hidden="true" />
+                    </span>
+                    <strong>{names[s]}</strong>
+                  </span>
                   <span className="pn-count">
                     {state?.error && !state.updatedAt
                       ? "—"
                       : snapshot?.items.filter((i) => i.source === s).length || 0}
                   </span>
                 </span>
-                <span>{sourceDescription(s)}</span>
+                <span className="pn-source-description">{sourceDescription(s)}</span>
                 {state?.error && !busy && (
                   <small className="pn-source-error">
                     {state.error === "rateLimit"
@@ -335,7 +352,12 @@ export function PaperNewsPanel({
                               )}
                   </small>
                 )}
-                <small>
+                <small className="pn-source-status">
+                  {state?.updatedAt && !state.error && !busy ? (
+                    <CheckCircle2 size={12} aria-hidden="true" />
+                  ) : (
+                    <Clock3 size={12} aria-hidden="true" />
+                  )}
                   {busy
                     ? t("正在获取…", "Fetching…")
                     : state?.updatedAt
@@ -363,6 +385,7 @@ export function PaperNewsPanel({
               className={source !== "saved" ? "is-active" : ""}
               onClick={() => setSource("all")}
             >
+              <Compass size={15} aria-hidden="true" />
               {t("发现", "Discover")}
             </button>
             <button
@@ -399,12 +422,18 @@ export function PaperNewsPanel({
           </span>
           <span>{snapshot?.config.topics.join(" · ")}</span>
         </div>
-        <p className="pn-explainer">
-          {t(
-            "推荐 = 关注词匹配（70%）+ 时间（30%），不代表学术质量。arXiv 按发表时间、Hugging Face 按精选时间、GitHub 按代码更新时间筛选；精选与项目结果不保证逐项匹配关注词。",
-            "Ranking uses topic matches (70%) and recency (30%), not scientific quality. Dates represent arXiv publication, Hugging Face selection, and GitHub code updates. Daily selections and repository results may not match every topic.",
-          )}
-        </p>
+        <details className="pn-explainer">
+          <summary>
+            <Info size={13} aria-hidden="true" />
+            {t("推荐依据与来源说明", "About ranking and sources")}
+          </summary>
+          <p>
+            {t(
+              "推荐 = 关注词匹配（70%）+ 时间（30%），不代表学术质量。arXiv 按发表时间、Hugging Face 按精选时间、GitHub 按代码更新时间筛选；精选与项目结果不保证逐项匹配关注词。",
+              "Ranking uses topic matches (70%) and recency (30%), not scientific quality. Dates represent arXiv publication, Hugging Face selection, and GitHub code updates. Daily selections and repository results may not match every topic.",
+            )}
+          </p>
+        </details>
         {!items.length ? (
           <div className="pn-empty">
             <BookOpen size={28} />
@@ -436,11 +465,18 @@ export function PaperNewsPanel({
           <div className="pn-grid">
             {items.map((item) => {
               const saved = snapshot?.saved.some((i) => i.id === item.id);
+              const SourceIcon = sourceIcons[item.source];
               return (
-                <article className="pn-card" key={item.id}>
+                <article className={`pn-card pn-source-${item.source}`} key={item.id}>
                   <div className="pn-card-meta">
-                    <span>{names[item.source]}</span>
-                    <span>{formatDate(item.date)}</span>
+                    <span className="pn-source-badge">
+                      <SourceIcon size={13} aria-hidden="true" />
+                      {names[item.source]}
+                    </span>
+                    <span className="pn-date">
+                      <CalendarDays size={12} aria-hidden="true" />
+                      {formatDate(item.date)}
+                    </span>
                     <button
                       className={`pn-icon ${saved ? "is-saved" : ""}`}
                       aria-label={saved ? t("取消收藏", "Remove bookmark") : t("收藏", "Bookmark")}
@@ -473,6 +509,7 @@ export function PaperNewsPanel({
                     ))}
                     {item.popularity !== undefined && (
                       <small>
+                        <Star size={12} aria-hidden="true" />
                         {item.popularity.toLocaleString(language)}{" "}
                         {item.source === "github" ? t("星标", "stars") : t("点赞", "upvotes")}
                       </small>
@@ -490,16 +527,22 @@ export function PaperNewsPanel({
                       </button>
                     )}
                     <span
+                      className="pn-match"
                       title={t(
                         "按关注词匹配与时间计算，不代表论文质量",
                         "Based on topic matches and recency, not paper quality",
                       )}
                     >
-                      {t("推荐", "Match")} {item.score}
+                      <TrendingUp size={13} aria-hidden="true" />
+                      {t("匹配", "Match")} {item.score}
                     </span>
                   </div>
                   <div className="pn-card-actions">
-                    <button disabled={opening} onClick={() => void start(item, "read")}>
+                    <button
+                      className="pn-action-read"
+                      disabled={opening}
+                      onClick={() => void start(item, "read")}
+                    >
                       <BookOpen size={15} />
                       {t("阅读", "Read")}
                     </button>

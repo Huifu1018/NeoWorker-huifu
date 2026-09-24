@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Distinct source colors and icons in Paper News, with a responsive three-column feed, clearer reading actions, and expandable ranking details.
+
 - Paper News with official arXiv, Hugging Face daily papers, and GitHub repository feeds, research topics, source filters, search, and persistent bookmarks.
 - Paper and repository task drafts for reading, translation, and research, with source links and explicit PDF figure/equation preservation requirements.
 - Transparent topic/recency ranking, per-source cache freshness and errors, shared refresh state across navigation, and Chinese/English interfaces.

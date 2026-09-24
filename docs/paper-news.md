@@ -18,6 +18,8 @@ The recommendation score uses literal, case-insensitive topic matches (70%) and 
 
 Search filters the results already fetched. Bookmark up to 200 items to retain them independently of subsequent refreshes or topic changes. Source titles and abstracts remain in their original language; controls follow the application's Chinese/English setting.
 
+The feed uses three cards per row on wide panels, two on medium panels, and one on narrow panels. Each source has a consistent color and icon in its overview and paper cards. Ranking details are available under **About ranking and sources**.
+
 ## Read, translate, research
 
 Card actions create a fresh task draft containing the original source links. Review and send it to run with the model and permissions configured in NeoWorker:
