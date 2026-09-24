@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import { remarkSourceLinks } from "../utils/remark-source-links";
 
 type MarkdownRendererProps = {
   children: string;
@@ -8,8 +9,8 @@ type MarkdownRendererProps = {
   withBreaks?: boolean;
 };
 
-const gfmPlugins = [remarkGfm];
-const gfmBreaksPlugins = [remarkGfm, remarkBreaks];
+const gfmPlugins = [remarkGfm, remarkSourceLinks];
+const gfmBreaksPlugins = [remarkGfm, remarkSourceLinks, remarkBreaks];
 
 export function MarkdownRenderer({
   children,

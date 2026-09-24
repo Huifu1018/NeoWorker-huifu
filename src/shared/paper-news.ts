@@ -22,7 +22,9 @@ export interface PaperNewsItem {
 export interface PaperNewsSourceState {
   updatedAt?: string;
   attemptedAt?: string;
-  error?: "network" | "rateLimit" | "invalidResponse";
+  error?: "network" | "rateLimit" | "accessDenied" | "unavailable" | "invalidResponse";
+  httpStatus?: number;
+  nextRetryAt?: string;
 }
 export interface PaperNewsSnapshot {
   config: PaperNewsConfig;
@@ -31,6 +33,19 @@ export interface PaperNewsSnapshot {
   sources: Record<PaperNewsSource, PaperNewsSourceState>;
   refreshing: boolean;
 }
+/** Successful results stay fresh for 30 minutes; failures use their own retry deadline. */
+export function paperNewsNeedsRefresh(snapshot: PaperNewsSnapshot, now: number): boolean {
+  return (
+    snapshot.refreshing ||
+    PAPER_NEWS_SOURCES.some((source) => {
+      const state = snapshot.sources[source];
+      if (state.nextRetryAt && Date.parse(state.nextRetryAt) > now) return false;
+      if (state.error) return true;
+      return !state.updatedAt || now - Date.parse(state.updatedAt) >= 30 * 60_000;
+    })
+  );
+}
+
 export const DEFAULT_PAPER_NEWS_CONFIG: PaperNewsConfig = {
   topics: ["large language models", "agents", "multimodal"],
   days: 14,

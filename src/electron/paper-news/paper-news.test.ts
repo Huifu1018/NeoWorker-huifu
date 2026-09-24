@@ -204,3 +204,79 @@ describe("paper news task handoff", () => {
     expect(prompt).toContain("not instructions");
   });
 });
+
+describe("paper news source recovery", () => {
+  it("distinguishes access denials and honors rate limits across restart and topic changes", async () => {
+    let clock = now;
+    const fetcher = vi.fn(async (url: string) =>
+      sourceFor(url) === "arxiv"
+        ? new Response("denied", { status: 403 })
+        : sourceFor(url) === "github"
+          ? new Response("limited", {
+              status: 403,
+              headers: {
+                "x-ratelimit-remaining": "0",
+                "x-ratelimit-reset": String((now + 3600_000) / 1000),
+              },
+            })
+          : new Response(hf),
+    );
+    const cache = file();
+    const sleep = vi.fn(async () => {});
+    const service = new PaperNewsService(cache, fetcher, () => clock, sleep);
+    const first = await service.refresh();
+    expect(first.sources.arxiv).toMatchObject({ error: "accessDenied", httpStatus: 403 });
+    expect(first.sources.github).toMatchObject({
+      error: "rateLimit",
+      nextRetryAt: new Date(now + 3600_000).toISOString(),
+    });
+    expect(sleep).not.toHaveBeenCalled();
+    clock += 120_000;
+    const restarted = new PaperNewsService(cache, fetcher, () => clock, sleep);
+    restarted.saveConfig({ topics: ["robotics"], days: 7 });
+    fetcher.mockClear();
+    await restarted.refresh();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(sourceFor(fetcher.mock.calls[0][0])).toBe("huggingface");
+  });
+
+  it("retries a transient connection closure once after spacing requests", async () => {
+    let attempts = 0;
+    const fetcher = vi.fn(async (url: string) => {
+      if (sourceFor(url) === "arxiv" && attempts++ === 0)
+        throw new Error("net::ERR_CONNECTION_CLOSED");
+      return new Response(fixtures[sourceFor(url)]);
+    });
+    const sleep = vi.fn(async () => {});
+    const service = new PaperNewsService(file(), fetcher, () => now, sleep);
+    const result = await service.refresh();
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(3100);
+    expect(attempts).toBe(2);
+    expect(result.sources.arxiv.error).toBeUndefined();
+    expect(result.items.some((i) => i.source === "arxiv")).toBe(true);
+  });
+
+  it("preserves cached items during 429 and recovers only after Retry-After", async () => {
+    let clock = now;
+    let limited = false;
+    const fetcher = vi.fn(async (url: string) =>
+      limited && sourceFor(url) === "arxiv"
+        ? new Response("limited", { status: 429, headers: { "Retry-After": "1800" } })
+        : new Response(fixtures[sourceFor(url)]),
+    );
+    const service = new PaperNewsService(file(), fetcher, () => clock);
+    await service.refresh();
+    clock += 60_001;
+    limited = true;
+    const failed = await service.refresh();
+    expect(failed.sources.arxiv.error).toBe("rateLimit");
+    expect(failed.items.some((i) => i.source === "arxiv")).toBe(true);
+    const deadline = clock + 1800_000;
+    expect(failed.sources.arxiv.nextRetryAt).toBe(new Date(deadline).toISOString());
+    clock = deadline;
+    limited = false;
+    const recovered = await service.refresh();
+    expect(recovered.sources.arxiv.error).toBeUndefined();
+    expect(recovered.sources.arxiv.updatedAt).toBe(new Date(clock).toISOString());
+  });
+});

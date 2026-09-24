@@ -1,3 +1,4 @@
+import { PaperNewsRequestError, paperNewsHttpError } from "./request";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -5,6 +6,7 @@ import {
   PAPER_NEWS_SOURCES,
   type PaperNewsItem,
   type PaperNewsSnapshot,
+  type PaperNewsSource,
 } from "../../shared/paper-news";
 import {
   normalizePaperNewsConfig,
@@ -80,11 +82,12 @@ export class PaperNewsService {
     refreshing: false,
   };
   private inflight?: Promise<PaperNewsSnapshot>;
-  private lastAttempt = 0;
   constructor(
     private readonly file: string,
     private readonly fetcher: Fetcher,
     private readonly now: () => number = Date.now,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolve) => setTimeout(resolve, ms)),
   ) {
     try {
       if (fs.statSync(file).size > 12 * 1024 * 1024) return;
@@ -103,7 +106,15 @@ export class PaperNewsService {
           this.state.sources[source].updatedAt = s.updatedAt;
         if (s && Number.isFinite(Date.parse(s.attemptedAt)))
           this.state.sources[source].attemptedAt = s.attemptedAt;
-        if (["network", "rateLimit", "invalidResponse"].includes(s?.error))
+        if (s && Number.isFinite(Date.parse(s.nextRetryAt)))
+          this.state.sources[source].nextRetryAt = s.nextRetryAt;
+        if (s && Number.isInteger(s.httpStatus) && s.httpStatus >= 100 && s.httpStatus <= 599)
+          this.state.sources[source].httpStatus = s.httpStatus;
+        if (
+          ["network", "rateLimit", "accessDenied", "unavailable", "invalidResponse"].includes(
+            s?.error,
+          )
+        )
           this.state.sources[source].error = s.error;
       }
     } catch {
@@ -130,8 +141,20 @@ export class PaperNewsService {
     if (this.inflight) throw new Error("Refresh in progress");
     const config = normalizePaperNewsConfig(input);
     if (JSON.stringify(config) !== JSON.stringify(this.state.config)) {
-      this.state = { ...this.state, config, items: [], sources: emptySources() };
-      this.lastAttempt = 0;
+      // A new query must not bypass an upstream rate-limit or access-denial cooldown.
+      const sources = emptySources() as PaperNewsSnapshot["sources"];
+      for (const source of PAPER_NEWS_SOURCES) {
+        const prior = this.state.sources[source];
+        if (prior.nextRetryAt && Date.parse(prior.nextRetryAt) > this.now()) {
+          sources[source] = {
+            attemptedAt: prior.attemptedAt,
+            nextRetryAt: prior.nextRetryAt,
+            error: prior.error,
+            httpStatus: prior.httpStatus,
+          };
+        }
+      }
+      this.state = { ...this.state, config, items: [], sources };
       this.persist();
     }
     return this.snapshot();
@@ -149,9 +172,7 @@ export class PaperNewsService {
   }
   refresh(): Promise<PaperNewsSnapshot> {
     if (this.inflight) return this.inflight;
-    // Coalesce page changes and repeated clicks; public APIs have strict rate limits.
-    if (this.now() - this.lastAttempt < 60_000) return Promise.resolve(this.snapshot());
-    this.lastAttempt = this.now();
+    // One shared refresh; each source also enforces its persisted cooldown.
     this.inflight = this.runRefresh().then(
       () => {
         this.inflight = undefined;
@@ -164,47 +185,104 @@ export class PaperNewsService {
     );
     return this.inflight;
   }
-  private async runRefresh(): Promise<PaperNewsSnapshot> {
-    const now = this.now();
-    await Promise.all(
-      PAPER_NEWS_SOURCES.map(async (source) => {
-        const previous = this.state.sources[source];
-        const attemptedAt = new Date(now).toISOString();
-        try {
-          const response = await this.fetcher(paperNewsEndpoint(source, this.state.config, now), {
+  private async requestSource(source: PaperNewsSource): Promise<PaperNewsItem[]> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await this.fetcher(
+          paperNewsEndpoint(source, this.state.config, this.now()),
+          {
             method: "GET",
             credentials: "omit",
             redirect: "error",
             signal: AbortSignal.timeout(25_000),
             headers: {
-              "User-Agent": "NeoWorker-PaperNews",
+              "User-Agent": "NeoWorker-PaperNews/0.2 (+https://github.com/Yuan-lab-LLM/NeoWorker)",
               Accept: source === "arxiv" ? "application/atom+xml" : "application/json",
             },
-          });
-          if (!response.ok) {
-            await response.body?.cancel();
-            throw new Error([403, 429].includes(response.status) ? "rateLimit" : "network");
-          }
-          const raw = await readPaperNewsResponse(response);
-          let items: PaperNewsItem[];
-          try {
-            items = rankPaperNews(parsePaperNews(source, raw), this.state.config, now);
-          } catch {
-            throw new Error("invalidResponse");
-          }
+          },
+        );
+        if (!response.ok) {
+          const error = paperNewsHttpError(response, source, this.now());
+          await response.body?.cancel().catch(() => {});
+          throw error;
+        }
+        const raw = await readPaperNewsResponse(response);
+        try {
+          return rankPaperNews(parsePaperNews(source, raw), this.state.config, this.now());
+        } catch {
+          throw new PaperNewsRequestError("invalidResponse");
+        }
+      } catch (error) {
+        const typed = error instanceof PaperNewsRequestError;
+        const message = error instanceof Error ? error.message : "";
+        const retryable = typed
+          ? error.code === "unavailable" && !error.retryAt
+          : /ERR_CONNECTION_(?:CLOSED|RESET)|ECONNRESET|Response aborted|fetch failed/i.test(
+              message,
+            ) &&
+            !/CERT|SSL|AUTH|DENIED|PROXY|TUNNEL|PAC/i.test(
+              message + String((error as { cause?: { code?: string } })?.cause?.code || ""),
+            );
+        // At most one same-route retry for a transient failure. Never retry a denial or quota response here.
+        if (attempt === 0 && retryable) {
+          await this.sleep(3_100);
+          continue;
+        }
+        if (typed) throw error;
+        throw new PaperNewsRequestError(
+          message === "invalidResponse" ? "invalidResponse" : "network",
+        );
+      }
+    }
+  }
+  private async runRefresh(): Promise<PaperNewsSnapshot> {
+    const due = PAPER_NEWS_SOURCES.filter((source) => {
+      const deadline = this.state.sources[source].nextRetryAt;
+      return !deadline || Date.parse(deadline) <= this.now();
+    });
+    const previousStates = structuredClone(this.state.sources);
+    const attemptedAt = new Date(this.now()).toISOString();
+    for (const source of due) {
+      this.state.sources[source] = {
+        ...previousStates[source],
+        attemptedAt,
+        nextRetryAt: new Date(this.now() + 60_000).toISOString(),
+      };
+    }
+    // Persist all throttles before starting requests. A disk failure must not
+    // leave requests running after the shared refresh promise has rejected.
+    if (due.length) this.persist();
+    await Promise.all(
+      due.map(async (source) => {
+        const previous = previousStates[source];
+        try {
+          const items = await this.requestSource(source);
           this.state.items = [...this.state.items.filter((i) => i.source !== source), ...items];
-          this.state.sources[source] = { attemptedAt, updatedAt: attemptedAt };
+          this.state.sources[source] = {
+            attemptedAt,
+            updatedAt: new Date(this.now()).toISOString(),
+            nextRetryAt: new Date(this.now() + 60_000).toISOString(),
+          };
         } catch (error) {
-          const message = error instanceof Error ? error.message : "";
+          const failure =
+            error instanceof PaperNewsRequestError ? error : new PaperNewsRequestError("network");
+          const delay =
+            failure.code === "rateLimit"
+              ? 5 * 60_000
+              : failure.code === "accessDenied" || failure.code === "invalidResponse"
+                ? 30 * 60_000
+                : 60_000;
           this.state.sources[source] = {
             ...previous,
             attemptedAt,
-            error: message === "rateLimit" || message === "invalidResponse" ? message : "network",
+            error: failure.code,
+            httpStatus: failure.httpStatus,
+            nextRetryAt: new Date(Math.max(this.now() + delay, failure.retryAt || 0)).toISOString(),
           };
         }
       }),
     );
-    this.persist();
+    if (due.length) this.persist();
     return this.snapshot();
   }
 }

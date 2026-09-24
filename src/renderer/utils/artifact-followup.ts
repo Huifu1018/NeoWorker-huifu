@@ -1,8 +1,4 @@
-import type {
-  ActiveArtifactContext,
-  TaskEvent,
-  TaskOutputSummary,
-} from "../../shared/types";
+import type { ActiveArtifactContext, TaskEvent, TaskOutputSummary } from "../../shared/types";
 import {
   collectLatestEndOfTaskArtifactCards,
   getTaskEventArtifactPaths,
@@ -18,8 +14,7 @@ function normalizeArtifactPath(filePath: string): string {
 }
 
 function getArtifactStem(filePath: string): string {
-  const fileName =
-    normalizeArtifactPath(filePath).split("/").filter(Boolean).pop() || "";
+  const fileName = normalizeArtifactPath(filePath).split("/").filter(Boolean).pop() || "";
   return fileName.replace(ARTIFACT_EXTENSION_RE, "").toLocaleLowerCase();
 }
 
@@ -40,8 +35,7 @@ function toActiveArtifactKind(
   kind: GeneratedInlinePreviewKind,
 ): ActiveArtifactContext["kind"] | null {
   if (kind === "html") return "webpage";
-  if (kind === "spreadsheet" || kind === "presentation" || kind === "document")
-    return kind;
+  if (kind === "spreadsheet" || kind === "presentation" || kind === "document") return kind;
   return null;
 }
 
@@ -57,14 +51,12 @@ function hasArtifactEvidenceSince(args: {
     // task history. Do not let that resurrect an artifact from an older turn.
     if (
       getEffectiveTaskEventType(event) === "task_completed" &&
-      (!event.payload?.outputSummary ||
-        typeof event.payload.outputSummary !== "object")
+      (!event.payload?.outputSummary || typeof event.payload.outputSummary !== "object")
     ) {
       return false;
     }
     return getTaskEventArtifactPaths(event, args.events).some(
-      (candidate) =>
-        normalizeArtifactPath(candidate).toLocaleLowerCase() === target,
+      (candidate) => normalizeArtifactPath(candidate).toLocaleLowerCase() === target,
     );
   });
 }
@@ -80,9 +72,7 @@ function isAuthoritativeCompletedOutput(args: {
   const outputPaths = [
     args.outputSummary.primaryOutputPath,
     ...args.outputSummary.created,
-    ...(args.outputSummary.created.length === 0
-      ? args.outputSummary.modifiedFallback || []
-      : []),
+    ...(args.outputSummary.created.length === 0 ? args.outputSummary.modifiedFallback || [] : []),
   ];
   if (
     !outputPaths.some(
@@ -95,8 +85,7 @@ function isAuthoritativeCompletedOutput(args: {
   }
   return args.events.some(
     (event) =>
-      event.timestamp >= args.since &&
-      getEffectiveTaskEventType(event) === "task_completed",
+      event.timestamp >= args.since && getEffectiveTaskEventType(event) === "task_completed",
   );
 }
 
@@ -114,18 +103,14 @@ export function findReplacementArtifactForCompletedFollowUp(args: {
   const scopedEvents = args.taskId
     ? args.events.filter((event) => event.taskId === args.taskId)
     : args.events;
-  const cards = collectLatestEndOfTaskArtifactCards(
-    scopedEvents,
-    8,
-    args.outputSummary,
-  );
+  const cards = collectLatestEndOfTaskArtifactCards(scopedEvents, 8, args.outputSummary);
   for (let index = cards.length - 1; index >= 0; index -= 1) {
     const candidate = cards[index];
     const hasDirectEvidence = hasArtifactEvidenceSince({
-        path: candidate.path,
-        events: scopedEvents,
-        since: args.turnStartedAt,
-      });
+      path: candidate.path,
+      events: scopedEvents,
+      since: args.turnStartedAt,
+    });
     const isFinalOutput = isAuthoritativeCompletedOutput({
       path: candidate.path,
       outputSummary: args.outputSummary,
@@ -138,8 +123,11 @@ export function findReplacementArtifactForCompletedFollowUp(args: {
     const candidateKind = toActiveArtifactKind(candidate.kind);
     if (!candidateKind) continue;
     const candidatePath = normalizeArtifactPath(candidate.path);
-    if (candidatePath === currentPath) continue;
     if (getArtifactFamilyStem(candidatePath) !== currentFamilyStem) continue;
+    // Pick a stable winner before comparing it with the open preview. Skipping
+    // the current winner selects an older sibling on the next render, causing
+    // report.pdf <-> report-v2.pdf to update React forever.
+    if (candidatePath === currentPath) return null;
     return { kind: candidateKind, path: candidate.path };
   }
 

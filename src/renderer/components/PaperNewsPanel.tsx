@@ -15,6 +15,7 @@ import {
 import {
   PAPER_NEWS_SOURCES,
   paperNewsPrompt,
+  paperNewsNeedsRefresh,
   type PaperNewsAction,
   type PaperNewsItem,
   type PaperNewsSnapshot,
@@ -41,6 +42,18 @@ export function PaperNewsPanel({
   const [topics, setTopics] = useState("");
   const [days, setDays] = useState(14);
   const [busy, setBusy] = useState(false);
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const coolingDown = Boolean(
+    snapshot &&
+    PAPER_NEWS_SOURCES.every(
+      (s) =>
+        snapshot.sources[s].nextRetryAt && Date.parse(snapshot.sources[s].nextRetryAt!) > clock,
+    ),
+  );
   const [opening, setOpening] = useState(false);
   const [failure, setFailure] = useState<"load" | "save" | "open" | null>(null);
   const mounted = useRef(false);
@@ -53,10 +66,7 @@ export function PaperNewsPanel({
         const state = await window.electronAPI.getPaperNews();
         if (disposed) return;
         setSnapshot(state);
-        const recent = Object.values(state.sources).some(
-          (s) => s.attemptedAt && Date.now() - Date.parse(s.attemptedAt) < 30 * 60_000,
-        );
-        if (!recent || state.refreshing) {
+        if (paperNewsNeedsRefresh(state, Date.now())) {
           busyRef.current = true;
           setBusy(true);
           const next = await window.electronAPI.refreshPaperNews();
@@ -93,6 +103,19 @@ export function PaperNewsPanel({
       if (mounted.current) setBusy(false);
     }
   }
+  useEffect(() => {
+    if (!snapshot || busy || busyRef.current || settings || failure || document.hidden) return;
+    const retryDue = PAPER_NEWS_SOURCES.some((s) => {
+      const state = snapshot.sources[s];
+      return (
+        state.error &&
+        !["accessDenied", "invalidResponse"].includes(state.error) &&
+        (!state.nextRetryAt || Date.parse(state.nextRetryAt) <= clock)
+      );
+    });
+    if (retryDue) void refresh();
+  }, [snapshot, busy, clock, settings, failure]);
+
   async function saveConfig(event: React.FormEvent) {
     event.preventDefault();
     if (busyRef.current) return;
@@ -201,9 +224,17 @@ export function PaperNewsPanel({
               <SlidersHorizontal size={16} />
               {t("关注设置", "Topics")}
             </button>
-            <button className="pn-button pn-primary" disabled={busy} onClick={() => void refresh()}>
+            <button
+              className="pn-button pn-primary"
+              disabled={busy || coolingDown}
+              onClick={() => void refresh()}
+            >
               <RefreshCw size={16} className={busy ? "pn-spinning" : ""} />
-              {busy ? t("获取中…", "Fetching…") : t("获取最新", "Refresh")}
+              {busy
+                ? t("获取中…", "Fetching…")
+                : coolingDown
+                  ? t("等待刷新", "Wait to refresh")
+                  : t("获取最新", "Refresh")}
             </button>
           </>
         }
@@ -276,7 +307,9 @@ export function PaperNewsPanel({
                 <span className="pn-source-heading">
                   <strong>{names[s]}</strong>
                   <span className="pn-count">
-                    {snapshot?.items.filter((i) => i.source === s).length || 0}
+                    {state?.error && !state.updatedAt
+                      ? "—"
+                      : snapshot?.items.filter((i) => i.source === s).length || 0}
                   </span>
                 </span>
                 <span>{sourceDescription(s)}</span>
@@ -284,15 +317,22 @@ export function PaperNewsPanel({
                   <small className="pn-source-error">
                     {state.error === "rateLimit"
                       ? t("请求受限，请稍后刷新", "Request limited; retry later")
-                      : state.error === "invalidResponse"
-                        ? t(
-                            "来源返回的数据异常，请稍后重试",
-                            "Unexpected source response; retry later",
-                          )
-                        : t(
-                            "暂时无法连接，请检查网络或代理",
-                            "Connection unavailable; check your network or proxy",
-                          )}
+                      : state.error === "accessDenied"
+                        ? t("来源拒绝访问，请稍后重试", "Source denied access; try again later")
+                        : state.error === "unavailable"
+                          ? t(
+                              "来源服务暂时不可用，将稍后重试",
+                              "Source temporarily unavailable; retry scheduled",
+                            )
+                          : state.error === "invalidResponse"
+                            ? t(
+                                "来源返回的数据异常，请稍后重试",
+                                "Unexpected source response; retry later",
+                              )
+                            : t(
+                                "暂时无法连接，请检查网络或代理",
+                                "Connection unavailable; check your network or proxy",
+                              )}
                   </small>
                 )}
                 <small>
@@ -304,6 +344,14 @@ export function PaperNewsPanel({
                         ? t("尚无缓存内容", "No cached results yet")
                         : t("等待获取", "Not fetched yet")}
                 </small>
+                {state?.nextRetryAt && Date.parse(state.nextRetryAt) > clock && (
+                  <small>
+                    {t(
+                      `可在 ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} 分钟后刷新`,
+                      `Refresh available in ${Math.ceil((Date.parse(state.nextRetryAt) - clock) / 60_000)} min`,
+                    )}
+                  </small>
+                )}
               </button>
             );
           })}

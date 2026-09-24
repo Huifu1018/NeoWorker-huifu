@@ -177,3 +177,23 @@ describe("findReplacementArtifactForCompletedFollowUp", () => {
     expect(replacement).toEqual({ kind: "document", path: "report.docx" });
   });
 });
+
+describe("artifact replacement settles after a completed multi-output turn", () => {
+  it.each(["pdf", "xlsx"])("does not oscillate between report and report-v2.%s", (extension) => {
+    const first = `/workspace/PackLab_研究报告.${extension}`;
+    const latest = `/workspace/PackLab_研究报告-v2.${extension}`;
+    const kind = extension === "xlsx" ? ("spreadsheet" as const) : ("document" as const);
+    const events = [
+      makeArtifactEvent("first", 210, { path: first, legacyType: "artifact_created" }),
+      makeArtifactEvent("latest", 220, { path: latest, legacyType: "artifact_created" }),
+      makeCompletedEvent("complete", 230),
+    ];
+    const args = { events, turnStartedAt: 200, taskId: "task-1" };
+    const next = findReplacementArtifactForCompletedFollowUp({
+      ...args,
+      current: { kind, path: first },
+    });
+    expect(next).toEqual({ kind, path: latest });
+    expect(findReplacementArtifactForCompletedFollowUp({ ...args, current: next! })).toBeNull();
+  });
+});

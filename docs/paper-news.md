@@ -30,7 +30,7 @@ No model request runs merely from fetching a feed or opening a draft. Drafts tre
 
 ## Refresh and storage
 
-Opening the page fetches data when the last attempt is older than 30 minutes. **Refresh** requests new data manually, with a one-minute cooldown to protect public API quotas. Leaving the page does not restart an in-flight fetch. A source failure retains its prior results and last successful fetch time; the other sources can still update.
+Opening the page refreshes sources whose successful results are older than 30 minutes, or whose failed attempt is eligible for retry. **Refresh** requests new data manually, with a persisted per-source cooldown. Temporary connection failures receive at most one retry after three seconds; rate limits and access denials are not immediately retried. Server Retry-After and GitHub quota reset deadlines are respected across restarts and topic changes. While the page is visible, eligible transient failures are retried automatically. Leaving the page does not restart an in-flight fetch. A source failure retains its prior results and last successful fetch time; the other sources can still update. An unavailable source with no cache displays a dash, not a misleading zero-result count.
 
 Configuration, fetched metadata, and bookmarks are stored in `paper-news.json` under the application's user-data directory. Papers and repository code are not downloaded during feed refresh. Fetches use the application's existing system-proxy-aware network transport and require no API token. GitHub public search quotas and regional network restrictions can limit availability.
 

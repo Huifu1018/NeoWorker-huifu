@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stop PDF and spreadsheet previews from cycling between output revisions and crashing the renderer. Keep explicitly selected files open until a new preview follow-up completes.
+- Exclude trailing Chinese punctuation and prose from implicit source links while preserving explicitly authored Unicode URLs.
+- Distinguish feed access denial from rate limiting, retain cached results, and respect persisted per-source retry deadlines.
+
 - Typeset mathematical formulas in generated PDFs with offline fonts, preserving fractions, scripts, sums, matrices and equation numbers. Reject invalid formulas instead of delivering broken notation.
 - Preserve source equations during paper translation; use original equation crops when transcription cannot be verified.
 

@@ -220,6 +220,8 @@ The CLI and desktop app share local configuration, model routing, workspaces, Sk
 
 ## What NeoWorker can do
 
+The current source also fixes PDF/Excel preview crashes when a task contains multiple revisions, preserves explicitly selected previews, and keeps Chinese source commentary outside automatically detected links. These fixes are included in local test builds, not the existing published v0.2.3 installers.
+
 ### Paper News (source preview)
 
 The current source tree adds **Paper News** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Set up to five research topics, filter and search fetched results, and keep local bookmarks across restarts.

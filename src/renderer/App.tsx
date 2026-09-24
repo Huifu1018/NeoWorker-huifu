@@ -1679,10 +1679,12 @@ const SelectedTaskWorkspaceView = memo(
         language,
       ],
     );
+    // Only a follow-up sent from this preview may replace the selected file.
+    // Opening an existing card must not replay the task's last completed turn.
     const completedFollowUpArtifactReplacement = useMemo(() => {
       if (
         !spreadsheetArtifact ||
-        activeSpreadsheetTurnStartedAt === null ||
+        spreadsheetTurnStartedAt === null ||
         effectiveSpreadsheetTaskWorking
       ) {
         return null;
@@ -1690,7 +1692,7 @@ const SelectedTaskWorkspaceView = memo(
       return findReplacementArtifactForCompletedFollowUp({
         current: spreadsheetArtifact,
         events: spreadsheetEvents,
-        turnStartedAt: activeSpreadsheetTurnStartedAt,
+        turnStartedAt: spreadsheetTurnStartedAt,
         taskId: task?.id,
         outputSummary: resolveTaskOutputSummaryFromTask(
           task,
@@ -1698,7 +1700,7 @@ const SelectedTaskWorkspaceView = memo(
         ),
       });
     }, [
-      activeSpreadsheetTurnStartedAt,
+      spreadsheetTurnStartedAt,
       effectiveSpreadsheetTaskWorking,
       spreadsheetArtifact,
       spreadsheetEvents,
