@@ -9,7 +9,8 @@
 
 ## Validation
 
-- 58 tests passed across eight targeted suites, including React state/effect render-cycle tests for PDF and XLSX revision selection, source-link HTML, feed recovery, trusted IPC, navigation and existing Markdown behavior.
+- 59 tests passed across eight targeted suites, including React state/effect render-cycle tests for PDF and XLSX revision selection, source-link HTML, feed recovery, trusted IPC, navigation and existing Markdown behavior.
+- Browser interaction QA with the real preview components displayed the reported PackLab PDF and a spreadsheet fixture, switched between PDF and XLSX and their v2 revisions, and remained free of renderer error logs. This used an isolated test bridge, not the installed application profile. Both adjacent source links had clean destinations.
 - Targeted lint: no warnings or errors.
 - Full application build passed (renderer, Electron, daemon, CLI and platform helpers).
 - Renderer type-check comparison with `b46ccaf`: 169 pre-existing diagnostic identities, no new diagnostics.

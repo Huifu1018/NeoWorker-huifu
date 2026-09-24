@@ -1,10 +1,10 @@
-import type { Root, RootContent, Link, Text } from "mdast";
+import type { Root, RootContent, Link } from "mdast";
 
 /** GFM treats full-width prose punctuation as URL characters. Repair only
  * implicit links; explicit Markdown links can intentionally contain Unicode. */
-export function remarkSourceLinks() {
-  return (tree: Root, file: { value: unknown }) => {
-    const source = String(file.value);
+export function remarkSourceLinks(this: { parse: (text: string) => unknown }) {
+  const parse = this.parse.bind(this);
+  function repair(tree: Root, source: string) {
     function visit(parent: { children: RootContent[] }) {
       for (let i = 0; i < parent.children.length; i++) {
         const node = parent.children[i];
@@ -22,16 +22,25 @@ export function remarkSourceLinks() {
           const boundary = label.search(/[，。；：！？、（）【】《》「」『』]/u);
           if (boundary <= 0) continue;
           const url = label.slice(0, boundary);
-          const suffix: Text = { type: "text", value: label.slice(boundary) };
+          const suffix = label.slice(boundary);
+          // One GFM autolink can swallow a second URL separated only by CJK
+          // punctuation. Reparse the prose tail so that source stays clickable.
+          const tail = parse(suffix) as Root;
+          repair(tail, suffix);
+          const children =
+            tail.children.length === 1 && tail.children[0].type === "paragraph"
+              ? tail.children[0].children
+              : [{ type: "text" as const, value: suffix }];
           link.url = /^www\./i.test(url) ? `http://${url}` : url;
           link.children = [{ type: "text", value: url }];
-          parent.children.splice(i + 1, 0, suffix);
-          i++;
+          parent.children.splice(i + 1, 0, ...children);
+          i += children.length;
         } else if ("children" in node) {
           visit(node as { children: RootContent[] });
         }
       }
     }
     visit(tree);
-  };
+  }
+  return (tree: Root, file: { value: unknown }) => repair(tree, String(file.value));
 }
