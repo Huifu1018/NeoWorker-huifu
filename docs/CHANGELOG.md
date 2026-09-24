@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Typeset mathematical formulas in generated PDFs with offline fonts, preserving fractions, scripts, sums, matrices and equation numbers. Reject invalid formulas instead of delivering broken notation.
+- Preserve source equations during paper translation; use original equation crops when transcription cannot be verified.
+
 ## [0.2.3] - 2026-09-24
 
 ### Fixed

@@ -242,7 +242,7 @@ export class DocumentTools {
         description:
           "Generate a styled PDF document from markdown content or structured sections. " +
           "Use this when the user asks you to create a report, document, or PDF. " +
-          "Returns the file path of the generated document.",
+          "Typesets LaTeX math offline: $...$ inline, $$...$$ display, with fractions, scripts and equation tags. Preserve original equation images if transcription is uncertain. Returns the file path of the generated document.",
         input_schema: {
           type: "object" as const,
           properties: {

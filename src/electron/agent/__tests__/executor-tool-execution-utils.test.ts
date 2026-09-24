@@ -48,6 +48,10 @@ describe("isEffectivelyIdempotentToolCall", () => {
 });
 
 describe("getToolInputValidationError", () => {
+  it("accepts a persisted PDF manuscript without copying content into the tool call", () => {
+    expect(getToolInputValidationError("generate_document", { filename: "paper.pdf", markdown_path: "paper.md" })).toBeNull();
+    expect(getToolInputValidationError("generate_document", { filename: "paper.pdf" })).toContain("markdown_path");
+  });
   it("validates count_text/text_metrics input contracts", () => {
     expect(getToolInputValidationError("count_text", {})).toContain("either 'text' or 'path'");
     expect(getToolInputValidationError("text_metrics", { text: "x", path: "a.txt" })).toContain(

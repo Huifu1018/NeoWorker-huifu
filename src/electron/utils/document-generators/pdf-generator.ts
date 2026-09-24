@@ -12,7 +12,8 @@ import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL, fileURLToPath } from "url";
-import { marked, Renderer } from "marked";
+import { Renderer } from "marked";
+import { createPdfMarkdownParser, getPdfMathStyles } from "./pdf-math";
 import type { OfficeQualityReport } from "../office-document-quality";
 import { isSuspiciousPdfText } from "../pdf-text";
 import { reviewPdfLayout } from "../pdf-layout-review";
@@ -325,6 +326,17 @@ export function assertPdfHeadingsPresent(headings: string[], finalText: string):
   }
 }
 
+// MathML and its visual HTML describe the same equation. Count it once, with
+// scripts kept together, so the prose corruption heuristic does not reject math.
+const PDF_SOURCE_TEXT_SCRIPT = `(() => {
+  const body = document.body.cloneNode(true);
+  for (const formula of body.querySelectorAll('.katex')) {
+    const visual = formula.querySelector('.katex-html');
+    formula.replaceWith(document.createTextNode((visual?.textContent || formula.textContent || '').replace(/\\s+/g, '')));
+  }
+  return body.textContent || '';
+})()`;
+
 async function waitForFonts(webContents: {
   executeJavaScript: (code: string, userGesture?: boolean) => Promise<unknown>;
 }): Promise<void> {
@@ -385,7 +397,7 @@ async function renderPdfWithElectron(
     await window.webContents.executeJavaScript(PDF_IMAGE_VALIDATION_SCRIPT, true);
     const renderedText = String(
       await window.webContents.executeJavaScript(
-        "document.body ? document.body.innerText : ''",
+        PDF_SOURCE_TEXT_SCRIPT,
         true,
       ),
     );
@@ -446,7 +458,7 @@ async function renderPdfWithPlaywright(
     });
     await page.evaluate(PDF_IMAGE_VALIDATION_SCRIPT);
     await page.emulateMedia({ media: "screen" });
-    const renderedText = await page.locator("body").innerText();
+    const renderedText = await page.evaluate(PDF_SOURCE_TEXT_SCRIPT);
     const parsed = path.parse(outputPath);
     const evidenceDirectory = path.join(parsed.dir, ".neoworker", "pdf-previews", parsed.name);
     fs.mkdirSync(evidenceDirectory, { recursive: true });
@@ -792,6 +804,8 @@ export function buildPDFHTML(options: PDFOptions): string {
     .report-body th { background: #1F4E78; color: #fff; border-color: #1F4E78; }
     .report-body tbody tr:nth-child(even) td { background: #EDF4F9; }
     .report-body blockquote { border-left-color: #2E85C1; background: #EDF6FC; }
+    ${body.includes('class="katex') ? getPdfMathStyles() : ""}
+    .katex-display { margin: 1.4em 0; break-inside: avoid; }
   </style>
 </head>
 <body>
@@ -838,7 +852,7 @@ function markdownToHtml(md: string, options: PDFOptions): string {
     const source = embedPdfImage(href, options);
     return `<img src="${escapeHtml(source)}" alt="${escapeHtml(text)}"${title ? ` title="${escapeHtml(title)}"` : ""}>`;
   };
-  return marked(md, { async: false, gfm: true, breaks: false, renderer });
+  return createPdfMarkdownParser(renderer).parse(md, { async: false });
 }
 
 function escapeHtml(str: string): string {

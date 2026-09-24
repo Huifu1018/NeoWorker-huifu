@@ -27,6 +27,17 @@ jobs:
         env:
           NEOWORKER_QA_ASAR: ${{ github.workspace }}
         run: node node_modules/electron/cli.js scripts/qa/pdf-delivery-smoke.cjs
+      - name: Exercise mathematical PDF export
+        env:
+          NEOWORKER_QA_ASAR: ${{ github.workspace }}
+          NEOWORKER_MATH_OUTPUT: ${{ github.workspace }}/pdf-math-evidence/equations.pdf
+        run: node node_modules/electron/cli.js scripts/qa/pdf-math-smoke.cjs
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: pdf-math-evidence-${{ matrix.os }}
+          path: pdf-math-evidence/equations.pdf
+          if-no-files-found: ignore
       - name: Collect failure evidence
         if: failure()
         shell: bash

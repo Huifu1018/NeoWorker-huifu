@@ -898,8 +898,8 @@ export function getToolInputValidationError(toolName: string, input: Any): strin
       return "create_document requires a format (docx or pdf)";
     }
     if (toolName === "create_document" && !input?.content) return "create_document requires content";
-    if (toolName === "generate_document" && !input?.markdown && !input?.sections) {
-      return "generate_document requires markdown or sections";
+    if (toolName === "generate_document" && !input?.markdown && !input?.markdown_path && !input?.sections) {
+      return "generate_document requires markdown, markdown_path or sections";
     }
   }
   if (toolName === "compile_latex") {
