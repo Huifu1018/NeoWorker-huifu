@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Redesigned Paper News with official arXiv, Hugging Face, and GitHub brand assets, compact source panels, a responsive three-column feed, topic chips, and distinct reading, translation, and research actions.
+- Redesigned Paper News with official arXiv, Hugging Face, and GitHub brand assets, compact source panels, a responsive three-column feed, topic chips, and a single blue action accent.
 
 - Paper News with official arXiv, Hugging Face daily papers, and GitHub repository feeds, research topics, source filters, search, and persistent bookmarks.
 - Paper and repository task drafts for reading, translation, and research, with source links and explicit PDF figure/equation preservation requirements.

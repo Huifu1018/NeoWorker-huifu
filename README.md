@@ -224,7 +224,7 @@ The current source also fixes PDF/Excel preview crashes when a task contains mul
 
 ### Paper News (source preview)
 
-The current source tree adds **Paper News** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Set up to five research topics, filter and search fetched results, and keep local bookmarks across restarts. Official arXiv, Hugging Face, and GitHub marks identify each source. Compact source panels, topic labels, and distinct reading, translation, and research actions organize the responsive three-column feed.
+The current source tree adds **Paper News** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Set up to five research topics, filter and search fetched results, and keep local bookmarks across restarts. Official arXiv, Hugging Face, and GitHub marks identify each source. Compact source panels, topic labels, and a single blue action accent organize the responsive three-column feed.
 
 Each card links to its source and, for papers, the PDF. **Read**, **Translate**, and **Research** prepare a new task draft for your configured model. Paper translation requests a complete PDF with figures, tables, and correctly typeset equations; repository translation targets the README. Review and send the draft to start the task.
 
