@@ -1,4 +1,4 @@
-# Paper News brand assets
+# News Feed brand assets
 
 These unmodified official SVGs identify third-party sources integrated into NeoWorker. They are bundled locally, so showing a source does not contact a remote image service. Brand ownership remains with the respective owners; use does not imply endorsement.
 

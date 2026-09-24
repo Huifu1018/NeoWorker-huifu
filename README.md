@@ -222,13 +222,13 @@ The CLI and desktop app share local configuration, model routing, workspaces, Sk
 
 The current source also fixes PDF/Excel preview crashes when a task contains multiple revisions, preserves explicitly selected previews, and keeps Chinese source commentary outside automatically detected links. These fixes are included in local test builds, not the existing published v0.2.3 installers.
 
-### Paper News (source preview)
+### News Feed (source preview)
 
-The current source tree adds **Paper News** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Set up to five research topics, filter and search fetched results, and keep local bookmarks across restarts. Official arXiv, Hugging Face, and GitHub marks identify each source. Compact source panels, topic labels, and a single blue action accent organize the responsive three-column feed.
+The current source tree adds **News Feed** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Configure each source independently with up to five topics and its own time window. arXiv supports category filtering; GitHub supports language and minimum stars; Hugging Face can show only topic matches within its daily selection. Filter and search fetched results, and keep local bookmarks across restarts. Official arXiv, Hugging Face, and GitHub marks identify each source. Compact source panels, topic labels, and a single blue action accent organize the responsive three-column feed.
 
 Each card links to its source and, for papers, the PDF. **Read**, **Translate**, and **Research** prepare a new task draft for your configured model. Paper translation requests a complete PDF with figures, tables, and correctly typeset equations; repository translation targets the README. Review and send the draft to start the task.
 
-Ranking combines literal topic matches and recency; it is not a scientific quality assessment. Source dates and cache freshness are visible. Hugging Face is a daily selection, not an exhaustive topic search, and public API limits or network restrictions may affect availability. See [Paper News](./docs/paper-news.md) for scope and behavior. This feature is not included in the existing v0.2.3 installers.
+Ranking combines literal topic matches and recency; it is not a scientific quality assessment. Source dates and cache freshness are visible. Hugging Face is a daily selection, not an exhaustive topic search, and public API limits or network restrictions may affect availability. See [News Feed](./docs/paper-news.md) for scope and behavior. This feature is not included in the existing v0.2.3 installers.
 
 ### Agent Runtime
 

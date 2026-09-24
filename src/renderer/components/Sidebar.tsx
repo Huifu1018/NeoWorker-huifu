@@ -2244,15 +2244,15 @@ function SidebarComponent({
                 className={`new-task-btn cli-new-task-btn cli-action-btn sidebar-home-btn sidebar-nav-item ${isPaperNewsActive ? "active" : ""}`}
                 onClick={onOpenPaperNews}
                 aria-pressed={isPaperNewsActive}
-                title={translate("sidebar.paperNews", "Paper News")}
+                title={translate("sidebar.paperNews", "News Feed")}
               >
                 <span className="cli-btn-text">
-                  <span className="terminal-only">paper_news</span>
+                  <span className="terminal-only">news_feed</span>
                   <span className="modern-only cli-new-task-modern-label">
                     <span className="sidebar-home-btn-icon" aria-hidden="true" style={{ display: "flex" }}>
                       <Newspaper size={16} strokeWidth={2} />
                     </span>
-                    <span>{translate("sidebar.paperNews", "Paper News")}</span>
+                    <span>{translate("sidebar.paperNews", "News Feed")}</span>
                   </span>
                 </span>
               </button>

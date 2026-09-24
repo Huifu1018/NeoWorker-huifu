@@ -1,5 +1,10 @@
 import { DOMParser } from "@xmldom/xmldom";
-import type { PaperNewsConfig, PaperNewsItem, PaperNewsSource } from "../../shared/paper-news";
+import type {
+  PaperNewsConfig,
+  PaperNewsTopicConfig,
+  PaperNewsItem,
+  PaperNewsSource,
+} from "../../shared/paper-news";
 
 type RecordValue = Record<string, unknown>;
 const record = (v: unknown): RecordValue => (v && typeof v === "object" ? (v as RecordValue) : {});
@@ -16,7 +21,7 @@ const unique = (items: PaperNewsItem[]) => [
   ...new Map(items.filter((i) => i.title && i.date).map((i) => [i.id, i])).values(),
 ];
 
-export function normalizePaperNewsConfig(value: unknown): PaperNewsConfig {
+function normalizeTopics(value: unknown): PaperNewsTopicConfig {
   const input = record(value);
   const topics = [
     ...new Set(
@@ -34,20 +39,67 @@ export function normalizePaperNewsConfig(value: unknown): PaperNewsConfig {
   return { topics, days: Number(input.days) };
 }
 
+/** Version 1 shared settings migrate to independent copies for all three sources. */
+export function normalizePaperNewsConfig(value: unknown): PaperNewsConfig {
+  const input = record(value);
+  const legacy = Array.isArray(input.topics) && !input.arxiv && !input.github && !input.huggingface;
+  const arxiv = record(legacy ? input : input.arxiv);
+  const github = record(legacy ? input : input.github);
+  const hf = record(legacy ? input : input.huggingface);
+  const category = arxiv.category ?? "";
+  const language = github.language ?? "";
+  const minStars = github.minStars ?? 0;
+  const matchedOnly = hf.matchedOnly ?? false;
+  if (
+    typeof category !== "string" ||
+    category.length > 32 ||
+    (category && !/^[a-z]+(?:-[a-z]+)*(?:\.[A-Z]{2})?$/.test(category))
+  )
+    throw new Error("Invalid arXiv category");
+  if (
+    typeof language !== "string" ||
+    language.length > 32 ||
+    (language && !/^[a-zA-Z0-9+#. -]+$/.test(language))
+  )
+    throw new Error("Invalid repository language");
+  if (
+    typeof minStars !== "number" ||
+    !Number.isInteger(minStars) ||
+    minStars < 0 ||
+    minStars > 10000000
+  )
+    throw new Error("Invalid minimum stars");
+  if (typeof matchedOnly !== "boolean") throw new Error("Invalid interest filter");
+  return {
+    arxiv: { ...normalizeTopics(arxiv), category },
+    github: { ...normalizeTopics(github), language: language.trim(), minStars },
+    huggingface: { ...normalizeTopics(hf), matchedOnly },
+  };
+}
+
 export function paperNewsEndpoint(
   source: PaperNewsSource,
   config: PaperNewsConfig,
   now: number,
 ): string {
-  const since = new Date(now - config.days * 86400000).toISOString().slice(0, 10);
+  const settings = config[source];
+  const since = new Date(now - settings.days * 86400000).toISOString().slice(0, 10);
   if (source === "arxiv") {
-    const query = config.topics.map((t) => `(ti:"${t}" OR abs:"${t}")`).join(" OR ");
-    return `https://export.arxiv.org/api/query?${new URLSearchParams({ search_query: `(${query}) AND submittedDate:[${since.replaceAll("-", "")}0000 TO ${new Date(now).toISOString().slice(0, 10).replaceAll("-", "")}2359]`, start: "0", max_results: "60", sortBy: "submittedDate", sortOrder: "descending" })}`;
+    const query = settings.topics.map((t) => `(ti:"${t}" OR abs:"${t}")`).join(" OR ");
+    return `https://export.arxiv.org/api/query?${new URLSearchParams({ search_query: `(${query})${config.arxiv.category ? ` AND cat:${config.arxiv.category}` : ""} AND submittedDate:[${since.replaceAll("-", "")}0000 TO ${new Date(now).toISOString().slice(0, 10).replaceAll("-", "")}2359]`, start: "0", max_results: "60", sortBy: "submittedDate", sortOrder: "descending" })}`;
   }
   if (source === "huggingface") return "https://huggingface.co/api/daily_papers?limit=100";
-  // GitHub accepts OR expressions but caps search queries at 256 characters.
-  const terms = config.topics.map((t) => `"${t.slice(0, 25)}"`).join(" OR ");
-  return `https://api.github.com/search/repositories?${new URLSearchParams({ q: `${terms} pushed:>=${since} archived:false fork:false`, sort: "stars", order: "desc", per_page: "60" })}`;
+  // Preserve existing keyword lengths where possible while reserving room for qualifiers.
+  const qualifiers = ` pushed:>=${since} archived:false fork:false${config.github.language ? ` language:"${config.github.language}"` : ""}${config.github.minStars ? ` stars:>=${config.github.minStars}` : ""}`;
+  const termBudget = Math.min(
+    25,
+    Math.floor(
+      (256 - qualifiers.length - settings.topics.length * 2 - (settings.topics.length - 1) * 4) /
+        settings.topics.length,
+    ),
+  );
+  const terms = settings.topics.map((t) => `"${t.slice(0, termBudget)}"`).join(" OR ");
+  return `https://api.github.com/search/repositories?${new URLSearchParams({ q: terms + qualifiers, sort: "stars", order: "desc", per_page: "60" })}`;
 }
 
 export function parsePaperNews(source: PaperNewsSource, raw: string): PaperNewsItem[] {
@@ -163,21 +215,29 @@ export function rankPaperNews(
     .filter(
       (i) =>
         keepOlder ||
-        (Date.parse(i.date) >= now - config.days * 86400000 &&
+        (Date.parse(i.date) >= now - config[i.source].days * 86400000 &&
           Date.parse(i.date) <= now + 86400000),
     )
     .map((item) => {
+      const settings = config[item.source];
       const haystack = `${item.title} ${item.summary} ${item.tags.join(" ")}`.toLowerCase();
-      const matchedTopics = config.topics.filter((t) => haystack.includes(t.toLowerCase()));
+      const matchedTopics = settings.topics.filter((t) => haystack.includes(t.toLowerCase()));
       const age = Math.max(0, (now - Date.parse(item.date)) / 86400000);
       return {
         ...item,
         matchedTopics,
         score: Math.round(
-          (70 * matchedTopics.length) / config.topics.length +
-            30 * Math.max(0, 1 - age / config.days),
+          (70 * matchedTopics.length) / settings.topics.length +
+            30 * Math.max(0, 1 - age / settings.days),
         ),
       };
     })
+    .filter(
+      (item) =>
+        keepOlder ||
+        item.source !== "huggingface" ||
+        !config.huggingface.matchedOnly ||
+        item.matchedTopics.length > 0,
+    )
     .sort((a, b) => b.score - a.score || b.date.localeCompare(a.date));
 }

@@ -7830,7 +7830,7 @@ export function App() {
           : currentView === "projects"
             ? t("sidebar.projects", "Project")
             : currentView === "paperNews"
-              ? t("sidebar.paperNews", "Paper News")
+              ? t("sidebar.paperNews", "News Feed")
               : currentView === "ideas"
                 ? t("sidebar.ideas", "Inspiration")
                 : currentView === "missionControl"

@@ -40,5 +40,16 @@ describe("Paper News IPC boundary", () => {
     expect(mocks.save).toHaveBeenCalledWith("arxiv:123", true);
     mocks.handlers.get(IPC_CHANNELS.PAPER_NEWS_REFRESH)!({ sender, senderFrame: mainFrame });
     expect(mocks.refresh).toHaveBeenCalledOnce();
+    mocks.handlers.get(IPC_CHANNELS.PAPER_NEWS_REFRESH)!(
+      { sender, senderFrame: mainFrame },
+      "github",
+    );
+    expect(mocks.refresh).toHaveBeenLastCalledWith("github");
+    expect(() =>
+      mocks.handlers.get(IPC_CHANNELS.PAPER_NEWS_REFRESH)!(
+        { sender, senderFrame: mainFrame },
+        "https://evil.example",
+      ),
+    ).toThrow("Invalid paper news source");
   });
 });

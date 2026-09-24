@@ -1,4 +1,4 @@
-import type { PaperNewsConfig, PaperNewsSnapshot } from "../shared/paper-news";
+import type { PaperNewsConfig, PaperNewsSnapshot, PaperNewsSource } from "../shared/paper-news";
 import * as path from "path";
 import { contextBridge, ipcRenderer } from "electron";
 import * as fs from "fs";
@@ -6131,8 +6131,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   getPaperNews: (): Promise<PaperNewsSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_GET),
-  refreshPaperNews: (): Promise<PaperNewsSnapshot> =>
-    ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_REFRESH),
+  refreshPaperNews: (source?: PaperNewsSource): Promise<PaperNewsSnapshot> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_REFRESH, source),
   savePaperNewsConfig: (config: PaperNewsConfig): Promise<PaperNewsSnapshot> =>
     ipcRenderer.invoke(IPC_CHANNELS.PAPER_NEWS_CONFIG, config),
   setPaperNewsSaved: (id: string, saved: boolean): Promise<PaperNewsSnapshot> =>
@@ -6405,7 +6405,7 @@ export type {
 
 export interface ElectronAPI {
   getPaperNews: () => Promise<PaperNewsSnapshot>;
-  refreshPaperNews: () => Promise<PaperNewsSnapshot>;
+  refreshPaperNews: (source?: PaperNewsSource) => Promise<PaperNewsSnapshot>;
   savePaperNewsConfig: (config: PaperNewsConfig) => Promise<PaperNewsSnapshot>;
   setPaperNewsSaved: (id: string, saved: boolean) => Promise<PaperNewsSnapshot>;
   selectFolder: (defaultPath?: string) => Promise<string | null>;

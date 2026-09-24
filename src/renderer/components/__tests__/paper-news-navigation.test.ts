@@ -8,10 +8,10 @@ const initialLanguage = getCurrentLanguage();
 afterEach(() => applyPersistedLanguage(initialLanguage));
 const noop = () => {};
 
-describe("Paper News navigation", () => {
+describe("News Feed navigation", () => {
   it.each([
-    ["zh-CN", "论文动态"],
-    ["en", "Paper News"],
+    ["zh-CN", "资讯动态"],
+    ["en", "News Feed"],
   ])("shows an active localized destination in both sidebar sizes (%s)", (language, label) => {
     applyPersistedLanguage(language);
     const expanded = renderToStaticMarkup(

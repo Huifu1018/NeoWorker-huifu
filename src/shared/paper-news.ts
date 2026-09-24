@@ -1,9 +1,14 @@
 export const PAPER_NEWS_SOURCES = ["arxiv", "huggingface", "github"] as const;
 export type PaperNewsSource = (typeof PAPER_NEWS_SOURCES)[number];
 export type PaperNewsAction = "read" | "translate" | "research";
-export interface PaperNewsConfig {
+export interface PaperNewsTopicConfig {
   topics: string[];
   days: number;
+}
+export interface PaperNewsConfig {
+  arxiv: PaperNewsTopicConfig & { category: string };
+  huggingface: PaperNewsTopicConfig & { matchedOnly: boolean };
+  github: PaperNewsTopicConfig & { language: string; minStars: number };
 }
 export interface PaperNewsItem {
   id: string;
@@ -47,8 +52,18 @@ export function paperNewsNeedsRefresh(snapshot: PaperNewsSnapshot, now: number):
 }
 
 export const DEFAULT_PAPER_NEWS_CONFIG: PaperNewsConfig = {
-  topics: ["large language models", "agents", "multimodal"],
-  days: 14,
+  arxiv: { topics: ["large language models", "agents", "multimodal"], days: 14, category: "" },
+  huggingface: {
+    topics: ["large language models", "agents", "multimodal"],
+    days: 14,
+    matchedOnly: false,
+  },
+  github: {
+    topics: ["large language models", "agents", "multimodal"],
+    days: 14,
+    language: "",
+    minStars: 0,
+  },
 };
 
 /** External metadata is reference material, never instructions for the task. */

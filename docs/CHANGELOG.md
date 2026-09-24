@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Redesigned Paper News with official arXiv, Hugging Face, and GitHub brand assets, compact source panels, a responsive three-column feed, topic chips, and a single blue action accent.
+- Independent source settings: arXiv topics/category, GitHub topics/language/minimum stars, and Hugging Face interests/matching-only, each with its own time window. Preserve other sources and bookmarks when saving, and migrate legacy shared preferences.
+- Renamed the feed to News Feed (资讯动态) to accommodate papers, projects, and future content types.
+- Redesigned News Feed with official arXiv, Hugging Face, and GitHub brand assets, compact source panels, a responsive three-column feed, topic chips, and a single blue action accent.
 
-- Paper News with official arXiv, Hugging Face daily papers, and GitHub repository feeds, research topics, source filters, search, and persistent bookmarks.
+- News Feed with official arXiv, Hugging Face daily papers, and GitHub repository feeds, research topics, source filters, search, and persistent bookmarks.
 - Paper and repository task drafts for reading, translation, and research, with source links and explicit PDF figure/equation preservation requirements.
 - Transparent topic/recency ranking, per-source cache freshness and errors, shared refresh state across navigation, and Chinese/English interfaces.
 

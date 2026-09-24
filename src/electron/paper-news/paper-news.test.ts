@@ -11,7 +11,7 @@ import {
 import { PaperNewsService, readPaperNewsResponse } from "./service";
 import { paperNewsPrompt, type PaperNewsSource } from "../../shared/paper-news";
 const now = Date.parse("2026-09-24T12:00:00Z");
-const config = { topics: ["agents", "multimodal"], days: 14 };
+const config = normalizePaperNewsConfig({ topics: ["agents", "multimodal"], days: 14 });
 const atom = `<feed xmlns="http://www.w3.org/2005/Atom"><entry><id>http://arxiv.org/abs/2609.12345v2</id><title>Agents &amp; reasoning</title><summary>Multimodal agents</summary><published>2026-09-23T00:00:00Z</published><author><name>Alice</name></author><category term="cs.AI"/><link href="javascript:alert(1)"/></entry></feed>`;
 const hf = JSON.stringify([
   {
@@ -92,7 +92,8 @@ describe("paper news adapters", () => {
   });
   it("normalizes settings and uses only official HTTPS endpoints", () => {
     expect(
-      normalizePaperNewsConfig({ topics: ["agents", "agents", 'x" OR all:foo'], days: 7 }).topics,
+      normalizePaperNewsConfig({ topics: ["agents", "agents", 'x" OR all:foo'], days: 7 }).arxiv
+        .topics,
     ).toEqual(["agents", "x  OR all foo"]);
     expect(() => normalizePaperNewsConfig({ topics: [], days: 7 })).toThrow();
     expect(() => normalizePaperNewsConfig({ topics: ["x"], days: 999 })).toThrow();
@@ -278,5 +279,147 @@ describe("paper news source recovery", () => {
     const recovered = await service.refresh();
     expect(recovered.sources.arxiv.error).toBeUndefined();
     expect(recovered.sources.arxiv.updatedAt).toBe(new Date(clock).toISOString());
+  });
+});
+
+describe("independent source settings", () => {
+  it("migrates a version 1 cache without losing results, bookmarks or cooldowns", async () => {
+    const cache = file();
+    const fetcher = vi.fn(async (url: string) => new Response(fixtures[sourceFor(url)]));
+    const service = new PaperNewsService(cache, fetcher, () => now);
+    await service.refresh();
+    service.setSaved("arxiv:2609.12345", true);
+    const raw = JSON.parse(fs.readFileSync(cache, "utf8"));
+    raw.version = 1;
+    raw.config = { topics: ["robotics"], days: 7 };
+    fs.writeFileSync(cache, JSON.stringify(raw));
+    const migrated = new PaperNewsService(cache, fetcher, () => now).snapshot();
+    for (const source of ["arxiv", "github", "huggingface"] as const) {
+      expect(migrated.config[source]).toMatchObject({ topics: ["robotics"], days: 7 });
+    }
+    expect(migrated.config.arxiv.topics).not.toBe(migrated.config.github.topics);
+    expect(migrated.items).toHaveLength(3);
+    expect(migrated.saved).toHaveLength(1);
+    expect(migrated.sources).toEqual(raw.sources);
+  });
+
+  it("changes only one cache, refreshes only that source, and persists independent values", async () => {
+    let clock = now;
+    const cache = file();
+    const fetcher = vi.fn(async (url: string) => new Response(fixtures[sourceFor(url)]));
+    const service = new PaperNewsService(cache, fetcher, () => clock);
+    const before = await service.refresh();
+    service.setSaved("github:lab/agents", true);
+    clock += 61000;
+    const config = structuredClone(before.config);
+    config.github = { topics: ["robotics"], days: 7, language: "Python", minStars: 100 };
+    const changed = service.saveConfig(config);
+    expect(changed.items.map((i) => i.source)).toEqual(
+      expect.arrayContaining(["arxiv", "huggingface"]),
+    );
+    expect(changed.items.some((i) => i.source === "github")).toBe(false);
+    expect(changed.sources.arxiv).toEqual(before.sources.arxiv);
+    expect(changed.sources.huggingface).toEqual(before.sources.huggingface);
+    fetcher.mockClear();
+    await service.refresh("github");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(sourceFor(fetcher.mock.calls[0][0])).toBe("github");
+    const restored = new PaperNewsService(cache, fetcher, () => clock).snapshot();
+    expect(restored.config).toEqual(config);
+    expect(restored.saved).toHaveLength(1);
+    expect(JSON.parse(fs.readFileSync(cache, "utf8")).version).toBe(2);
+  });
+
+  it("retains the changed source's rate limit and leaves other sources untouched", async () => {
+    const fetcher = vi.fn(async (url: string) =>
+      sourceFor(url) === "arxiv"
+        ? new Response("limited", { status: 429, headers: { "Retry-After": "1800" } })
+        : new Response(fixtures[sourceFor(url)]),
+    );
+    const service = new PaperNewsService(file(), fetcher, () => now);
+    const before = await service.refresh();
+    const config = structuredClone(before.config);
+    config.arxiv.category = "cs.AI";
+    service.saveConfig(config);
+    fetcher.mockClear();
+    const after = await service.refresh("arxiv");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(after.sources.arxiv.nextRetryAt).toBe(before.sources.arxiv.nextRetryAt);
+    expect(after.items).toEqual(before.items);
+    expect(() => service.refresh("bad-source" as PaperNewsSource)).toThrow(
+      "Invalid paper news source",
+    );
+  });
+
+  it("builds source-specific queries and rejects injected qualifiers", () => {
+    const independent = structuredClone(config);
+    independent.arxiv = { topics: ["vision"], days: 7, category: "cs.CV" };
+    independent.github = { topics: ["agents"], days: 30, language: "C++", minStars: 250 };
+    const arxivQuery = new URL(paperNewsEndpoint("arxiv", independent, now)).searchParams.get(
+      "search_query",
+    )!;
+    expect(arxivQuery).toContain('ti:"vision"');
+    expect(arxivQuery).toContain("AND cat:cs.CV");
+    expect(arxivQuery).toContain("202609170000");
+    expect(arxivQuery).not.toContain("agents");
+    const githubQuery = new URL(paperNewsEndpoint("github", independent, now)).searchParams.get(
+      "q",
+    )!;
+    expect(githubQuery).toContain('"agents"');
+    expect(githubQuery).toContain('language:"C++"');
+    expect(githubQuery).toContain("stars:>=250");
+    expect(githubQuery).toContain("pushed:>=2026-08-25");
+    independent.github.topics = ["large language models"];
+    expect(new URL(paperNewsEndpoint("github", independent, now)).searchParams.get("q")).toContain(
+      '"large language models"',
+    );
+    expect(() =>
+      normalizePaperNewsConfig({
+        ...independent,
+        arxiv: { ...independent.arxiv, category: "cs.AI OR all:foo" },
+      }),
+    ).toThrow();
+    expect(() =>
+      normalizePaperNewsConfig({
+        ...independent,
+        github: { ...independent.github, language: 'Python" OR stars:>0' },
+      }),
+    ).toThrow();
+    expect(() =>
+      normalizePaperNewsConfig({ ...independent, github: { ...independent.github, minStars: -1 } }),
+    ).toThrow();
+    independent.github.topics = Array.from({ length: 5 }, (_, i) => String(i).repeat(60));
+    independent.github.language = "a".repeat(32);
+    independent.github.minStars = 10000000;
+    expect(
+      new URL(paperNewsEndpoint("github", independent, now)).searchParams.get("q")!.length,
+    ).toBeLessThanOrEqual(256);
+  });
+
+  it("uses each source's topics/window and keeps bookmarks outside the HF interest filter", () => {
+    const independent = structuredClone(config);
+    independent.arxiv.topics = ["unmatched"];
+    independent.arxiv.days = 7;
+    independent.huggingface = { topics: ["unmatched"], days: 30, matchedOnly: true };
+    independent.github.days = 30;
+    const arxiv = parsePaperNews("arxiv", atom)[0];
+    const hfItem = parsePaperNews("huggingface", hf)[0];
+    const gitItem = parsePaperNews("github", github)[0];
+    const ranked = rankPaperNews([arxiv, hfItem, gitItem], independent, now);
+    expect(ranked.find((i) => i.source === "arxiv")?.matchedTopics).toEqual([]);
+    expect(ranked.find((i) => i.source === "github")?.matchedTopics).toEqual(["agents"]);
+    expect(ranked.some((i) => i.source === "huggingface")).toBe(false);
+    expect(rankPaperNews([hfItem], independent, now, true)).toHaveLength(1);
+    const date = new Date(now - 20 * 86400000).toISOString();
+    expect(
+      rankPaperNews(
+        [
+          { ...arxiv, date },
+          { ...gitItem, date },
+        ],
+        independent,
+        now,
+      ).map((i) => i.source),
+    ).toEqual(["github"]);
   });
 });

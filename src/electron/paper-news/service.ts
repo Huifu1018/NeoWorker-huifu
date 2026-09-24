@@ -92,7 +92,7 @@ export class PaperNewsService {
     try {
       if (fs.statSync(file).size > 12 * 1024 * 1024) return;
       const cached = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (cached.version !== 1) return;
+      if (![1, 2].includes(cached.version)) return;
       this.state.config = normalizePaperNewsConfig(cached.config);
       this.state.items = Array.isArray(cached.items)
         ? cached.items.filter(validCachedItem).slice(0, 300)
@@ -132,7 +132,7 @@ export class PaperNewsService {
   private persist(): void {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const temporary = `${this.file}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify({ ...this.state, version: 1, refreshing: false }), {
+    fs.writeFileSync(temporary, JSON.stringify({ ...this.state, version: 2, refreshing: false }), {
       mode: 0o600,
     });
     fs.renameSync(temporary, this.file);
@@ -141,20 +141,29 @@ export class PaperNewsService {
     if (this.inflight) throw new Error("Refresh in progress");
     const config = normalizePaperNewsConfig(input);
     if (JSON.stringify(config) !== JSON.stringify(this.state.config)) {
-      // A new query must not bypass an upstream rate-limit or access-denial cooldown.
-      const sources = emptySources() as PaperNewsSnapshot["sources"];
-      for (const source of PAPER_NEWS_SOURCES) {
+      const changed = PAPER_NEWS_SOURCES.filter(
+        (source) => JSON.stringify(config[source]) !== JSON.stringify(this.state.config[source]),
+      );
+      const sources = structuredClone(this.state.sources);
+      for (const source of changed) {
         const prior = this.state.sources[source];
-        if (prior.nextRetryAt && Date.parse(prior.nextRetryAt) > this.now()) {
-          sources[source] = {
-            attemptedAt: prior.attemptedAt,
-            nextRetryAt: prior.nextRetryAt,
-            error: prior.error,
-            httpStatus: prior.httpStatus,
-          };
-        }
+        // Changing a query cannot bypass the source's persisted cooldown.
+        sources[source] =
+          prior.nextRetryAt && Date.parse(prior.nextRetryAt) > this.now()
+            ? {
+                attemptedAt: prior.attemptedAt,
+                nextRetryAt: prior.nextRetryAt,
+                error: prior.error,
+                httpStatus: prior.httpStatus,
+              }
+            : {};
       }
-      this.state = { ...this.state, config, items: [], sources };
+      this.state = {
+        ...this.state,
+        config,
+        items: this.state.items.filter((item) => !changed.includes(item.source)),
+        sources,
+      };
       this.persist();
     }
     return this.snapshot();
@@ -170,10 +179,12 @@ export class PaperNewsService {
     this.persist();
     return this.snapshot();
   }
-  refresh(): Promise<PaperNewsSnapshot> {
+  refresh(source?: PaperNewsSource): Promise<PaperNewsSnapshot> {
+    if (source !== undefined && !PAPER_NEWS_SOURCES.includes(source))
+      throw new Error("Invalid paper news source");
     if (this.inflight) return this.inflight;
     // One shared refresh; each source also enforces its persisted cooldown.
-    this.inflight = this.runRefresh().then(
+    this.inflight = this.runRefresh(source).then(
       () => {
         this.inflight = undefined;
         return this.snapshot();
@@ -235,8 +246,9 @@ export class PaperNewsService {
       }
     }
   }
-  private async runRefresh(): Promise<PaperNewsSnapshot> {
+  private async runRefresh(onlySource?: PaperNewsSource): Promise<PaperNewsSnapshot> {
     const due = PAPER_NEWS_SOURCES.filter((source) => {
+      if (onlySource && source !== onlySource) return false;
       const deadline = this.state.sources[source].nextRetryAt;
       return !deadline || Date.parse(deadline) <= this.now();
     });

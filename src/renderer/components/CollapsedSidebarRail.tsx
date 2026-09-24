@@ -133,7 +133,7 @@ export function CollapsedSidebarRail({
         />
         {onOpenPaperNews && (
           <RailButton
-            label={translate("sidebar.paperNews", "Paper News")}
+            label={translate("sidebar.paperNews", "News Feed")}
             icon={Newspaper}
             active={isPaperNewsActive}
             onClick={onOpenPaperNews}

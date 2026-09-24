@@ -1,10 +1,18 @@
-# Paper News
+# News Feed
 
-Paper News is available in the current source tree. Existing v0.2.3 installers do not include it.
+News Feed is available in the current source tree. Existing v0.2.3 installers do not include it.
 
 ## Discover and save
 
-Open **Paper News** in the sidebar, choose **Topics**, and enter up to five comma-separated search phrases. English terms work best with these sources. The available time windows are 7, 14, and 30 days.
+Open **News Feed** in the sidebar and choose **Source settings**, or use the settings icon on a source panel. Each source has its own settings tab, up to five comma-separated topics (60 characters each), and a 7-, 14-, or 30-day window. English terms work best with these sources.
+
+| Source | Independent settings |
+| --- | --- |
+| arXiv | Search topics, publication window, optional category such as `cs.AI` |
+| Hugging Face | Interest topics, selection window, optional matching-only filter |
+| GitHub | Search topics, code push window, optional programming language and minimum stars |
+
+Saving applies and refreshes only the selected source, subject to its existing cooldown. Other sources' cached content and saved settings remain unchanged. Unsaved edits remain available when switching tabs until the settings panel is closed. Hugging Face matching-only filters the fetched daily selection locally; it is not an upstream full-text search. GitHub query terms use at most 25 characters each and may be shortened further to fit the search endpoint's query limit when additional filters are selected.
 
 | Source | Content and date | Fetch limit |
 | --- | --- | --- |
@@ -12,7 +20,7 @@ Open **Paper News** in the sidebar, choose **Topics**, and enter up to five comm
 | Hugging Face | Daily paper selection; selection date | Up to 100 selected papers, filtered by the time window |
 | GitHub | Repository keyword search; last code push date | 60 recently active repositories, fetched by star count |
 
-These are bounded feeds, not exhaustive literature searches. A paper can appear under both arXiv and Hugging Face. Daily selections are not restricted to topic matches. GitHub search semantics differ from exact local keyword matching.
+These are bounded feeds, not exhaustive literature searches. A paper can appear under both arXiv and Hugging Face. Daily selections include non-matching items unless matching-only is enabled. GitHub search semantics differ from exact local keyword matching.
 
 The recommendation score uses literal, case-insensitive topic matches (70%) and recency within the selected window (30%). It does not measure scientific rigor, correctness, or reproducibility. Stars and upvotes are shown separately as source-provided popularity counts.
 
@@ -33,6 +41,8 @@ No model request runs merely from fetching a feed or opening a draft. Drafts tre
 ## Refresh and storage
 
 Opening the page refreshes sources whose successful results are older than 30 minutes, or whose failed attempt is eligible for retry. **Refresh** requests new data manually, with a persisted per-source cooldown. Temporary connection failures receive at most one retry after three seconds; rate limits and access denials are not immediately retried. Server Retry-After and GitHub quota reset deadlines are respected across restarts and topic changes. While the page is visible, eligible transient failures are retried automatically. Leaving the page does not restart an in-flight fetch. A source failure retains its prior results and last successful fetch time; the other sources can still update. An unavailable source with no cache displays a dash, not a misleading zero-result count.
+
+Legacy shared settings are migrated into independent source settings, preserving cached items, bookmarks, and retry deadlines. Cache schema version 2 is written on the next save or refresh. Changing a source configuration clears only that source's stale query results; bookmarks remain available even if they no longer match the new filters.
 
 Configuration, fetched metadata, and bookmarks are stored in `paper-news.json` under the application's user-data directory. Papers and repository code are not downloaded during feed refresh. Fetches use the application's existing system-proxy-aware network transport and require no API token. GitHub public search quotas and regional network restrictions can limit availability.
 
