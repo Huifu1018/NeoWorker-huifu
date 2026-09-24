@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Paper News with official arXiv, Hugging Face daily papers, and GitHub repository feeds, research topics, source filters, search, and persistent bookmarks.
+- Paper and repository task drafts for reading, translation, and research, with source links and explicit PDF figure/equation preservation requirements.
+- Transparent topic/recency ranking, per-source cache freshness and errors, shared refresh state across navigation, and Chinese/English interfaces.
+
 ### Fixed
 
 - Typeset mathematical formulas in generated PDFs with offline fonts, preserving fractions, scripts, sums, matrices and equation numbers. Reject invalid formulas instead of delivering broken notation.

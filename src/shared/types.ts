@@ -8863,6 +8863,11 @@ export const IPC_CHANNELS = {
   MAILBOX_AUTOMATION_RUN_FORWARD: "mailboxAutomation:runForward",
 
   // Daily Briefing (extended)
+  PAPER_NEWS_GET: "paperNews:get",
+  PAPER_NEWS_REFRESH: "paperNews:refresh",
+  PAPER_NEWS_CONFIG: "paperNews:config",
+  PAPER_NEWS_SAVE: "paperNews:save",
+
   BRIEFING_GET_LATEST: "briefing:getLatest",
   BRIEFING_GET_CONFIG: "briefing:getConfig",
   BRIEFING_SAVE_CONFIG: "briefing:saveConfig",

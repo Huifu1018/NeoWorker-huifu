@@ -1,6 +1,7 @@
 import {
   Clock3,
   Lightbulb,
+  Newspaper,
   MessageCircle,
   Plus,
   Settings,
@@ -16,6 +17,7 @@ interface CollapsedSidebarRailProps {
   isEverydayAgentActive?: boolean;
   isAgentTeamActive?: boolean;
   isIdeasActive?: boolean;
+  isPaperNewsActive?: boolean;
   isAutomationsActive?: boolean;
   isToolsAndSkillsActive?: boolean;
   onExpand: () => void;
@@ -23,6 +25,7 @@ interface CollapsedSidebarRailProps {
   onOpenEverydayAgent: () => void;
   onOpenAgentTeam: () => void;
   onOpenIdeas: () => void;
+  onOpenPaperNews?: () => void;
   onOpenAutomations: () => void;
   onOpenToolsAndSkills: () => void;
   onOpenSettings: () => void;
@@ -62,6 +65,7 @@ export function CollapsedSidebarRail({
   isEverydayAgentActive = false,
   isAgentTeamActive = false,
   isIdeasActive = false,
+  isPaperNewsActive = false,
   isAutomationsActive = false,
   isToolsAndSkillsActive = false,
   onExpand,
@@ -69,6 +73,7 @@ export function CollapsedSidebarRail({
   onOpenEverydayAgent,
   onOpenAgentTeam,
   onOpenIdeas,
+  onOpenPaperNews,
   onOpenAutomations,
   onOpenToolsAndSkills,
   onOpenSettings,
@@ -126,6 +131,14 @@ export function CollapsedSidebarRail({
           active={isIdeasActive}
           onClick={onOpenIdeas}
         />
+        {onOpenPaperNews && (
+          <RailButton
+            label={translate("sidebar.paperNews", "Paper News")}
+            icon={Newspaper}
+            active={isPaperNewsActive}
+            onClick={onOpenPaperNews}
+          />
+        )}
         <RailButton
           label={translate("sidebar.automations", "Automation")}
           icon={Clock3}

@@ -220,6 +220,14 @@ The CLI and desktop app share local configuration, model routing, workspaces, Sk
 
 ## What NeoWorker can do
 
+### Paper News (source preview)
+
+The current source tree adds **Paper News** to the sidebar. Discover recent arXiv papers, Hugging Face daily papers, and active GitHub repositories through their official public APIs. Set up to five research topics, filter and search fetched results, and keep local bookmarks across restarts.
+
+Each card links to its source and, for papers, the PDF. **Read**, **Translate**, and **Research** prepare a new task draft for your configured model. Paper translation requests a complete PDF with figures, tables, and correctly typeset equations; repository translation targets the README. Review and send the draft to start the task.
+
+Ranking combines literal topic matches and recency; it is not a scientific quality assessment. Source dates and cache freshness are visible. Hugging Face is a daily selection, not an exhaustive topic search, and public API limits or network restrictions may affect availability. See [Paper News](./docs/paper-news.md) for scope and behavior. This feature is not included in the existing v0.2.3 installers.
+
 ### Agent Runtime
 
 - Long-running task execution, dynamic planning, and failure recovery

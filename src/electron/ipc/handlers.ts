@@ -1,3 +1,4 @@
+import { setupPaperNewsHandlers } from "./paper-news-handlers";
 import { LLMProviderTypeSchema } from "../utils/validation";
 import { ipcMain, shell, BrowserWindow, dialog, app as _app } from "electron";
 import { normalizeTaskEvents } from "../agent/timeline/timeline-normalizer";
@@ -10535,6 +10536,7 @@ export async function setupIpcHandlers(
 
   // Local AI (hf-agents / llama.cpp) handlers
   setupLocalAIHandlers();
+  setupPaperNewsHandlers((event) => event.sender === getMainWindow()?.webContents);
 
   // Notification handlers
   setupNotificationHandlers();

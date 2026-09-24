@@ -301,6 +301,11 @@ const DevicesPanel = lazy(() =>
     default: module.DevicesPanel,
   })),
 );
+const PaperNewsPanel = lazy(() =>
+  import("./components/PaperNewsPanel").then((module) => ({
+    default: module.PaperNewsPanel,
+  })),
+);
 const IdeasPanel = lazy(() =>
   import("./components/IdeasPanel").then((module) => ({
     default: module.IdeasPanel,
@@ -885,6 +890,7 @@ type AppView =
   | "settings"
   | "browser"
   | "devices"
+  | "paperNews"
   | "ideas"
   | "inboxAgent"
   | "agentTeam"
@@ -7795,6 +7801,7 @@ export function App() {
     currentView === "home" ||
     currentView === "automations" ||
     currentView === "devices" ||
+    currentView === "paperNews" ||
     currentView === "ideas" ||
     currentView === "inboxAgent" ||
     currentView === "agentTeam" ||
@@ -7820,23 +7827,25 @@ export function App() {
           ? t("sidebar.everydayAgent", "Daily assistant")
           : currentView === "projects"
             ? t("sidebar.projects", "Project")
-            : currentView === "ideas"
-              ? t("sidebar.ideas", "Inspiration")
-              : currentView === "missionControl"
-                ? t("sidebar.automations", "Automation")
-                : currentView === "automations"
+            : currentView === "paperNews"
+              ? t("sidebar.paperNews", "Paper News")
+              : currentView === "ideas"
+                ? t("sidebar.ideas", "Inspiration")
+                : currentView === "missionControl"
                   ? t("sidebar.automations", "Automation")
-                  : currentView === "devices"
-                    ? t("sidebar.devices", "Equipment")
-                    : currentView === "capabilityBundles"
-                      ? t("sidebar.capabilityBundles", "Ability combination")
-                      : currentView === "agents"
-                        ? t("sidebar.toolsAndSkills", "Tools and Skills")
-                        : currentView === "agentsManage"
-                          ? t("sidebar.agents", "agent")
-                          : currentView === "companies"
-                            ? t("sidebar.companies", "enterprise")
-                            : "NeoWorker";
+                  : currentView === "automations"
+                    ? t("sidebar.automations", "Automation")
+                    : currentView === "devices"
+                      ? t("sidebar.devices", "Equipment")
+                      : currentView === "capabilityBundles"
+                        ? t("sidebar.capabilityBundles", "Ability combination")
+                        : currentView === "agents"
+                          ? t("sidebar.toolsAndSkills", "Tools and Skills")
+                          : currentView === "agentsManage"
+                            ? t("sidebar.agents", "agent")
+                            : currentView === "companies"
+                              ? t("sidebar.companies", "enterprise")
+                              : "NeoWorker";
   const titleBarContextTitle =
     currentView === "main" && selectedTask
       ? getManagedAgentTaskTitleForDisplay(selectedTask.title)
@@ -8145,6 +8154,7 @@ export function App() {
                 isSessionsActive={currentView === "main"}
                 isEverydayAgentActive={currentView === "everydayAgent"}
                 isAgentTeamActive={currentView === "agentTeam"}
+                isPaperNewsActive={currentView === "paperNews"}
                 isIdeasActive={currentView === "ideas"}
                 isAutomationsActive={
                   currentView === "automations" ||
@@ -8159,6 +8169,7 @@ export function App() {
                 onNewSession={handleNewSession}
                 onOpenEverydayAgent={() => setCurrentView("everydayAgent")}
                 onOpenAgentTeam={() => setCurrentView("agentTeam")}
+                onOpenPaperNews={() => setCurrentView("paperNews")}
                 onOpenIdeas={() => setCurrentView("ideas")}
                 onOpenAutomations={() => setCurrentView("automations")}
                 onOpenToolsAndSkills={() => setCurrentView("agents")}
@@ -8171,6 +8182,7 @@ export function App() {
                 selectedTaskId={selectedTaskId}
                 isEverydayAgentActive={currentView === "everydayAgent"}
                 isAgentTeamActive={currentView === "agentTeam"}
+                isPaperNewsActive={currentView === "paperNews"}
                 isIdeasActive={currentView === "ideas"}
                 isAutomationsActive={
                   currentView === "automations" ||
@@ -8188,6 +8200,7 @@ export function App() {
                 onSelectTask={handleSelectTaskFromShell}
                 onOpenEverydayAgent={() => setCurrentView("everydayAgent")}
                 onOpenAgentTeam={() => setCurrentView("agentTeam")}
+                onOpenPaperNews={() => setCurrentView("paperNews")}
                 onOpenIdeas={() => setCurrentView("ideas")}
                 onOpenToolsAndSkills={() => setCurrentView("agents")}
                 onOpenDevices={() => {
@@ -8515,6 +8528,8 @@ export function App() {
                   }}
                   availableProviders={availableProviders}
                 />
+              ) : currentView === "paperNews" ? (
+                <PaperNewsPanel onUsePrompt={handleOpenComposerDraft} />
               ) : currentView === "ideas" ? (
                 <IdeasPanel onUsePrompt={handleUseIdeaPrompt} onOpenSettings={(target) => {
                   setSettingsTab(target);

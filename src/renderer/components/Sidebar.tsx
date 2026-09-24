@@ -33,6 +33,7 @@ import {
   PinOff,
   Trash2,
   Lightbulb,
+  Newspaper,
   Wrench,
   Clock3,
   Download,
@@ -97,6 +98,7 @@ interface SidebarProps {
   isEverydayAgentActive?: boolean;
   isAgentTeamActive?: boolean;
   isIdeasActive?: boolean;
+  isPaperNewsActive?: boolean;
   isAutomationsActive?: boolean;
   isToolsAndSkillsActive?: boolean;
   isLoadingSessions?: boolean;
@@ -106,6 +108,7 @@ interface SidebarProps {
   onOpenEverydayAgent?: () => void;
   onOpenAgentTeam?: () => void;
   onOpenIdeas?: () => void;
+  onOpenPaperNews?: () => void;
   onOpenToolsAndSkills?: () => void;
   onNewSession?: () => void;
   onOpenSettings: () => void;
@@ -697,6 +700,7 @@ function areSidebarPropsEqual(prev: SidebarProps, next: SidebarProps): boolean {
     prev.isEverydayAgentActive === next.isEverydayAgentActive &&
     prev.isAgentTeamActive === next.isAgentTeamActive &&
     prev.isIdeasActive === next.isIdeasActive &&
+    prev.isPaperNewsActive === next.isPaperNewsActive &&
     prev.isAutomationsActive === next.isAutomationsActive &&
     prev.isToolsAndSkillsActive === next.isToolsAndSkillsActive &&
     prev.isDevicesActive === next.isDevicesActive &&
@@ -716,6 +720,7 @@ function areSidebarPropsEqual(prev: SidebarProps, next: SidebarProps): boolean {
     prev.onOpenSetupGuide === next.onOpenSetupGuide &&
     prev.onOpenAgentTeam === next.onOpenAgentTeam &&
     prev.onOpenIdeas === next.onOpenIdeas &&
+    prev.onOpenPaperNews === next.onOpenPaperNews &&
     prev.onOpenToolsAndSkills === next.onOpenToolsAndSkills &&
     prev.onOpenAutomations === next.onOpenAutomations
   );
@@ -728,6 +733,7 @@ function SidebarComponent({
   isEverydayAgentActive = false,
   isAgentTeamActive = false,
   isIdeasActive = false,
+  isPaperNewsActive = false,
   isAutomationsActive = false,
   isToolsAndSkillsActive = false,
   isLoadingSessions = false,
@@ -736,6 +742,7 @@ function SidebarComponent({
   onOpenEverydayAgent,
   onOpenAgentTeam,
   onOpenIdeas,
+  onOpenPaperNews,
   onOpenToolsAndSkills,
   onNewSession,
   onOpenSettings,
@@ -2230,6 +2237,26 @@ function SidebarComponent({
                 </span>
               </span>
             </button>
+
+            {onOpenPaperNews && (
+              <button
+                type="button"
+                className={`new-task-btn cli-new-task-btn cli-action-btn sidebar-home-btn sidebar-nav-item ${isPaperNewsActive ? "active" : ""}`}
+                onClick={onOpenPaperNews}
+                aria-pressed={isPaperNewsActive}
+                title={translate("sidebar.paperNews", "Paper News")}
+              >
+                <span className="cli-btn-text">
+                  <span className="terminal-only">paper_news</span>
+                  <span className="modern-only cli-new-task-modern-label">
+                    <span className="sidebar-home-btn-icon" aria-hidden="true" style={{ display: "flex" }}>
+                      <Newspaper size={16} strokeWidth={2} />
+                    </span>
+                    <span>{translate("sidebar.paperNews", "Paper News")}</span>
+                  </span>
+                </span>
+              </button>
+            )}
 
             <button
               type="button"
