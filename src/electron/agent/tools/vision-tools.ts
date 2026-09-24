@@ -391,7 +391,7 @@ export class VisionTools {
           "Converts PDF pages to images and analyzes them in one step. Use this only when you need to understand " +
           "a PDF's visual layout, design, formatting, colors, scanned/image-based content, or page appearance — not just its text content. " +
           "For ordinary text PDFs, use read_file or parse_document instead. Rendering is bundled; never install Poppler. " +
-          "Use render_only=true to save original page PNGs without a vision request; optional crop extracts a figure for embedding in generate_document. Coordinates are fractions of the full page from top-left.",
+          "Use render_only=true to save lossless page PNGs without a vision request; optional crop renders a figure directly from the PDF at export resolution (at least 2400px wide unless resource-limited). Coordinates are fractions of the full page from top-left. Never enlarge a preview screenshot for delivery; rerender the source region instead.",
         input_schema: {
           type: "object",
           properties: {
@@ -405,6 +405,7 @@ export class VisionTools {
                 'What to analyze about the PDF (default: "Describe the layout, design, content, and visual structure of this document in detail.").',
             },
             render_only: { type: "boolean", description: "Save page images and positioned source text without model analysis (default false). Returned image paths can be embedded in PDFs." },
+            dpi: { type: "number", minimum: 72, maximum: 600, description: "Source rendering DPI (default 300; use 600 for fine labels). Crops also target at least 2400px width. Resource limits and usable print width are reported." },
             crop: { type: "object", description: "Optional original figure region, as fractions 0–1 of the full page from top-left. Verify the crop before embedding.", properties: {
               x: { type: "number" }, y: { type: "number" }, width: { type: "number" }, height: { type: "number" },
             }, required: ["x", "y", "width", "height"] },
@@ -1163,6 +1164,7 @@ export class VisionTools {
 
   async readPdfVisual(input: {
     render_only?: boolean;
+    dpi?: number;
     crop?: { x: number; y: number; width: number; height: number };
     path: unknown;
     prompt?: unknown;
@@ -1240,6 +1242,7 @@ export class VisionTools {
       ctimeMs: pdfStat.ctimeMs,
       pages: normalizedPages,
       renderOnly: input.render_only === true, crop: input.crop || null,
+      rendererVersion: 2, dpi: input.dpi ?? 300,
       prompt,
       provider: providerOverride || null,
     });
@@ -1261,7 +1264,7 @@ export class VisionTools {
         try { if ((await fs.lstat(directory)).isSymbolicLink()) throw new Error("PDF asset directories cannot be symbolic links."); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
-      const rendered = await renderPdfPages(absPath, tmpDir, { firstPage, lastPage, crop: input.crop });
+      const rendered = await renderPdfPages(absPath, tmpDir, { firstPage, lastPage, crop: input.crop, dpi: input.dpi });
       if (input.render_only === true) {
         const result = { success: true as const, pages: rendered.pages.map((page) => ({ ...page, analysis: "Original PDF pixels rendered by the bundled renderer; visual content has not been model-verified." })),
           pageCount: rendered.totalPages, source_path: relPath, provenance };

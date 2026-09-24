@@ -533,7 +533,7 @@ export async function generatePDF(
     }
 
     const pageCount = Math.max(1, (pdfStructure.match(/\/Type\s*\/Page\b/g) || []).length);
-    const layoutReview = await reviewPdfLayout(outputPath, { renderDirectory: evidenceDirectory });
+    const layoutReview = await reviewPdfLayout(outputPath, { renderDirectory: evidenceDirectory, minimumImageDpi: 180 });
     if (!layoutReview.passed) {
       throw new Error(
         layoutReview.issues.map((issue) => issue.message).join(" ") ||

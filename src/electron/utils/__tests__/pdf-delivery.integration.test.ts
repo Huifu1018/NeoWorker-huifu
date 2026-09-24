@@ -39,6 +39,10 @@ it("renders original vector pixels without Poppler and rejects a probe as a full
     `, dir], { encoding: "utf8", timeout: 30_000 }));
     expect(result.pixel).toEqual([255, 0, 0, 255]);
     expect(result.render.totalPages).toBe(1);
+    // The 120pt-wide figure must render from vector instructions at export
+    // resolution, rather than cropping 360px from the old 3x overview.
+    expect(result.render.pages[0].width).toBeGreaterThanOrEqual(2400);
+    expect(result.render.pages[0].printWidthAt300Dpi).toBeGreaterThanOrEqual(8);
     expect(result.render.pages[0].text).toHaveLength(0);
     expect(result.invalid).toBe(true);
     expect(result.rejected).toBe(true);

@@ -5,10 +5,28 @@ import { pathToFileURL } from "node:url";
 const importPdf = new Function("specifier", "return import(specifier)") as
   (specifier: string) => Promise<typeof import("pdfjs-dist/legacy/build/pdf.mjs")>;
 
+/** Render the selected region directly; never enlarge a low-resolution page crop. */
+export function pdfRegionRenderPlan(width: number, height: number, crop?: {
+  x: number; y: number; width: number; height: number;
+}, dpi = 300) {
+  if (!Number.isFinite(dpi) || dpi < 72 || dpi > 600) throw new Error("dpi must be between 72 and 600.");
+  const region = crop || { x: 0, y: 0, width: 1, height: 1 };
+  const pointsWidth = width * region.width, pointsHeight = height * region.height;
+  // A column figure is often enlarged to full text width in the translation.
+  // Allocate pixels for that output width, not for the original small column.
+  const requestedScale = Math.max(dpi / 72, crop ? 2400 / pointsWidth : 0);
+  const scale = Math.min(requestedScale, 6000 / Math.max(pointsWidth, pointsHeight),
+    Math.sqrt(24_000_000 / (pointsWidth * pointsHeight)));
+  return { scale, width: Math.ceil(pointsWidth * scale), height: Math.ceil(pointsHeight * scale),
+    left: width * region.x * scale, top: height * region.y * scale,
+    renderDpi: scale * 72, resolutionLimited: scale < requestedScale };
+}
+
 /** Bundled renderer: never requires a user's Poppler/Python installation. */
 export async function renderPdfPages(file: string, directory: string, options: {
   firstPage: number; lastPage: number;
   crop?: { x: number; y: number; width: number; height: number };
+  dpi?: number;
   signal?: AbortSignal;
 }) {
   if ((await fs.stat(file)).size > 100 * 1024 * 1024) throw new Error("PDF exceeds 100 MiB.");
@@ -37,15 +55,11 @@ export async function renderPdfPages(file: string, directory: string, options: {
       options.signal?.throwIfAborted();
       const page = await doc.getPage(n);
       const base = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: Math.min(3, 2400 / Math.max(base.width, base.height)) });
-      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-      await page.render({ canvas: canvas as Any, canvasContext: canvas.getContext("2d") as Any, viewport }).promise;
-      let output = canvas;
-      if (crop) {
-        output = createCanvas(Math.max(1, Math.round(canvas.width * crop.width)), Math.max(1, Math.round(canvas.height * crop.height)));
-        output.getContext("2d").drawImage(canvas, canvas.width * crop.x, canvas.height * crop.y,
-          canvas.width * crop.width, canvas.height * crop.height, 0, 0, output.width, output.height);
-      }
+      const plan = pdfRegionRenderPlan(base.width, base.height, crop, options.dpi);
+      const viewport = page.getViewport({ scale: plan.scale });
+      const output = createCanvas(plan.width, plan.height);
+      await page.render({ canvas: output as Any, canvasContext: output.getContext("2d") as Any, viewport,
+        transform: [1, 0, 0, 1, -plan.left, -plan.top] }).promise;
       const imagePath = path.join(directory, `page-${n}.png`);
       await fs.writeFile(imagePath, output.toBuffer("image/png"));
       const content = await page.getTextContent();
@@ -61,6 +75,8 @@ export async function renderPdfPages(file: string, directory: string, options: {
         item.x + item.width > crop.x + crop.width + 0.002 || item.y - item.height < crop.y - 0.002 ||
         item.y > crop.y + crop.height + 0.002).map((item) => item.text).slice(0, 12) : [];
       pages.push({ page: n, imagePath, width: output.width, height: output.height, text: visibleText,
+        renderDpi: Math.round(plan.renderDpi), printWidthAt300Dpi: Number((output.width / 300).toFixed(2)),
+        ...(plan.resolutionLimited ? { resolutionWarning: "Raster size limit reached. Keep this figure within printWidthAt300Dpi inches or preserve the source vector region; do not upscale the PNG." } : {}),
         ...(clippedText.length ? { cropWarning: "The crop cuts source text at its edges. Inspect for clipped labels or adjacent body columns and adjust the region before embedding.", clippedText } : {}) });
       page.cleanup();
     }

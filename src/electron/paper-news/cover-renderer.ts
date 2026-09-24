@@ -30,6 +30,7 @@ export async function renderNewsPdfCover(
     const rendered = await renderPdfPages(file, dir, {
       firstPage: 1,
       lastPage: 1,
+      dpi: 144,
       signal,
     });
     return await fs.readFile(rendered.pages[0].imagePath);

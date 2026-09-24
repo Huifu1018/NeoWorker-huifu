@@ -5,7 +5,7 @@ import { isSuspiciousPdfText } from "./pdf-text";
 
 export interface PdfLayoutIssue {
   page: number;
-  type: "text-outside-page" | "unreadable-text" | "review-incomplete";
+  type: "text-outside-page" | "unreadable-text" | "review-incomplete" | "low-resolution-image";
   message: string;
 }
 
@@ -25,7 +25,7 @@ const importModule = new Function("specifier", "return import(specifier)") as
 /** Inspect final PDF bytes, not the HTML that was sent to the printer. */
 export async function reviewPdfLayout(
   filePath: string,
-  options: { signal?: AbortSignal; renderDirectory?: string } = {},
+  options: { signal?: AbortSignal; renderDirectory?: string; minimumImageDpi?: number } = {},
 ): Promise<PdfLayoutReview> {
   const stat = await fs.stat(filePath);
   if (stat.size > 100 * 1024 * 1024) throw new Error("PDF exceeds the 100 MiB layout review limit.");
@@ -58,6 +58,31 @@ export async function reviewPdfLayout(
       if (timedOut) throw new Error("PDF layout review timed out.");
       const page = await document.getPage(number);
       const viewport = page.getViewport({ scale: 1 });
+      if (options.minimumImageDpi) {
+        const operators = await page.getOperatorList();
+        let matrix = [...viewport.transform];
+        const stack: number[][] = [];
+        for (let i = 0; i < operators.fnArray.length; i++) {
+          const op = operators.fnArray[i], args = operators.argsArray[i];
+          if (op === pdfjs.OPS.save || op === pdfjs.OPS.paintFormXObjectBegin) {
+            stack.push([...matrix]);
+            if (op === pdfjs.OPS.paintFormXObjectBegin && args[0]) matrix = pdfjs.Util.transform(matrix, args[0]);
+          } else if (op === pdfjs.OPS.restore || op === pdfjs.OPS.paintFormXObjectEnd) {
+            matrix = stack.pop() || [...viewport.transform];
+          } else if (op === pdfjs.OPS.transform) matrix = pdfjs.Util.transform(matrix, args);
+          else if (op === pdfjs.OPS.paintImageXObject || op === pdfjs.OPS.paintInlineImageXObject) {
+            const width = op === pdfjs.OPS.paintImageXObject ? args[1] : args[0].width;
+            const height = op === pdfjs.OPS.paintImageXObject ? args[2] : args[0].height;
+            const pointsWidth = Math.hypot(matrix[0], matrix[1]), pointsHeight = Math.hypot(matrix[2], matrix[3]);
+            const dpi = Math.min(width * 72 / pointsWidth, height * 72 / pointsHeight);
+            // Exempt small icons; inspect the actual printed transform, not HTML preview sizing.
+            if (Math.max(pointsWidth, pointsHeight) >= 144 && dpi < options.minimumImageDpi) result.issues.push({
+              page: number, type: "low-resolution-image",
+              message: `Page ${number}: an embedded image (${width}×${height}px) has only ${Math.round(dpi)} effective DPI at its printed size (minimum ${options.minimumImageDpi}). Re-render the original PDF figure region with read_pdf_visual crop and dpi=600, targeting 300 effective DPI, or embed original vector artwork. Do not upscale a small screenshot; if the original is low resolution, report that limitation.`,
+            });
+          }
+        }
+      }
       const content = await page.getTextContent();
       const text: string[] = [];
       let overflow = 0;

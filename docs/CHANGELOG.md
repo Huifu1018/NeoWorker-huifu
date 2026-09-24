@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Render PDF figure regions directly at export resolution instead of cropping and enlarging low-DPI overview images. Expose DPI and usable print width, bound raster memory, and reject large low-resolution raster figures using their final PDF transforms. Instruct translation tasks to rerender source figures instead of upscaling previews.
+
 - Stop PDF and spreadsheet previews from cycling between output revisions and crashing the renderer. Keep explicitly selected files open until a new preview follow-up completes.
 - Exclude trailing Chinese punctuation and prose from implicit source links while preserving explicitly authored Unicode URLs.
 - Distinguish feed access denial from rate limiting, retain cached results, and respect persisted per-source retry deadlines.
