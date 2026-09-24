@@ -280,15 +280,28 @@ export function PaperNewsPanel({
                   </span>
                 </span>
                 <span>{sourceDescription(s)}</span>
-                <small className={state?.error ? "pn-source-error" : ""}>
-                  {state?.error
-                    ? state.error === "rateLimit"
+                {state?.error && !busy && (
+                  <small className="pn-source-error">
+                    {state.error === "rateLimit"
                       ? t("请求受限，请稍后刷新", "Request limited; retry later")
-                      : t("暂时无法连接，保留上次内容", "Unavailable; previous results kept")
-                    : busy
-                      ? t("正在获取…", "Fetching…")
-                      : state?.updatedAt
-                        ? `${t("获取于 ", "Fetched ")}${new Date(state.updatedAt).toLocaleString(language, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+                      : state.error === "invalidResponse"
+                        ? t(
+                            "来源返回的数据异常，请稍后重试",
+                            "Unexpected source response; retry later",
+                          )
+                        : t(
+                            "暂时无法连接，请检查网络或代理",
+                            "Connection unavailable; check your network or proxy",
+                          )}
+                  </small>
+                )}
+                <small>
+                  {busy
+                    ? t("正在获取…", "Fetching…")
+                    : state?.updatedAt
+                      ? `${state.error ? t("上次成功获取：", "Last successful fetch: ") : t("获取于 ", "Fetched ")}${new Date(state.updatedAt).toLocaleString(language, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`
+                      : state?.error
+                        ? t("尚无缓存内容", "No cached results yet")
                         : t("等待获取", "Not fetched yet")}
                 </small>
               </button>
