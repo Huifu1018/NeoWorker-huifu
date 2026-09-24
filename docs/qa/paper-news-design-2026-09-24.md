@@ -17,3 +17,9 @@ Research browsing for NeoWorker users, with a compact editorial layout and authe
 - Targeted navigation tests: 2 passed. Renderer lint and production build passed.
 
 No installer or public release is produced for this visual-only revision. Browser QA verifies the renderer and its interactions against a stubbed IPC bridge, not live fetch or installed-app task execution.
+
+## Final palette alignment
+
+User requested the same simple light-blue treatment as other pages. Source panels now reuse the 8% accent blend from `automation-hub.css` / the shared page header, with an 18% accent border blend and a 12% selected background. Official marks retain their original colors; paper cards and topic labels remain neutral. This supersedes the all-neutral source panels above.
+
+Verified light/dark renderer screenshots and equal source backgrounds; browser error log was empty. Frontend production build passed.
